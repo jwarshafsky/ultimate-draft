@@ -214,16 +214,12 @@ function computeOwnerProfile(ownerName) {
   const spSpend = posSpendPct.SP || 0;
   const hitSpend = ["C","1B","2B","3B","SS","OF","UTIL","DH"].reduce((s, k) => s + (posSpendPct[k] || 0), 0);
 
-  // Stars-and-scrubs: top-3 picks' share of total spending. Higher = more
-  // top-heavy. Spread = lower. This is much more discriminating than stdev
-  // because it directly measures "how much of your budget goes to your top guys."
   const sortedPrices = picks.map(p => p.price).sort((a, b) => b - a);
   const top3Sum = sortedPrices.slice(0, 3).reduce((s, v) => s + v, 0);
   const top3Share = totalSpent > 0 ? top3Sum / totalSpent : 0;
-  // Also compute fraction of picks that are big-money ($25+)
   const bigMoneyShare = picks.filter(p => p.price >= 25).length / picks.length;
 
-  // Tier breakdown by raw price
+  // Tier breakdown
   const tiers = { T1: [], T2: [], T3: [], T4: [], T5: [] };
   for (const p of picks) {
     let t;
@@ -239,12 +235,47 @@ function computeOwnerProfile(ownerName) {
     tierShape[t] = { count: arr.length, avg: arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0 };
   }
 
-  // Average BIDS PER YEAR — picks/years tells you whether they go deep on cheap
-  // guys or load up on a few expensive ones.
-  const yearsPlayed = Array.from(new Set(picks.map(p => p.year)));
+  const yearsPlayed = Array.from(new Set(picks.map(p => p.year))).sort();
   const picksPerYear = picks.length / yearsPlayed.length;
-
   const mostSpentOn = Object.entries(posSpend).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+  // Top 8 most expensive picks ever
+  const topPicks = picks.slice().sort((a, b) => b.price - a.price).slice(0, 8)
+    .map(p => ({ player: p.player, year: p.year, price: p.price, pos: normalizePosKey(p.pos) }));
+
+  // Repeat targets: players this owner drafted in multiple years (loyalty signal)
+  const playerCounts = {};
+  for (const p of picks) {
+    if (!playerCounts[p.player]) playerCounts[p.player] = { count: 0, years: [], totalPrice: 0 };
+    playerCounts[p.player].count += 1;
+    playerCounts[p.player].years.push(p.year);
+    playerCounts[p.player].totalPrice += p.price;
+  }
+  const repeatTargets = Object.entries(playerCounts)
+    .filter(([_, v]) => v.count >= 2)
+    .map(([name, v]) => ({ name, count: v.count, years: v.years.sort(), avgPrice: v.totalPrice / v.count }))
+    .sort((a, b) => b.count - a.count || b.avgPrice - a.avgPrice)
+    .slice(0, 8);
+
+  // Per-position average price (for spotting "pays up for SP" type tendencies)
+  const posAvgPrice = {};
+  const posCount = {};
+  for (const p of picks) {
+    const k = normalizePosKey(p.pos);
+    posAvgPrice[k] = (posAvgPrice[k] || 0) + p.price;
+    posCount[k] = (posCount[k] || 0) + 1;
+  }
+  for (const k of Object.keys(posAvgPrice)) {
+    posAvgPrice[k] = posAvgPrice[k] / posCount[k];
+  }
+
+  // Highest single pick per year
+  const topPickByYear = {};
+  for (const p of picks) {
+    if (!topPickByYear[p.year] || p.price > topPickByYear[p.year].price) {
+      topPickByYear[p.year] = { player: p.player, price: p.price, pos: normalizePosKey(p.pos) };
+    }
+  }
 
   return {
     owner: ownerName,
@@ -254,6 +285,8 @@ function computeOwnerProfile(ownerName) {
     maxPrice,
     picksPerYear,
     posSpendPct,
+    posAvgPrice,
+    posCount,
     closerBias,
     spSpend,
     hitSpend,
@@ -262,7 +295,69 @@ function computeOwnerProfile(ownerName) {
     tierShape,
     mostSpentOn,
     years: yearsPlayed,
+    topPicks,
+    repeatTargets,
+    topPickByYear,
   };
+}
+
+// Compute league-wide averages so per-owner profiles can be shown as DELTAS.
+function computeLeagueAverages() {
+  const profiles = computeAllOwnerProfiles();
+  const owners = Object.values(profiles).filter(p => p);
+  if (!owners.length) return null;
+  const avg = { posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0 };
+  for (const p of owners) {
+    avg.meanPrice += p.meanPrice;
+    avg.top3Share += p.top3Share;
+    avg.maxPrice += p.maxPrice;
+    for (const [k, v] of Object.entries(p.posSpendPct)) {
+      avg.posSpendPct[k] = (avg.posSpendPct[k] || 0) + v;
+    }
+    for (const [k, v] of Object.entries(p.posAvgPrice)) {
+      avg.posAvgPrice[k] = (avg.posAvgPrice[k] || 0) + v;
+    }
+  }
+  const n = owners.length;
+  avg.meanPrice /= n;
+  avg.top3Share /= n;
+  avg.maxPrice /= n;
+  for (const k of Object.keys(avg.posSpendPct)) avg.posSpendPct[k] /= n;
+  for (const k of Object.keys(avg.posAvgPrice)) avg.posAvgPrice[k] /= n;
+  return avg;
+}
+
+// Generate human-readable insight strings for an owner.
+function ownerInsights(profile, leagueAvg) {
+  if (!profile || !leagueAvg) return [];
+  const out = [];
+  // Style label
+  if (profile.top3Share > 0.55) out.push({ kind: "style", text: "Stars+scrubs drafter — top 3 picks soak up " + (profile.top3Share * 100).toFixed(0) + "% of budget" });
+  else if (profile.top3Share < 0.40) out.push({ kind: "style", text: "Spread drafter — depth-focused, few mega-bids" });
+  // Big spender check
+  if (profile.maxPrice >= leagueAvg.maxPrice * 1.15) out.push({ kind: "style", text: "Will pay $" + profile.maxPrice + " for a player — well above league norm" });
+  // Position tendencies — flag any position where they spend 1.5x+ league avg per pick
+  for (const [pos, avg] of Object.entries(profile.posAvgPrice)) {
+    const lg = leagueAvg.posAvgPrice[pos];
+    if (!lg || (profile.posCount[pos] || 0) < 2) continue;
+    const ratio = avg / lg;
+    if (ratio >= 1.5 && avg >= 8) out.push({ kind: "pos-up", text: "Pays up for " + pos + ": avg $" + avg.toFixed(0) + " vs league $" + lg.toFixed(0) + " (" + (ratio * 100 - 100).toFixed(0) + "% above)" });
+    else if (ratio <= 0.6) out.push({ kind: "pos-down", text: "Bargain hunts at " + pos + ": avg $" + avg.toFixed(0) + " vs league $" + lg.toFixed(0) });
+  }
+  // RP tendency
+  if (profile.closerBias > 0.13) out.push({ kind: "closer-up", text: "Closer hoarder — " + (profile.closerBias * 100).toFixed(0) + "% of budget on RP (league avg " + ((leagueAvg.posSpendPct.RP || 0) * 100).toFixed(0) + "%)" });
+  else if (profile.closerBias < 0.04) out.push({ kind: "closer-down", text: "Punts saves — only " + (profile.closerBias * 100).toFixed(0) + "% on RP" });
+  // SP tendency
+  if (profile.spSpend > 0.30) out.push({ kind: "sp-up", text: "SP-heavy build — " + (profile.spSpend * 100).toFixed(0) + "% on starters" });
+  else if (profile.spSpend < 0.15) out.push({ kind: "sp-down", text: "Light on SP — " + (profile.spSpend * 100).toFixed(0) + "% only" });
+  // Repeat targets
+  if (profile.repeatTargets.length > 0) {
+    const top = profile.repeatTargets[0];
+    if (top.count >= 3) {
+      out.push({ kind: "loyalty", text: "Loyal to " + top.name + " (drafted " + top.count + " years: " + top.years.join(", ") + ")" });
+    }
+  }
+  return out;
 }
 
 function normalizePosKey(pos) {

@@ -323,6 +323,37 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .breakdown-bar { background: var(--bg-3); height: 7px; border-radius: 3px; overflow: hidden; }
 .breakdown-bar-fill { background: var(--accent); height: 100%; }
 
+/* Owner tendency cards */
+.owner-card { border: 1px solid var(--border); border-radius: 8px; padding: 0; margin-bottom: 10px; overflow: hidden; }
+.owner-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: var(--bg-3);
+  cursor: pointer;
+}
+.owner-name { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.owner-insights { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.owner-insight {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.owner-quick {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  text-align: right;
+}
+.owner-quick > div { display: flex; flex-direction: column; min-width: 70px; }
+.owner-q-val { font-family: var(--mono); font-size: 16px; }
+.owner-card-body { padding: 14px; }
+.owner-card-body h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+
 /* Modal overlay (used for note editor + comparison picker) */
 .modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }

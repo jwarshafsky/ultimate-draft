@@ -129,28 +129,115 @@ function renderHistory() {
 
   // Per-owner profiles
   const profiles = computeAllOwnerProfiles();
+  const leagueAvg = computeLeagueAverages();
   html += '<div class="card"><h2>Owner Tendency Profiles</h2>';
-  html += '<table><thead><tr>';
-  html += '<th>Owner</th><th class="num">Picks</th><th class="num">Avg $</th><th class="num">Max $</th><th class="num">Top-3 Share</th><th>Style</th><th class="num">SP Share</th><th class="num">RP Share</th><th>Spends Most On</th>';
-  html += '</tr></thead><tbody>';
-  const sorted = Object.values(profiles).sort((a, b) => b.totalSpent - a.totalSpent);
-  for (const p of sorted) {
-    const styleLabel = p.top3Share > 0.55 ? "★★★ stars+scrubs" : p.top3Share > 0.45 ? "★★ top-heavy" : p.top3Share > 0.35 ? "★ balanced" : "spread";
-    const top3Class = p.top3Share > 0.5 ? "bad" : "";
-    html += '<tr>';
-    html += '<td><strong>' + esc(p.owner) + '</strong></td>';
-    html += '<td class="num">' + p.picks + '</td>';
-    html += '<td class="num">$' + p.meanPrice.toFixed(1) + '</td>';
-    html += '<td class="num">$' + p.maxPrice + '</td>';
-    html += '<td class="num ' + top3Class + '">' + (p.top3Share * 100).toFixed(1) + '%</td>';
-    html += '<td>' + styleLabel + '</td>';
-    html += '<td class="num">' + (p.spSpend * 100).toFixed(1) + '%</td>';
-    html += '<td class="num ' + (p.closerBias > 0.10 ? "bad" : "") + '">' + (p.closerBias * 100).toFixed(1) + '%</td>';
-    html += '<td>' + esc(p.mostSpentOn || "—") + '</td>';
-    html += '</tr>';
+  html += '<p class="muted small">Click an owner row to see their full draft history: top picks of all time, repeat targets, year-by-year biggest bid, and position spending vs league average.</p>';
+
+  // League average row at the top
+  if (leagueAvg) {
+    html += '<div style="background: var(--bg-3); padding: 10px 12px; border-radius: 6px; margin-bottom: 14px;">';
+    html += '<div class="small muted" style="margin-bottom: 4px;">League averages (your baseline for comparison)</div>';
+    html += '<div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px;">';
+    html += '<span><span class="muted">Avg $/pick:</span> $' + leagueAvg.meanPrice.toFixed(1) + '</span>';
+    html += '<span><span class="muted">Max $:</span> $' + leagueAvg.maxPrice.toFixed(0) + '</span>';
+    html += '<span><span class="muted">Top-3 Share:</span> ' + (leagueAvg.top3Share * 100).toFixed(0) + '%</span>';
+    for (const pos of ["SP", "RP", "OF", "SS", "C"]) {
+      const avg = leagueAvg.posSpendPct[pos];
+      if (avg) html += '<span><span class="muted">' + pos + ' share:</span> ' + (avg * 100).toFixed(0) + '%</span>';
+    }
+    html += '</div></div>';
   }
-  html += '</tbody></table>';
-  html += '<p class="muted small" style="margin-top: 10px;">Avg $: average price paid per non-keeper pick. Max $: highest single pick. Top-3 Share: % of total spending concentrated in their top 3 most expensive picks (high = stars+scrubs). SP/RP Share: % of budget on starters/relievers. Profiles automatically apply to mock draft simulations.</p>';
+
+  const sorted = Object.values(profiles).filter(p => p).sort((a, b) => b.totalSpent - a.totalSpent);
+  for (const p of sorted) {
+    const insights = ownerInsights(p, leagueAvg);
+    const styleLabel = p.top3Share > 0.55 ? "stars+scrubs" : p.top3Share > 0.45 ? "top-heavy" : p.top3Share > 0.35 ? "balanced" : "spread";
+    html += '<div class="owner-card">';
+    // Header
+    html += '<div class="owner-card-head" data-owner="' + esc(p.owner) + '">';
+    html += '<div>';
+    html += '<div class="owner-name">' + esc(p.owner) + ' <span class="muted small">· ' + styleLabel + ' · ' + p.picks + ' picks across ' + p.years.length + ' years</span></div>';
+    if (insights.length) {
+      html += '<div class="owner-insights">';
+      for (const ins of insights.slice(0, 4)) {
+        const colorByKind = {
+          style: "var(--accent)",
+          "pos-up": "var(--bad)",
+          "pos-down": "var(--good)",
+          "closer-up": "var(--bad)",
+          "closer-down": "var(--good)",
+          "sp-up": "var(--warn)",
+          "sp-down": "var(--accent)",
+          loyalty: "var(--keeper)",
+        };
+        html += '<span class="owner-insight" style="border-color: ' + (colorByKind[ins.kind] || "var(--border)") + ';">' + esc(ins.text) + '</span>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    html += '<div class="owner-quick">';
+    html += '<div><span class="muted small">Avg/pick</span><span class="owner-q-val">$' + p.meanPrice.toFixed(0) + '</span></div>';
+    html += '<div><span class="muted small">Max bid</span><span class="owner-q-val">$' + p.maxPrice + '</span></div>';
+    html += '<div><span class="muted small">Top-3 share</span><span class="owner-q-val">' + (p.top3Share * 100).toFixed(0) + '%</span></div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Detail: top picks + repeat targets + per-year top pick + pos vs league
+    html += '<div class="owner-card-body">';
+    html += '<div class="grid cols-2" style="gap: 14px;">';
+
+    // Top picks
+    html += '<div><h4 class="muted small">Top 8 priciest picks ever</h4>';
+    html += '<table style="font-size: 12px;"><tbody>';
+    for (const tp of p.topPicks) {
+      html += '<tr><td>' + esc(tp.player) + '</td><td class="small muted">' + esc(tp.pos) + '</td><td class="small muted">' + tp.year + '</td><td class="num"><strong>$' + tp.price + '</strong></td></tr>';
+    }
+    html += '</tbody></table></div>';
+
+    // Repeat targets
+    if (p.repeatTargets.length) {
+      html += '<div><h4 class="muted small">Repeat targets (drafted 2+ years)</h4>';
+      html += '<table style="font-size: 12px;"><tbody>';
+      for (const r of p.repeatTargets) {
+        html += '<tr><td>' + esc(r.name) + '</td><td class="small muted">' + r.years.join(", ") + '</td><td class="num">$' + r.avgPrice.toFixed(0) + ' avg</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div><h4 class="muted small">Repeat targets</h4><p class="muted small">No players drafted multiple times.</p></div>';
+    }
+
+    // Position spending vs league
+    html += '<div><h4 class="muted small">Position spending vs league avg</h4>';
+    html += '<table style="font-size: 12px;"><thead><tr><th>Pos</th><th class="num">Spend %</th><th class="num">vs Lg</th><th class="num">Avg $</th><th class="num">vs Lg</th></tr></thead><tbody>';
+    const allPositions = Array.from(new Set([...Object.keys(p.posSpendPct), ...Object.keys(leagueAvg?.posSpendPct || {})])).sort();
+    for (const pos of allPositions) {
+      const myPct = p.posSpendPct[pos] || 0;
+      const lgPct = leagueAvg?.posSpendPct[pos] || 0;
+      const myAvg = p.posAvgPrice[pos] || 0;
+      const lgAvg = leagueAvg?.posAvgPrice[pos] || 0;
+      const pctDelta = (myPct - lgPct) * 100;
+      const avgDelta = myAvg - lgAvg;
+      html += '<tr><td><strong>' + pos + '</strong></td>';
+      html += '<td class="num">' + (myPct * 100).toFixed(1) + '%</td>';
+      html += '<td class="num ' + (Math.abs(pctDelta) > 3 ? (pctDelta > 0 ? "bad" : "good") : "muted") + '">' + (pctDelta > 0 ? "+" : "") + pctDelta.toFixed(1) + '%</td>';
+      html += '<td class="num">$' + myAvg.toFixed(0) + '</td>';
+      html += '<td class="num ' + (Math.abs(avgDelta) > 5 ? (avgDelta > 0 ? "bad" : "good") : "muted") + '">' + (avgDelta > 0 ? "+" : "") + avgDelta.toFixed(0) + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+
+    // Year-by-year top pick
+    html += '<div><h4 class="muted small">Biggest bid each year</h4>';
+    html += '<table style="font-size: 12px;"><tbody>';
+    const yearList = Object.keys(p.topPickByYear).sort((a, b) => b - a);
+    for (const y of yearList) {
+      const tp = p.topPickByYear[y];
+      html += '<tr><td>' + y + '</td><td>' + esc(tp.player) + '</td><td class="small muted">' + esc(tp.pos) + '</td><td class="num"><strong>$' + tp.price + '</strong></td></tr>';
+    }
+    html += '</tbody></table></div>';
+
+    html += '</div></div></div>';
+  }
   html += '</div>';
 
   // Top overpays / underpays (interesting moments)
