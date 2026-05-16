@@ -260,6 +260,42 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .empty p { margin: 4px 0; }
 
+/* ESPN-style auction draft UI */
+.on-the-clock {
+  background: linear-gradient(135deg, rgba(79,142,247,.12) 0%, var(--bg-2) 60%);
+  border-color: rgba(79,142,247,.4);
+  padding: 18px 22px;
+}
+.otc-grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; align-items: center; }
+.otc-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-2); margin-bottom: 4px; }
+.otc-player { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
+.otc-meta { font-size: 13px; color: var(--text-2); }
+.otc-meta .muted { color: var(--text-3); }
+.otc-bid { border-left: 1px solid var(--border); padding-left: 22px; }
+.otc-bid-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-2); margin-bottom: 4px; }
+.otc-bid-amt { font-size: 28px; font-family: var(--mono); font-weight: 600; margin-bottom: 8px; }
+.otc-bid-controls { display: flex; gap: 6px; margin-bottom: 6px; }
+.otc-signal { margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 4px; }
+.otc-signal.buy { background: rgba(63,185,80,.12); border: 1px solid rgba(63,185,80,.4); color: var(--good); }
+.otc-signal.sell { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.4); color: var(--bad); }
+.otc-empty { padding: 4px; }
+
+.team-strip { display: grid; grid-template-columns: repeat(12, 1fr); gap: 6px; }
+.team-strip-card {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 11px;
+  min-width: 0;
+}
+.team-strip-card.me { border-color: var(--accent); background: rgba(79,142,247,.08); }
+.team-strip-card.done { opacity: 0.55; }
+.team-strip-card .ts-name { font-weight: 600; font-size: 12px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.team-strip-card .ts-row { display: flex; justify-content: space-between; font-family: var(--mono); }
+.team-strip-card .ts-label { color: var(--text-3); }
+.team-strip-card .ts-val { color: var(--text); }
+
 .toast-host {
   position: fixed; bottom: 28px; right: 16px;
   z-index: 200; display: flex; flex-direction: column; gap: 8px;

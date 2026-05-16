@@ -1,13 +1,22 @@
-// Live Draft view. Manual-entry mode lets Jeff record each pick as it
-// happens; the engine auto-recomputes inflation and updates the category
-// dashboard and nomination suggestions in real time. ESPN polling will replace
-// the manual entry step once the Worker proxy is wired.
+// Live Draft view, ESPN auction style. Layout:
+//
+//   ┌─────────────────────────────────────────────────────────────────┐
+//   │  Player On The Clock | Bid: $X  Bidder: Owner  | Bid +1 +2 +5  │
+//   │  Pos · Team · Value $Y · NFBC $Z · xwOBA d        | Record/Pass │
+//   ├──────────────────────────┬─────────────────────────────────────┤
+//   │ Team Strip (all 12)      │ Player pool (sortable, filterable)  │
+//   ├──────────────────────────┼─────────────────────────────────────┤
+//   │ Endgame Assistant        │ Your roster + cat projection        │
+//   ├──────────────────────────┼─────────────────────────────────────┤
+//   │ Nominations + AI         │ Recent picks                        │
+//   └──────────────────────────┴─────────────────────────────────────┘
 
 const _liveDraft = {
-  picks: [],           // [{ player, pos, team, price, ts }]
-  current: null,       // { player, pos } currently up for auction
+  picks: [],            // [{ player, pos, team, price, ts, espnPlayerId }]
+  current: null,        // { player, posKey, value } currently up for auction
   highBid: 0,
   highBidder: null,
+  poolFilter: { pos: "ALL", search: "" },
 };
 
 function getMyLiveDraftPicks() {
@@ -16,15 +25,12 @@ function getMyLiveDraftPicks() {
   return _liveDraft.picks.filter(p => p.team === me.id).map(p => p.player);
 }
 
-// Compute inflation accounting for live picks made so far. Treats already-
-// drafted players as out of the pool, deducts spent $ from league total.
+// Live inflation accounting for picks made so far.
 function computeLiveInflation() {
   const flat = computeFlatInflation();
   if (!flat) return null;
   const draftedNames = new Set(_liveDraft.picks.map(p => p.player));
   const spent = _liveDraft.picks.reduce((s, p) => s + p.price, 0);
-
-  // Adjust remaining $ and value
   const values = getValues();
   let remainingValue = 0;
   const keptNames = new Set(collectKeepers().map(k => k.name));
@@ -33,9 +39,8 @@ function computeLiveInflation() {
     if (keptNames.has(p.name) || draftedNames.has(p.name)) continue;
     remainingValue += p.value;
   }
-  const remaining = flat.leagueRemaining - spent;
+  const remaining = Math.max(0, flat.leagueRemaining - spent);
   const mult = remainingValue > 0 ? remaining / remainingValue : 1;
-
   return {
     ...flat,
     mode: "live",
@@ -52,12 +57,11 @@ function computeLiveInflation() {
 function renderDraft() {
   const root = document.getElementById("view-root");
   if (!getValues().length) {
-    root.innerHTML = '<div class="empty"><p>Live Draft requires projections.</p></div>';
+    root.innerHTML = '<div class="empty"><p>Live Draft requires projections.</p><p class="small">Import a FanGraphs CSV on the Data tab.</p></div>';
     return;
   }
 
   const inflation = computeLiveInflation();
-  // Update inflation badge
   const badge = document.getElementById("inflation-badge");
   if (inflation) {
     badge.textContent = "infl " + inflation.multiplier.toFixed(2) + "x";
@@ -67,25 +71,181 @@ function renderDraft() {
 
   let html = '';
 
-  // Pick entry form
-  html += '<div class="card">';
-  html += '<h2>Record a Pick</h2>';
-  html += '<p class="muted small">Manual entry. ESPN auto-polling activates when proxy URL is configured below.</p>';
-  html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">';
-  html += '<input id="live-player" placeholder="Player name" style="flex: 2; min-width: 200px;">';
-  html += '<input id="live-price" type="number" placeholder="$ Price" style="width: 100px;">';
-  html += '<select id="live-team" style="min-width: 180px;">';
-  for (const t of LEAGUE.teams) {
-    html += '<option value="' + t.id + '">' + esc(t.name) + ' · ' + esc(t.owner) + '</option>';
-  }
-  html += '</select>';
-  html += '<button class="btn primary" id="live-record" style="width: auto; padding: 8px 16px;">Record</button>';
-  html += '<button class="btn ghost" id="live-undo" title="Undo last pick">↶ Undo</button>';
-  html += '</div>';
+  // === ON THE CLOCK panel ===
+  html += renderOnTheClockPanel();
+
+  // === Team strip across the top ===
+  html += '<div class="card" style="padding: 8px;">';
+  html += '<h3 style="margin: 0 0 6px;">Teams</h3>';
+  html += renderTeamStrip();
   html += '</div>';
 
-  // ESPN proxy + AI controls
-  html += '<div class="card">';
+  // === Endgame assistant (full-width if active) ===
+  if (isEndgame()) {
+    html += renderEndgamePanel();
+  }
+
+  // === Main two-column body ===
+  html += '<div class="grid cols-2">';
+
+  // Left col: Player pool + Pick recorder
+  html += '<div>';
+  html += renderPickRecorder();
+  html += renderPlayerPool(inflation);
+  html += '</div>';
+
+  // Right col: Category dashboard + Nominations + AI + Recent picks
+  html += '<div>';
+  html += renderCategoryDashboard();
+  html += '<div class="card"><h2>Nominations</h2>' + renderNominationsPanel() + '</div>';
+  html += renderAiAssistantPanel();
+  html += renderRecentPicks();
+  html += '</div>';
+
+  html += '</div>';
+
+  // ESPN proxy + live controls — moved to bottom (less frequently changed)
+  html += renderLiveSourcesPanel();
+
+  root.innerHTML = html;
+  wireDraftHandlers();
+}
+
+function renderOnTheClockPanel() {
+  const c = _liveDraft.current;
+  let html = '<div class="card on-the-clock">';
+  if (c) {
+    const val = getPlayerValue(c.player);
+    const nfbc = getNfbc(c.player);
+    const sc = getStatcast(c.player);
+    const sig = statcastBuySell(c.player);
+    html += '<div class="otc-grid">';
+    html += '<div class="otc-main">';
+    html += '<div class="otc-label">On the Clock</div>';
+    html += '<div class="otc-player">' + esc(c.player) + '</div>';
+    html += '<div class="otc-meta">';
+    html += '<span class="kbd">' + esc(val?.posKey || "?") + '</span>';
+    if (val?.team) html += ' <span class="muted">' + esc(val.team) + '</span>';
+    html += ' · <span class="muted">value</span> $' + (val ? val.value.toFixed(0) : "?");
+    if (nfbc?.avg) html += ' · <span class="muted">NFBC avg</span> $' + nfbc.avg.toFixed(0) + (nfbc.min && nfbc.max ? ' <span class="muted small">[' + nfbc.min + '-' + nfbc.max + ']</span>' : "");
+    if (sc?.xwOBA) html += ' · <span class="muted">xwOBA</span> ' + sc.xwOBA.toFixed(3);
+    if (sc?.xERA) html += ' · <span class="muted">xERA</span> ' + sc.xERA.toFixed(2);
+    html += '</div>';
+    if (sig) html += '<div class="otc-signal ' + sig.signal + '">' + (sig.signal === "buy" ? "📈 BUY signal" : "📉 SELL signal") + ': ' + esc(sig.reason) + '</div>';
+    html += '</div>';
+    html += '<div class="otc-bid">';
+    html += '<div class="otc-bid-label">Current Bid</div>';
+    html += '<div class="otc-bid-amt">$<input id="otc-price" type="number" value="' + _liveDraft.highBid + '" style="width: 90px; font-size: 28px; padding: 4px 8px; border: 1px solid var(--border); background: var(--bg-3); color: var(--text);"></div>';
+    html += '<div class="otc-bid-controls">';
+    html += '<button class="btn ghost" data-bid-add="1">+$1</button>';
+    html += '<button class="btn ghost" data-bid-add="2">+$2</button>';
+    html += '<button class="btn ghost" data-bid-add="5">+$5</button>';
+    html += '</div>';
+    html += '<select id="otc-team" style="margin-top: 6px;">';
+    for (const t of LEAGUE.teams) {
+      html += '<option value="' + t.id + '"' + (t.id === _liveDraft.highBidder ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
+    }
+    html += '</select>';
+    html += '<div style="display: flex; gap: 6px; margin-top: 8px;">';
+    html += '<button class="btn primary" id="otc-sold" style="width: auto; padding: 8px 14px;">SOLD</button>';
+    html += '<button class="btn ghost" id="otc-cancel">Cancel</button>';
+    html += '</div>';
+    html += '</div>';
+    html += '</div>';
+  } else {
+    html += '<div class="otc-empty">';
+    html += '<div class="otc-label">Nominate Player</div>';
+    html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">';
+    html += '<input id="otc-nominate-name" placeholder="Player name…" style="flex: 1; min-width: 200px; font-size: 16px;">';
+    html += '<input id="otc-nominate-open" type="number" placeholder="Opening $" value="1" style="width: 100px; font-size: 16px;">';
+    html += '<button class="btn primary" id="otc-nominate" style="width: auto; padding: 10px 16px; font-size: 14px;">Nominate</button>';
+    html += '</div>';
+    html += '<div class="muted small" style="margin-top: 8px;">Or use the player pool below to start the auction with one click.</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderPickRecorder() {
+  return ''; // Pick recording is integrated into On The Clock now
+}
+
+function renderPlayerPool(inflation) {
+  const draftedNames = new Set(_liveDraft.picks.map(p => p.player));
+  const keptNames = new Set(collectKeepers().map(k => k.name));
+  let players = getValues().filter(p => !draftedNames.has(p.name) && !keptNames.has(p.name));
+  if (_liveDraft.poolFilter.pos !== "ALL") {
+    players = players.filter(p => p.posKey === _liveDraft.poolFilter.pos);
+  }
+  if (_liveDraft.poolFilter.search) {
+    const q = _liveDraft.poolFilter.search.toLowerCase();
+    players = players.filter(p => p.name.toLowerCase().includes(q));
+  }
+  players = players.slice(0, 200);
+
+  let html = '<div class="card">';
+  html += '<h2>Player Pool <span class="muted small">(' + players.length + ' shown)</span></h2>';
+  html += '<div style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">';
+  html += '<input id="pool-search" placeholder="Search…" value="' + esc(_liveDraft.poolFilter.search) + '" style="flex: 1; min-width: 160px;">';
+  html += '<select id="pool-pos">';
+  for (const p of ["ALL", "C", "1B", "2B", "SS", "3B", "OF", "UTIL", "SP", "RP"]) {
+    html += '<option value="' + p + '"' + (_liveDraft.poolFilter.pos === p ? ' selected' : '') + '>' + p + '</option>';
+  }
+  html += '</select>';
+  html += '</div>';
+
+  html += '<table style="font-size: 12px;"><thead><tr>';
+  html += '<th>Player</th><th>Pos</th><th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">xwOBA</th><th></th>';
+  html += '</tr></thead><tbody>';
+  for (const p of players) {
+    const inf = inflatedValue(p, inflation);
+    const nfbc = getNfbc(p.name);
+    const sc = getStatcast(p.name);
+    const sig = statcastBuySell(p.name);
+    html += '<tr>';
+    html += '<td>' + esc(p.name) + (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') + '</td>';
+    html += '<td>' + esc(p.posKey) + '</td>';
+    html += '<td class="num">$' + p.value.toFixed(0) + '</td>';
+    html += '<td class="num">$' + inf.toFixed(0) + '</td>';
+    html += '<td class="num ' + (nfbc?.avg ? '' : 'dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
+    html += '<td class="num ' + (sc?.xwOBA ? '' : 'dim') + '">' + (sc?.xwOBA ? sc.xwOBA.toFixed(3) : sc?.xERA ? sc.xERA.toFixed(2) : '—') + '</td>';
+    html += '<td><button class="btn ghost pool-nominate" data-name="' + esc(p.name) + '" title="Start auction" style="padding: 2px 8px; font-size: 11px;">▶</button></td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  html += '</div>';
+  return html;
+}
+
+function renderRecentPicks() {
+  if (!_liveDraft.picks.length) {
+    return '<div class="card"><h3>Recent Picks</h3><p class="muted small">No picks recorded yet.</p></div>';
+  }
+  let html = '<div class="card"><h3>Recent Picks (last 12)</h3>';
+  html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Team</th><th class="num">$</th><th class="num">vs Val</th></tr></thead><tbody>';
+  const recent = _liveDraft.picks.slice(-12).reverse();
+  const myId = getMyTeam()?.id;
+  for (let i = 0; i < recent.length; i++) {
+    const pk = recent[i];
+    const val = getPlayerValue(pk.player);
+    const v = val ? val.value : 0;
+    const surplus = v - pk.price;
+    const isMine = pk.team === myId;
+    html += '<tr' + (isMine ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
+    html += '<td class="num dim">' + (_liveDraft.picks.length - i) + '</td>';
+    html += '<td>' + esc(pk.player) + '</td>';
+    html += '<td>' + esc(getTeam(pk.team)?.owner || pk.team) + '</td>';
+    html += '<td class="num">$' + pk.price + '</td>';
+    html += '<td class="num ' + (surplus > 0 ? 'good' : 'bad') + '">' + (val ? (surplus > 0 ? '+' : '') + '$' + surplus.toFixed(0) : '—') + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  return html;
+}
+
+function renderLiveSourcesPanel() {
+  let html = '<div class="card">';
   html += '<h3>Live Sources</h3>';
   html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;">';
   html += '<label class="muted small" style="min-width: 90px;">Proxy URL:</label>';
@@ -98,108 +258,112 @@ function renderDraft() {
   } else {
     html += '<button class="btn" id="espn-start"' + (ESPN.proxyUrl ? '' : ' disabled') + '>▶ Start ESPN polling</button>';
   }
-  html += '<span class="muted small">' + (ESPN.proxyUrl ? "Proxy configured. Polling every " + (ESPN.pollInterval / 1000) + "s." : "Set proxy URL to enable ESPN polling + AI assistant.") + '</span>';
+  html += '<button class="btn ghost" id="live-undo">↶ Undo last</button>';
+  html += '<button class="btn ghost danger" id="live-clear">🗑 Clear all</button>';
+  html += '<span class="muted small" style="margin-left: auto;">' + (ESPN.proxyUrl ? "Proxy: " + esc(ESPN.proxyUrl) : "Set proxy URL to enable ESPN polling + AI") + '</span>';
   html += '</div>';
   html += '</div>';
+  return html;
+}
 
-  // AI assistant
-  html += renderAiAssistantPanel();
+// === Event wiring ===
 
-  // Three-column layout: category dashboard, nominations, recent picks
-  html += '<div class="grid cols-2">';
-  // Left: your category projection
-  html += '<div>';
-  html += renderCategoryDashboard();
-  html += '</div>';
-  // Right: nominations + recent picks
-  html += '<div>';
-  html += '<div class="card"><h2>Nomination Targets</h2>';
-  html += renderNominationsPanel();
-  html += '</div>';
-  html += '</div>';
-  html += '</div>';
-
-  // Recent picks
-  html += '<div class="card"><h2>Picks (' + _liveDraft.picks.length + ')</h2>';
-  if (!_liveDraft.picks.length) {
-    html += '<p class="muted small">No picks recorded yet. Inflation badge updates as you enter picks.</p>';
-  } else {
-    html += '<table><thead><tr><th class="num">#</th><th>Player</th><th>Pos</th><th>Team</th><th class="num">Price</th><th class="num">Value</th><th class="num">Surplus</th></tr></thead><tbody>';
-    const myId = getMyTeam()?.id;
-    for (let i = _liveDraft.picks.length - 1; i >= 0; i--) {
-      const pk = _liveDraft.picks[i];
-      const val = getPlayerValue(pk.player);
-      const v = val ? val.value : 0;
-      const surplus = v - pk.price;
-      const isMine = pk.team === myId;
-      html += '<tr' + (isMine ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
-      html += '<td class="num dim">' + (i + 1) + '</td>';
-      html += '<td>' + esc(pk.player) + '</td>';
-      html += '<td>' + (val ? esc(val.posKey) : '<span class="dim">?</span>') + '</td>';
-      html += '<td>' + esc(getTeam(pk.team)?.owner || pk.team) + (isMine ? ' <span class="kbd">you</span>' : '') + '</td>';
-      html += '<td class="num">$' + pk.price + '</td>';
-      html += '<td class="num">' + (val ? '$' + v.toFixed(0) : '<span class="dim">—</span>') + '</td>';
-      html += '<td class="num ' + (surplus > 0 ? 'good' : 'bad') + '">' + (val ? (surplus > 0 ? '+' : '') + '$' + surplus.toFixed(0) : '<span class="dim">—</span>') + '</td>';
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
-  }
-  html += '</div>';
-
-  root.innerHTML = html;
-
-  // Wire
-  document.getElementById("live-record").addEventListener("click", recordLivePick);
-  document.getElementById("live-player").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") recordLivePick();
+function wireDraftHandlers() {
+  // Pool filters
+  document.getElementById("pool-search")?.addEventListener("input", (e) => {
+    _liveDraft.poolFilter.search = e.target.value;
+    renderDraft();
   });
-  document.getElementById("live-price").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") recordLivePick();
+  document.getElementById("pool-pos")?.addEventListener("change", (e) => {
+    _liveDraft.poolFilter.pos = e.target.value;
+    renderDraft();
   });
-  document.getElementById("live-undo").addEventListener("click", () => {
+  // Start auction from pool
+  document.querySelectorAll(".pool-nominate").forEach(b => {
+    b.addEventListener("click", () => {
+      startAuction(b.dataset.name, 1);
+    });
+  });
+  // Nominate via input
+  document.getElementById("otc-nominate")?.addEventListener("click", () => {
+    const name = document.getElementById("otc-nominate-name").value.trim();
+    const open = parseFloat(document.getElementById("otc-nominate-open").value) || 1;
+    if (!name) { alert("Enter a player name."); return; }
+    startAuction(name, open);
+  });
+  document.getElementById("otc-nominate-name")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("otc-nominate").click();
+  });
+  // Bid controls
+  document.querySelectorAll("[data-bid-add]").forEach(b => {
+    b.addEventListener("click", () => {
+      const inc = parseInt(b.dataset.bidAdd, 10);
+      _liveDraft.highBid = (_liveDraft.highBid || 0) + inc;
+      document.getElementById("otc-price").value = _liveDraft.highBid;
+    });
+  });
+  document.getElementById("otc-price")?.addEventListener("change", (e) => {
+    _liveDraft.highBid = parseInt(e.target.value, 10) || 0;
+  });
+  document.getElementById("otc-team")?.addEventListener("change", (e) => {
+    _liveDraft.highBidder = e.target.value;
+  });
+  document.getElementById("otc-sold")?.addEventListener("click", soldCurrent);
+  document.getElementById("otc-cancel")?.addEventListener("click", () => {
+    _liveDraft.current = null;
+    _liveDraft.highBid = 0;
+    _liveDraft.highBidder = null;
+    renderDraft();
+  });
+  // Sources panel
+  document.getElementById("proxy-save")?.addEventListener("click", () => {
+    setProxyUrl(document.getElementById("proxy-url").value);
+    renderDraft();
+  });
+  document.getElementById("espn-start")?.addEventListener("click", () => { startEspnPolling(); renderDraft(); });
+  document.getElementById("espn-stop")?.addEventListener("click", () => { stopEspnPolling(); renderDraft(); });
+  document.getElementById("live-undo")?.addEventListener("click", () => {
     if (_liveDraft.picks.length && confirm("Undo last pick?")) {
       _liveDraft.picks.pop();
       saveLiveDraft();
       renderDraft();
     }
   });
-  document.getElementById("proxy-save")?.addEventListener("click", () => {
-    const v = document.getElementById("proxy-url").value;
-    setProxyUrl(v);
-    renderDraft();
-  });
-  document.getElementById("espn-start")?.addEventListener("click", () => {
-    startEspnPolling();
-    renderDraft();
-  });
-  document.getElementById("espn-stop")?.addEventListener("click", () => {
-    stopEspnPolling();
-    renderDraft();
+  document.getElementById("live-clear")?.addEventListener("click", () => {
+    if (confirm("Clear ALL recorded picks? This can't be undone.")) {
+      _liveDraft.picks = [];
+      saveLiveDraft();
+      renderDraft();
+    }
   });
   wireAiPanel();
 }
 
-function recordLivePick() {
-  const player = document.getElementById("live-player").value.trim();
-  const price = parseFloat(document.getElementById("live-price").value);
-  const team = document.getElementById("live-team").value;
-  if (!player || !price || !team) {
-    alert("Player, price, and team are required.");
-    return;
-  }
-  const val = getPlayerValue(player);
+function startAuction(playerName, openBid) {
+  const val = getPlayerValue(playerName);
+  _liveDraft.current = { player: playerName, posKey: val?.posKey || null, value: val?.value || 0 };
+  _liveDraft.highBid = openBid || 1;
+  _liveDraft.highBidder = getMyTeam()?.id || LEAGUE.teams[0].id;
+  renderDraft();
+}
+
+function soldCurrent() {
+  const c = _liveDraft.current;
+  if (!c) return;
+  const price = _liveDraft.highBid || 1;
+  const team = _liveDraft.highBidder || getMyTeam()?.id;
+  if (!team) { alert("Select a team."); return; }
   _liveDraft.picks.push({
-    player,
-    pos: val ? val.posKey : null,
+    player: c.player,
+    pos: c.posKey,
     team,
     price,
     ts: Date.now(),
   });
+  _liveDraft.current = null;
+  _liveDraft.highBid = 0;
+  _liveDraft.highBidder = null;
   saveLiveDraft();
-  // Reset inputs
-  document.getElementById("live-player").value = "";
-  document.getElementById("live-price").value = "";
-  document.getElementById("live-player").focus();
   renderDraft();
 }
 

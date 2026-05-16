@@ -11,11 +11,14 @@
 
 const VALUATION = {
   // Hitter slots league-wide (12 teams). Counts toward "draftable" pool.
+  // Mirrors Jeff's FanGraphs Auction Calculator settings:
+  //   1 C, 1 1B, 1 2B, 1 3B, 1 SS, 5 OF, 1 UTIL, 1 CI, 1 MI = 13 per team
   hitSlots: { C: 12, "1B": 12, "2B": 12, "SS": 12, "3B": 12, MI: 12, CI: 12, OF: 60, UTIL: 12 }, // 156
-  pitSlots: 108, // 9 per team * 12
-  // Hitter / pitcher budget split (per Jeff's KB: 66/34 is the rough target,
-  // 67/33 in his sheet). Adjustable.
-  hitBudgetPct: 0.67,
+  // 6 SP + 4 RP = 10 per team. (FanGraphs split: msp=5, mrp=5, but actual
+  // roster gives flex; total counts toward 108-120 P slots.)
+  pitSlots: 108,
+  // Hitter / pitcher budget split — Jeff uses 70/30 in FanGraphs Auction Calc.
+  hitBudgetPct: 0.70,
   // SGP denominators — derived from historical 12-team roto standings (1-pt
   // gap in each category). These get refined from actual league history.
   // Default rough numbers for 12-team 5x5 with OBP/QS/SV+HLD.
@@ -23,11 +26,11 @@ const VALUATION = {
     R: 14, HR: 5.4, RBI: 13, SB: 4.5, OBP: 0.0027,
     QS: 4.7, K: 19, SV_HLD: 6.5, ERA: -0.026, WHIP: -0.0072,
   },
-  // Replacement-level ranks (player # at each position that counts as
-  // "replacement"). Used to set the zero point.
+  // Replacement-level ranks per position. Matches FanGraphs replacement-level
+  // option (rep=1 in user's URL = "1 = replacement at the slot count").
   replacement: {
-    C: 14, "1B": 18, "2B": 18, "SS": 18, "3B": 18, OF: 72, // hitters
-    SP: 70, RP: 40, // pitchers
+    C: 14, "1B": 18, "2B": 18, "SS": 18, "3B": 18, OF: 72,
+    SP: 60, RP: 30, // tightened to match user's drp=30 setting (default RP at 30 = replacement-level RP)
   },
   // Minimum dollar value (auction floor)
   minDollar: 1,

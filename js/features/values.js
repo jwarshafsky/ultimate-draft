@@ -52,8 +52,9 @@ function renderValues() {
   html += '<table><thead><tr>';
   const cols = [
     ["name", "Player"], ["pos", "Pos"], ["team", "Tm"],
-    ["totalSGP", "SGP"], ["sgpAbove", "vsRepl"],
+    ["sgpAbove", "vsRepl"],
     ["value", "Value"], ["infl", "Inflated"],
+    ["nfbc", "NFBC"], ["xstat", "xwOBA / xERA"],
   ];
   for (const [k, lbl] of cols) {
     const arrow = _valuesState.sort === k ? (_valuesState.dir < 0 ? " ↓" : " ↑") : "";
@@ -64,14 +65,20 @@ function renderValues() {
     const inflV = inflatedValue(p, inflation);
     const delta = inflV - p.value;
     const isKept = keptNames.has(p.name);
+    const nfbc = getNfbc(p.name);
+    const sc = getStatcast(p.name);
+    const sig = statcastBuySell(p.name);
+    const xstat = sc?.xwOBA ? sc.xwOBA.toFixed(3) : sc?.xERA ? sc.xERA.toFixed(2) : null;
     html += '<tr' + (isKept ? ' class="kept"' : '') + '>';
-    html += '<td>' + esc(p.name) + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') + '</td>';
+    html += '<td>' + esc(p.name) + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') +
+      (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;" title="' + esc(sig.reason) + '">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') + '</td>';
     html += '<td>' + esc(p.pos) + '</td>';
     html += '<td class="dim">' + esc(p.team) + '</td>';
-    html += '<td class="num">' + p.totalSGP.toFixed(1) + '</td>';
     html += '<td class="num">' + p.sgpAbove.toFixed(1) + '</td>';
     html += '<td class="num">$' + p.value.toFixed(1) + '</td>';
     html += '<td class="num ' + (delta > 0 ? 'good' : delta < 0 ? 'bad' : '') + '">$' + inflV.toFixed(1) + '</td>';
+    html += '<td class="num ' + (nfbc?.avg ? '' : 'dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
+    html += '<td class="num ' + (xstat ? '' : 'dim') + '">' + (xstat || '—') + '</td>';
     html += '</tr>';
   }
   html += '</tbody></table>';
