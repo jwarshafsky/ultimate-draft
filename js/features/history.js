@@ -33,6 +33,22 @@ function renderHistory() {
     html += '<p class="muted small">Each row is one unique person across all years (keyed by ESPN owner GUID, so team renames AND ownership transfers roll up correctly). Map each to a current owner.</p>';
 
     if (guidOwners.length) {
+      // Auto-save AUTO suggestions for rows that don't have an alias yet and
+      // aren't excluded. One-time op per row so the bottom profile section
+      // shows current owner names without requiring the user to click each dropdown.
+      let autoSavedAny = false;
+      for (const o of guidOwners) {
+        if (_ownerAliases.byGuid[o.guid] || isOwnerExcluded(o.guid)) continue;
+        const autoFromTeam = o.currentTeam?.owner;
+        const autoFromName = o.teamNames.find(n => currentOwners.includes(n));
+        const autoMatch = autoFromTeam || autoFromName;
+        if (autoMatch) {
+          _ownerAliases.byGuid[o.guid] = autoMatch;
+          autoSavedAny = true;
+        }
+      }
+      if (autoSavedAny) saveOwnerAliases();
+
       html += '<table style="font-size: 12px;"><thead><tr><th>Team names used</th><th>Years</th><th>Most recent (current team)</th><th class="num">Picks</th><th>→</th><th>Current Owner</th><th>Exclude</th></tr></thead><tbody>';
       for (const o of guidOwners) {
         const aliased = _ownerAliases.byGuid[o.guid];

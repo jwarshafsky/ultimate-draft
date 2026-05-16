@@ -45,7 +45,10 @@ function setOwnerExcluded(guid, excluded) {
   if (excluded) _ownerAliases.excludedGuids[guid] = true;
   else delete _ownerAliases.excludedGuids[guid];
   saveOwnerAliases();
-  if (typeof rerender === "function") rerender();
+  // Force re-render even if league data isn't loaded yet
+  if (typeof switchView === "function" && typeof currentView !== "undefined") {
+    switchView(currentView);
+  }
 }
 function isOwnerExcluded(guid) {
   return !!_ownerAliases.excludedGuids[guid];
@@ -58,14 +61,18 @@ function setOwnerAliasByGuid(guid, currentName) {
   if (!currentName) delete _ownerAliases.byGuid[guid];
   else _ownerAliases.byGuid[guid] = currentName;
   saveOwnerAliases();
-  if (typeof rerender === "function") rerender();
+  if (typeof switchView === "function" && typeof currentView !== "undefined") {
+    switchView(currentView);
+  }
 }
 function setOwnerAlias(historicalName, currentName) {
   if (!historicalName) return;
   if (!currentName) delete _ownerAliases.byName[historicalName];
   else _ownerAliases.byName[historicalName] = currentName;
   saveOwnerAliases();
-  if (typeof rerender === "function") rerender();
+  if (typeof switchView === "function" && typeof currentView !== "undefined") {
+    switchView(currentView);
+  }
 }
 // Resolve a pick to its current-owner name. Prefer GUID alias (stable
 // across team renames + ownership transfers); fall back to name alias.
