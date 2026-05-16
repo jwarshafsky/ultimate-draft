@@ -1,0 +1,104 @@
+// Values view — flat sortable table of all projected players with base value,
+// inflated value, and the projection stats that drove them.
+
+let _valuesState = {
+  sort: "infl", dir: -1,   // sort key / direction (-1 desc)
+  posFilter: "ALL",
+  showKept: false,
+  search: "",
+};
+
+function renderValues() {
+  const root = document.getElementById("view-root");
+  const meta = getProjectionMeta();
+  if (meta.hitterCount + meta.pitcherCount === 0) {
+    root.innerHTML = '<div class="empty"><p>No projections loaded yet.</p><p class="small">Go to Data tab to import a FanGraphs CSV.</p></div>';
+    return;
+  }
+  const values = getValues();
+  const inflation = computeTieredInflation();
+  const keptNames = new Set(collectKeepers().map(k => k.name));
+
+  let html = '<div class="card" style="margin-bottom: 8px;">';
+  html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">';
+  html += '<input id="val-search" type="search" placeholder="Search player…" style="flex: 1; min-width: 200px;" value="' + esc(_valuesState.search) + '">';
+  html += '<select id="val-pos">';
+  for (const p of ["ALL", "C", "1B", "2B", "SS", "3B", "OF", "UTIL", "SP", "RP"]) {
+    html += '<option value="' + p + '"' + (_valuesState.posFilter === p ? ' selected' : '') + '>' + p + '</option>';
+  }
+  html += '</select>';
+  html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" id="val-kept"' + (_valuesState.showKept ? ' checked' : '') + '> Show kept</label>';
+  html += '</div></div>';
+
+  // Filter + sort
+  let filtered = values.filter(p => {
+    if (_valuesState.posFilter !== "ALL" && p.posKey !== _valuesState.posFilter && p.pos !== _valuesState.posFilter) return false;
+    if (!_valuesState.showKept && keptNames.has(p.name)) return false;
+    if (_valuesState.search && !p.name.toLowerCase().includes(_valuesState.search.toLowerCase())) return false;
+    return true;
+  });
+  const sortKey = _valuesState.sort;
+  filtered.sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (sortKey === "infl") {
+      av = inflatedValue(a, inflation);
+      bv = inflatedValue(b, inflation);
+    }
+    if (typeof av === "string") return av.localeCompare(bv) * _valuesState.dir;
+    return ((av || 0) - (bv || 0)) * _valuesState.dir;
+  });
+
+  html += '<div class="card">';
+  html += '<table><thead><tr>';
+  const cols = [
+    ["name", "Player"], ["pos", "Pos"], ["team", "Tm"],
+    ["totalSGP", "SGP"], ["sgpAbove", "vsRepl"],
+    ["value", "Value"], ["infl", "Inflated"],
+  ];
+  for (const [k, lbl] of cols) {
+    const arrow = _valuesState.sort === k ? (_valuesState.dir < 0 ? " ↓" : " ↑") : "";
+    html += '<th class="' + (k === "name" || k === "pos" || k === "team" ? "" : "num") + '" style="cursor:pointer;" data-sort="' + k + '">' + esc(lbl) + arrow + '</th>';
+  }
+  html += '</tr></thead><tbody>';
+  for (const p of filtered.slice(0, 400)) {
+    const inflV = inflatedValue(p, inflation);
+    const delta = inflV - p.value;
+    const isKept = keptNames.has(p.name);
+    html += '<tr' + (isKept ? ' class="kept"' : '') + '>';
+    html += '<td>' + esc(p.name) + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') + '</td>';
+    html += '<td>' + esc(p.pos) + '</td>';
+    html += '<td class="dim">' + esc(p.team) + '</td>';
+    html += '<td class="num">' + p.totalSGP.toFixed(1) + '</td>';
+    html += '<td class="num">' + p.sgpAbove.toFixed(1) + '</td>';
+    html += '<td class="num">$' + p.value.toFixed(1) + '</td>';
+    html += '<td class="num ' + (delta > 0 ? 'good' : delta < 0 ? 'bad' : '') + '">$' + inflV.toFixed(1) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  if (filtered.length > 400) html += '<p class="muted small" style="margin-top: 8px;">Showing top 400 of ' + filtered.length + '. Refine filter to narrow.</p>';
+  html += '</div>';
+
+  root.innerHTML = html;
+
+  // Wire interactions
+  document.getElementById("val-search").addEventListener("input", (e) => {
+    _valuesState.search = e.target.value;
+    renderValues();
+  });
+  document.getElementById("val-pos").addEventListener("change", (e) => {
+    _valuesState.posFilter = e.target.value;
+    renderValues();
+  });
+  document.getElementById("val-kept").addEventListener("change", (e) => {
+    _valuesState.showKept = e.target.checked;
+    renderValues();
+  });
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const k = th.dataset.sort;
+      if (_valuesState.sort === k) _valuesState.dir = -_valuesState.dir;
+      else { _valuesState.sort = k; _valuesState.dir = -1; }
+      renderValues();
+    });
+  });
+}

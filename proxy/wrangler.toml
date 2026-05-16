@@ -1,0 +1,9 @@
+name = "ultimate-draft-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Run `npx wrangler secret put <NAME>` for each:
+#   ESPN_S2           — your ESPN session cookie
+#   ESPN_SWID         — your ESPN SWID cookie (with curly braces)
+#   ANTHROPIC_API_KEY — Anthropic API key
+#   ALLOWED_ORIGIN    — https://jwarshafsky.github.io

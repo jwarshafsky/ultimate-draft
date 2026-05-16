@@ -1,0 +1,100 @@
+// Overview — league-wide snapshot. Shows inflation, all teams' keeper/budget
+// status, and a quick "what to do next" panel for setup state.
+
+function renderOverview() {
+  const root = document.getElementById("view-root");
+  const meta = getProjectionMeta();
+  const hasProj = meta.hitterCount > 0 || meta.pitcherCount > 0;
+  const inflation = hasProj ? computeTieredInflation() : null;
+  const budgets = computeTeamBudgets();
+
+  // Update inflation badge
+  const badge = document.getElementById("inflation-badge");
+  if (inflation) {
+    badge.textContent = "infl " + inflation.multiplier.toFixed(2) + "x";
+    badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
+  } else {
+    badge.textContent = "infl —";
+    badge.className = "badge";
+  }
+
+  let html = "";
+
+  // Setup checklist (only show if something missing)
+  const checklist = [];
+  if (!hasProj) checklist.push({ label: "Import projections", action: 'switchView("data")' });
+  const totalKeepers = Object.values(getKeeperSelections())
+    .reduce((s, t) => s + Object.keys(t).length, 0);
+  if (totalKeepers === 0) checklist.push({ label: "Mark keepers in The League App (syncs automatically)", action: null });
+
+  if (checklist.length) {
+    html += '<div class="card"><h2>Setup</h2>';
+    for (const item of checklist) {
+      html += '<div class="stat-row"><span class="label">▸ ' + item.label + "</span>";
+      if (item.action) html += '<button class="btn" onclick=\'' + item.action + '\'>Open</button>';
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+
+  // League-wide stats
+  html += '<div class="grid cols-4">';
+  html += '<div class="card"><h3>League Budget</h3><div style="font-size: 22px; font-family: var(--mono);">$' + (LEAGUE.draftBudget * LEAGUE.numTeams).toLocaleString() + '</div><div class="small muted">' + LEAGUE.numTeams + ' teams × $' + LEAGUE.draftBudget + '</div></div>';
+
+  if (inflation) {
+    html += '<div class="card"><h3>Inflation</h3><div style="font-size: 22px; font-family: var(--mono);">' + inflation.multiplier.toFixed(3) + 'x</div><div class="small muted">hit ' + inflation.hitMultiplier.toFixed(2) + ' / pit ' + inflation.pitMultiplier.toFixed(2) + '</div></div>';
+    html += '<div class="card"><h3>Keepers Locked</h3><div style="font-size: 22px; font-family: var(--mono);">$' + Math.round(inflation.keptCost) + '</div><div class="small muted">' + inflation.keeperCount + ' major, ' + inflation.minorCount + ' minor</div></div>';
+    html += '<div class="card"><h3>$ Available</h3><div style="font-size: 22px; font-family: var(--mono);">$' + Math.round(inflation.leagueRemaining) + '</div><div class="small muted">to be auctioned</div></div>';
+  } else {
+    html += '<div class="card"><h3>Inflation</h3><div style="font-size: 22px; font-family: var(--mono); color: var(--text-3);">—</div><div class="small muted">import projections</div></div>';
+    html += '<div class="card"><h3>Keepers</h3><div style="font-size: 22px; font-family: var(--mono);">' + totalKeepers + '</div><div class="small muted">selections in The League App</div></div>';
+    html += '<div class="card"><h3>Projections</h3><div style="font-size: 22px; font-family: var(--mono);">' + (meta.hitterCount + meta.pitcherCount) + '</div><div class="small muted">' + meta.hitterCount + ' hit / ' + meta.pitcherCount + ' pit</div></div>';
+  }
+  html += "</div>";
+
+  // Your team's category projection (if projections + keepers available)
+  if (hasProj) {
+    html += renderCategoryDashboard();
+  }
+
+  // Nomination suggestions (offseason planning view)
+  if (hasProj && totalKeepers > 0) {
+    html += '<div class="card"><h2>Nomination Targets</h2>';
+    html += '<p class="muted small">Pre-draft nomination plan based on your keepers vs. opponents\' open needs.</p>';
+    html += renderNominationsPanel();
+    html += '</div>';
+  }
+
+  // Teams table
+  html += '<div class="card"><h2>Teams</h2><table><thead><tr>';
+  html += '<th>Team</th><th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th>';
+  html += '</tr></thead><tbody>';
+  // Sort: me first, then alphabetical by owner
+  const me = LEAGUE.teams.find(t => t.isMe);
+  const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
+  const order = me ? [me, ...others] : others;
+  for (const t of order) {
+    const b = budgets[t.id] || { keepers: 0, remaining: LEAGUE.draftBudget, keeperCount: 0, minorCount: 0 };
+    const slotsToFill = LEAGUE.maxMlKeepers + 18 - b.keeperCount; // 8 keeper slots + remaining auction = 26 total
+    const draftSpots = LEAGUE.rosterSize - b.keeperCount;
+    const dollarsPerSpot = draftSpots > 0 ? b.remaining / draftSpots : 0;
+    html += '<tr' + (t.isMe ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
+    html += '<td>' + esc(t.name) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
+    html += '<td>' + esc(t.owner) + '</td>';
+    html += '<td class="num">' + b.keeperCount + '</td>';
+    html += '<td class="num minor">' + b.minorCount + '</td>';
+    html += '<td class="num">$' + b.keepers + '</td>';
+    html += '<td class="num">$' + b.remaining + '</td>';
+    html += '<td class="num">$' + dollarsPerSpot.toFixed(1) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  root.innerHTML = html;
+}
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
