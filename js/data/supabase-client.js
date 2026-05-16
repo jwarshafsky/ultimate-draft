@@ -35,17 +35,57 @@ function isEmailAllowed(email) {
 }
 
 async function refreshAuthState() {
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if (session && session.user && isEmailAllowed(session.user.email)) {
-    currentUser = { id: session.user.id, email: session.user.email };
-  } else {
+  try {
+    const { data: { session }, error } = await supabaseClient.auth.getSession();
+    if (error) console.warn("[auth] getSession error:", error);
+    console.log("[auth] getSession ->", session ? { user: session.user?.email, expires: new Date((session.expires_at||0)*1000).toISOString() } : null);
+    if (session && session.user && isEmailAllowed(session.user.email)) {
+      currentUser = { id: session.user.id, email: session.user.email };
+      fireAuth();
+      return;
+    }
+    // Fallback: try to restore from localStorage directly. supabase-js sometimes
+    // returns null on first getSession call before it has finished reading
+    // storage; if our stored token is valid, trust it.
+    try {
+      const raw = localStorage.getItem("sb-ud-auth-v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const u = parsed?.user || parsed?.currentSession?.user;
+        const exp = parsed?.expires_at || parsed?.currentSession?.expires_at;
+        if (u?.email && isEmailAllowed(u.email)) {
+          // Check expiry — if expired, ask Supabase to refresh.
+          const now = Math.floor(Date.now() / 1000);
+          if (exp && exp > now) {
+            console.log("[auth] restored from localStorage");
+            currentUser = { id: u.id, email: u.email };
+            fireAuth();
+            return;
+          }
+          // Token is expired — try refresh
+          console.log("[auth] token expired, refreshing");
+          const refreshed = await supabaseClient.auth.refreshSession();
+          if (refreshed?.data?.session?.user && isEmailAllowed(refreshed.data.session.user.email)) {
+            currentUser = { id: refreshed.data.session.user.id, email: refreshed.data.session.user.email };
+            fireAuth();
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[auth] storage fallback failed:", e);
+    }
     if (session && session.user && !isEmailAllowed(session.user.email)) {
       await supabaseClient.auth.signOut();
       showAuthMsg("This account isn't authorized.", "err");
     }
     currentUser = null;
+    fireAuth();
+  } catch (e) {
+    console.error("[auth] refreshAuthState failed:", e);
+    currentUser = null;
+    fireAuth();
   }
-  fireAuth();
 }
 
 async function signInGoogle() {
