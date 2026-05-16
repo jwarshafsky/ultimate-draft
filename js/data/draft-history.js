@@ -22,10 +22,12 @@ const _history = {
   meta: { years: [] },
 };
 
-// Two alias maps:
+// Three buckets:
 //   byGuid: ESPN owner GUID → current owner name (preferred — stable across years)
 //   byName: historical team name → current owner name (fallback when GUID missing)
-const _ownerAliases = { byGuid: {}, byName: {} };
+//   excludedGuids: GUIDs of former owners no longer in the league. Their
+//     picks are filtered out of tendency profiles entirely.
+const _ownerAliases = { byGuid: {}, byName: {}, excludedGuids: {} };
 
 function loadOwnerAliases() {
   try {
@@ -33,8 +35,20 @@ function loadOwnerAliases() {
     if (v) {
       _ownerAliases.byGuid = v.byGuid || {};
       _ownerAliases.byName = v.byName || v.map || {};
+      _ownerAliases.excludedGuids = v.excludedGuids || {};
     }
   } catch (e) {}
+}
+
+function setOwnerExcluded(guid, excluded) {
+  if (!guid) return;
+  if (excluded) _ownerAliases.excludedGuids[guid] = true;
+  else delete _ownerAliases.excludedGuids[guid];
+  saveOwnerAliases();
+  if (typeof rerender === "function") rerender();
+}
+function isOwnerExcluded(guid) {
+  return !!_ownerAliases.excludedGuids[guid];
 }
 function saveOwnerAliases() {
   localStorage.setItem(OWNER_ALIAS_KEY, JSON.stringify(_ownerAliases));
@@ -166,9 +180,13 @@ function getHistoryPicks(year) {
 
 // Compute behavior profile for one owner across all years. Applies owner
 // aliases (GUID-first, name fallback) so historical team names roll up
-// under the current owner.
+// under the current owner. Skips picks from excluded GUIDs (former owners).
 function computeOwnerProfile(ownerName) {
-  const picks = _history.picks.filter(p => resolveOwnerForPick(p) === ownerName && !p.keeper);
+  const picks = _history.picks.filter(p =>
+    !isOwnerExcluded(p.espnOwnerGuid) &&
+    resolveOwnerForPick(p) === ownerName &&
+    !p.keeper
+  );
   if (!picks.length) return null;
 
   const totalSpent = picks.reduce((s, p) => s + p.price, 0);
@@ -247,7 +265,11 @@ function normalizePosKey(pos) {
 // Uses GUID-first resolution so historical team-renames AND ownership
 // transfers roll up correctly.
 function computeAllOwnerProfiles() {
-  const owners = Array.from(new Set(_history.picks.map(p => resolveOwnerForPick(p)))).filter(Boolean);
+  const owners = Array.from(new Set(
+    _history.picks
+      .filter(p => !isOwnerExcluded(p.espnOwnerGuid))
+      .map(p => resolveOwnerForPick(p))
+  )).filter(Boolean);
   const out = {};
   for (const o of owners) {
     out[o] = computeOwnerProfile(o);
