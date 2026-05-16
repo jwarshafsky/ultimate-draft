@@ -55,12 +55,12 @@ async function fetchEspnHistory(season) {
   return r.json();
 }
 
-// Sync all historical seasons in one shot. Default seasons: 2017-2025 minus
+// Sync all historical seasons in one shot. Default seasons: 2017-2026 minus
 // 2020 (Jeff said to exclude that COVID-shortened year). Adds to _history and
 // returns a summary.
 async function syncAllEspnHistory(opts) {
   opts = opts || {};
-  const years = opts.years || [2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025];
+  const years = opts.years || [2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026];
   const onProgress = opts.onProgress || (() => {});
   const result = { seasons: [], failed: [], totalPicks: 0, teamMapsBySeason: {} };
   for (const year of years) {

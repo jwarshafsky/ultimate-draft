@@ -11,14 +11,17 @@ function renderHistory() {
 
   // ESPN sync section (uses proxy)
   html += '<div class="card"><h2>Sync from ESPN</h2>';
-  html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons 2017-2025 (excluding 2020). Requires proxy URL configured in Live Draft tab.</p>';
+  html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons 2017-2026 (excluding 2020). Requires proxy URL configured in Settings tab.</p>';
   html += '<div style="display: flex; gap: 8px; align-items: center;">';
-  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025";
+  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026";
   html += '<input id="hist-espn-years" placeholder="' + seasons + '" value="' + seasons + '" style="flex: 1;">';
   html += '<button class="btn primary" id="hist-espn-sync" style="width: auto; padding: 8px 14px;"' + (ESPN.proxyUrl ? '' : ' disabled') + '>Sync from ESPN</button>';
   html += '</div>';
   html += '<div class="muted small" style="margin-top: 6px;">' + (ESPN.proxyUrl ? "Proxy ready: " + esc(ESPN.proxyUrl) : "Set proxy URL in Live Draft tab first.") + '</div>';
   html += '<div id="espn-sync-log" class="small muted" style="margin-top: 10px;"></div>';
+  if (picks.length) {
+    html += '<div style="margin-top: 10px;"><button class="btn ghost danger" id="hist-clear-top">Clear all history</button></div>';
+  }
   html += '</div>';
 
   // Owner alias mapping section (if data exists) — GUID-based primary
@@ -82,9 +85,6 @@ function renderHistory() {
   html += '<input id="hist-year" type="number" placeholder="Year (if not in CSV)" style="width: 200px;">';
   html += '<button class="btn primary" id="hist-import" style="width: auto; padding: 8px 16px;">Import</button>';
   html += '<label class="muted small">Or upload: <input type="file" id="hist-file" accept=".csv,text/csv"></label>';
-  if (picks.length) {
-    html += '<button class="btn danger" id="hist-clear" style="margin-left: auto;">Clear all history</button>';
-  }
   html += '</div></div>';
 
   if (!picks.length) {
@@ -210,6 +210,9 @@ function wireHistoryHandlers() {
     reader.readAsText(file);
   });
   document.getElementById("hist-clear")?.addEventListener("click", () => {
+    if (confirm("Clear all draft history?")) clearHistory();
+  });
+  document.getElementById("hist-clear-top")?.addEventListener("click", () => {
     if (confirm("Clear all draft history?")) clearHistory();
   });
 }
