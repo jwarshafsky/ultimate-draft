@@ -131,25 +131,26 @@ function renderHistory() {
   const profiles = computeAllOwnerProfiles();
   html += '<div class="card"><h2>Owner Tendency Profiles</h2>';
   html += '<table><thead><tr>';
-  html += '<th>Owner</th><th class="num">Picks</th><th class="num">Avg Aggression</th><th class="num">Stars/Scrubs</th><th class="num">RP Share</th><th>Spends Most On</th><th class="num">T1 Avg</th><th class="num">T5 Avg</th>';
+  html += '<th>Owner</th><th class="num">Picks</th><th class="num">Avg $</th><th class="num">Max $</th><th class="num">Top-3 Share</th><th>Style</th><th class="num">SP Share</th><th class="num">RP Share</th><th>Spends Most On</th>';
   html += '</tr></thead><tbody>';
   const sorted = Object.values(profiles).sort((a, b) => b.totalSpent - a.totalSpent);
   for (const p of sorted) {
-    const ssLabel = p.starsScrubs > 0.7 ? "★★★ stars+scrubs" : p.starsScrubs > 0.5 ? "★★ tilted" : "★ balanced";
-    const aggClass = p.aggression > 1.1 ? "bad" : p.aggression < 0.95 ? "good" : "";
+    const styleLabel = p.top3Share > 0.55 ? "★★★ stars+scrubs" : p.top3Share > 0.45 ? "★★ top-heavy" : p.top3Share > 0.35 ? "★ balanced" : "spread";
+    const top3Class = p.top3Share > 0.5 ? "bad" : "";
     html += '<tr>';
     html += '<td><strong>' + esc(p.owner) + '</strong></td>';
     html += '<td class="num">' + p.picks + '</td>';
-    html += '<td class="num ' + aggClass + '">' + p.aggression.toFixed(2) + 'x</td>';
-    html += '<td class="num">' + ssLabel + '</td>';
+    html += '<td class="num">$' + p.meanPrice.toFixed(1) + '</td>';
+    html += '<td class="num">$' + p.maxPrice + '</td>';
+    html += '<td class="num ' + top3Class + '">' + (p.top3Share * 100).toFixed(1) + '%</td>';
+    html += '<td>' + styleLabel + '</td>';
+    html += '<td class="num">' + (p.spSpend * 100).toFixed(1) + '%</td>';
     html += '<td class="num ' + (p.closerBias > 0.10 ? "bad" : "") + '">' + (p.closerBias * 100).toFixed(1) + '%</td>';
     html += '<td>' + esc(p.mostSpentOn || "—") + '</td>';
-    html += '<td class="num">$' + (p.tierShape.T1?.avg || 0).toFixed(0) + ' <span class="muted small">(' + (p.tierShape.T1?.count || 0) + ')</span></td>';
-    html += '<td class="num">$' + (p.tierShape.T5?.avg || 0).toFixed(0) + ' <span class="muted small">(' + (p.tierShape.T5?.count || 0) + ')</span></td>';
     html += '</tr>';
   }
   html += '</tbody></table>';
-  html += '<p class="muted small" style="margin-top: 10px;">Aggression: avg price paid / avg projected value. >1.10 = overpayer, <0.95 = bargain hunter. Stars/Scrubs: coefficient of variation in their prices. RP Share: % of budget spent on relievers. Profiles automatically apply to mock draft simulations.</p>';
+  html += '<p class="muted small" style="margin-top: 10px;">Avg $: average price paid per non-keeper pick. Max $: highest single pick. Top-3 Share: % of total spending concentrated in their top 3 most expensive picks (high = stars+scrubs). SP/RP Share: % of budget on starters/relievers. Profiles automatically apply to mock draft simulations.</p>';
   html += '</div>';
 
   // Top overpays / underpays (interesting moments)

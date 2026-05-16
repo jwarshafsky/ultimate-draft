@@ -197,10 +197,8 @@ function computeOwnerProfile(ownerName) {
   if (!picks.length) return null;
 
   const totalSpent = picks.reduce((s, p) => s + p.price, 0);
-  const picksWithValue = picks.filter(p => p.value > 0);
-  const aggression = picksWithValue.length
-    ? picksWithValue.reduce((s, p) => s + (p.price / p.value), 0) / picksWithValue.length
-    : 1;
+  const meanPrice = totalSpent / picks.length;
+  const maxPrice = picks.reduce((m, p) => p.price > m ? p.price : m, 0);
 
   // Position spend share
   const posSpend = {};
@@ -212,18 +210,20 @@ function computeOwnerProfile(ownerName) {
   for (const [k, v] of Object.entries(posSpend)) {
     posSpendPct[k] = v / totalSpent;
   }
+  const closerBias = posSpendPct.RP || 0;
+  const spSpend = posSpendPct.SP || 0;
+  const hitSpend = ["C","1B","2B","3B","SS","OF","UTIL","DH"].reduce((s, k) => s + (posSpendPct[k] || 0), 0);
 
-  // Closer bias
-  const rpSpend = posSpendPct.RP || 0;
-  const closerBias = rpSpend; // higher = pays more for relievers
+  // Stars-and-scrubs: top-3 picks' share of total spending. Higher = more
+  // top-heavy. Spread = lower. This is much more discriminating than stdev
+  // because it directly measures "how much of your budget goes to your top guys."
+  const sortedPrices = picks.map(p => p.price).sort((a, b) => b - a);
+  const top3Sum = sortedPrices.slice(0, 3).reduce((s, v) => s + v, 0);
+  const top3Share = totalSpent > 0 ? top3Sum / totalSpent : 0;
+  // Also compute fraction of picks that are big-money ($25+)
+  const bigMoneyShare = picks.filter(p => p.price >= 25).length / picks.length;
 
-  // Stars-and-scrubs detection: stdev of prices. High stdev = stars-and-scrubs.
-  const mean = totalSpent / picks.length;
-  const variance = picks.reduce((s, p) => s + Math.pow(p.price - mean, 2), 0) / picks.length;
-  const stdev = Math.sqrt(variance);
-  const starsScrubs = stdev / Math.max(1, mean); // coefficient of variation
-
-  // Tier shape: average price paid per tier (using $ as the proxy for tier)
+  // Tier breakdown by raw price
   const tiers = { T1: [], T2: [], T3: [], T4: [], T5: [] };
   for (const p of picks) {
     let t;
@@ -239,20 +239,29 @@ function computeOwnerProfile(ownerName) {
     tierShape[t] = { count: arr.length, avg: arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0 };
   }
 
-  // Most expensive position
+  // Average BIDS PER YEAR — picks/years tells you whether they go deep on cheap
+  // guys or load up on a few expensive ones.
+  const yearsPlayed = Array.from(new Set(picks.map(p => p.year)));
+  const picksPerYear = picks.length / yearsPlayed.length;
+
   const mostSpentOn = Object.entries(posSpend).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
   return {
     owner: ownerName,
     picks: picks.length,
     totalSpent,
-    aggression,
+    meanPrice,
+    maxPrice,
+    picksPerYear,
     posSpendPct,
     closerBias,
-    starsScrubs,
+    spSpend,
+    hitSpend,
+    top3Share,
+    bigMoneyShare,
     tierShape,
     mostSpentOn,
-    years: Array.from(new Set(picks.map(p => p.year))),
+    years: yearsPlayed,
   };
 }
 
@@ -288,17 +297,17 @@ function computeAllOwnerProfiles() {
 // per-owner DEFAULT_PROFILE shape. Returns a partial overlay.
 function profileToMockOverlay(profile) {
   if (!profile) return null;
-  // Aggression: history-observed price/value ratio, clamp to [0.85, 1.25]
-  const aggression = Math.max(0.85, Math.min(1.25, profile.aggression || 1));
+  // Without value data, use top3Share as a proxy for aggression: owners who
+  // concentrate spending on top picks tend to overbid for stars.
+  const aggression = Math.max(0.9, Math.min(1.2, 1 + (profile.top3Share - 0.4) * 0.5));
   // Position bias: scaled deviation from average
   const posBias = {};
   for (const [pos, pct] of Object.entries(profile.posSpendPct)) {
-    // Normal team spends ~16% on SP, ~8% on RP, ~12% on OF... use these as anchors
     const anchor = { SP: 0.18, RP: 0.08, OF: 0.30, C: 0.04, "1B": 0.06, "2B": 0.05, "3B": 0.06, SS: 0.07, UTIL: 0.04 }[pos] || 0.05;
     posBias[pos] = Math.max(0.5, Math.min(1.5, 1 + (pct - anchor) * 2));
   }
-  // Stars-and-scrubs raises top-tier appetite
-  const topTierAppetite = 1 + Math.max(0, Math.min(0.6, profile.starsScrubs - 0.5));
+  // High top3 share = stars+scrubs appetite
+  const topTierAppetite = 1 + Math.max(0, Math.min(0.6, (profile.top3Share - 0.4) * 1.5));
   return { aggression, posBias, topTierAppetite };
 }
 
