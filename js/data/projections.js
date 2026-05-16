@@ -75,18 +75,21 @@ function parseCSV(text) {
 }
 
 const HIT_HEADER_MAP = {
-  name: ["Name", "Player", "name"],
+  name: ["Name", "Player", "name", "PlayerName"],
   team: ["Team", "team", "Tm"],
   pos:  ["POS", "Pos", "Position", "pos"],
   PA: ["PA"], AB: ["AB"], H: ["H"], R: ["R"], HR: ["HR"],
   RBI: ["RBI"], SB: ["SB"], BB: ["BB"], OBP: ["OBP"], AVG: ["AVG"],
+  // FanGraphs Auction Calculator output gives pre-computed dollar values:
+  dollars: ["Dollars", "$", "Auction $", "Value", "Dollar Value"],
 };
 const PIT_HEADER_MAP = {
-  name: ["Name", "Player", "name"],
+  name: ["Name", "Player", "name", "PlayerName"],
   team: ["Team", "team", "Tm"],
   pos:  ["POS", "Pos", "Position", "pos"],
   IP: ["IP"], K: ["SO", "K"], W: ["W"], QS: ["QS"], SV: ["SV", "S"],
   HLD: ["HLD", "HD"], ERA: ["ERA"], WHIP: ["WHIP"],
+  dollars: ["Dollars", "$", "Auction $", "Value", "Dollar Value"],
 };
 
 function pickCol(row, names) {
@@ -102,10 +105,12 @@ function toNum(v) {
 function importHittersCSV(text, sourceName) {
   const rows = parseCSV(text);
   const out = [];
+  let dollarHits = 0;
   for (const r of rows) {
     const name = pickCol(r, HIT_HEADER_MAP.name);
     if (!name) continue;
-    out.push({
+    const dollars = pickCol(r, HIT_HEADER_MAP.dollars);
+    const entry = {
       name: name,
       team: pickCol(r, HIT_HEADER_MAP.team) || "",
       pos:  pickCol(r, HIT_HEADER_MAP.pos) || "",
@@ -119,9 +124,20 @@ function importHittersCSV(text, sourceName) {
       BB: toNum(pickCol(r, HIT_HEADER_MAP.BB)),
       OBP: toNum(pickCol(r, HIT_HEADER_MAP.OBP)),
       AVG: toNum(pickCol(r, HIT_HEADER_MAP.AVG)),
-    });
+    };
+    // If FanGraphs Auction Calculator dollar value is present, store it.
+    // Valuation engine will prefer it over its own SGP-based calc.
+    if (dollars != null && dollars !== "") {
+      const d = toNum(dollars);
+      if (d !== 0 || /[0-9]/.test(String(dollars))) {
+        entry.fgDollars = d;
+        dollarHits++;
+      }
+    }
+    out.push(entry);
   }
   _projections.hitters = out;
+  if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs hitter dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
     importedAt: new Date().toISOString(),
@@ -137,10 +153,12 @@ function importHittersCSV(text, sourceName) {
 function importPitchersCSV(text, sourceName) {
   const rows = parseCSV(text);
   const out = [];
+  let dollarHits = 0;
   for (const r of rows) {
     const name = pickCol(r, PIT_HEADER_MAP.name);
     if (!name) continue;
-    out.push({
+    const dollars = pickCol(r, PIT_HEADER_MAP.dollars);
+    const entry = {
       name: name,
       team: pickCol(r, PIT_HEADER_MAP.team) || "",
       pos:  pickCol(r, PIT_HEADER_MAP.pos) || "",
@@ -152,9 +170,18 @@ function importPitchersCSV(text, sourceName) {
       HLD: toNum(pickCol(r, PIT_HEADER_MAP.HLD)),
       ERA: toNum(pickCol(r, PIT_HEADER_MAP.ERA)),
       WHIP: toNum(pickCol(r, PIT_HEADER_MAP.WHIP)),
-    });
+    };
+    if (dollars != null && dollars !== "") {
+      const d = toNum(dollars);
+      if (d !== 0 || /[0-9]/.test(String(dollars))) {
+        entry.fgDollars = d;
+        dollarHits++;
+      }
+    }
+    out.push(entry);
   }
   _projections.pitchers = out;
+  if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs pitcher dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
     importedAt: new Date().toISOString(),

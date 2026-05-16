@@ -43,6 +43,9 @@ const VALUATION = {
   pitSlots: 102,
   // Hitter / pitcher budget split — FanGraphs split=70.
   hitBudgetPct: 0.70,
+  // Bench: 4 slots × 12 teams = 48 spots, all at $1. Reserve $48 from the
+  // league pool so non-bench player values don't over-inflate.
+  benchSlots: 48,
   // SGP denominators — derived from historical 12-team roto standings (1-pt
   // gap in each category). These get refined from actual league history.
   // Default rough numbers for 12-team 5x5 with OBP/QS/SV+HLD.
@@ -154,12 +157,19 @@ function computeReplacementLevels(players) {
 }
 
 // Computes all dollar values. Returns array of player objects with .value $.
+// Two paths:
+//   1. If FanGraphs Auction Calculator dollar values are present (entry.fgDollars),
+//      use them directly — Jeff's saved FG settings already encode the league rules.
+//   2. Otherwise, run the SGP engine to compute values from raw projections.
 function computeValues() {
   const hitters = getHitterProjections();
   const pitchers = getPitcherProjections();
   if (!hitters.length && !pitchers.length) return [];
 
-  // Stage 1: compute SGP per player
+  // Detect whether we're in FG-dollars mode (any player has fgDollars set).
+  const fgMode = hitters.some(h => h.fgDollars != null) || pitchers.some(p => p.fgDollars != null);
+
+  // Stage 1: compute SGP per player (still useful as a metric even in FG mode)
   const all = [];
   for (const h of hitters) {
     const sgp = hitterSGP(h);
@@ -168,6 +178,7 @@ function computeValues() {
       name: h.name, team: h.team, pos: pos, type: "H",
       posKey: pos === "DH" ? "UTIL" : pos,
       proj: h, sgp, totalSGP: sgp.total,
+      fgDollars: h.fgDollars,
     });
   }
   for (const p of pitchers) {
@@ -177,7 +188,19 @@ function computeValues() {
       name: p.name, team: p.team, pos: role, type: "P",
       posKey: role,
       proj: p, sgp, totalSGP: sgp.total,
+      fgDollars: p.fgDollars,
     });
+  }
+
+  // FG dollar mode: use FG-supplied values directly.
+  if (fgMode) {
+    for (const pl of all) {
+      pl.value = pl.fgDollars != null ? pl.fgDollars : VALUATION.minDollar;
+      pl.sgpAbove = pl.totalSGP; // informational only
+      pl.replacementSGP = 0;
+    }
+    all.sort((a, b) => b.value - a.value);
+    return all;
   }
 
   // Stage 2: replacement levels per position bucket
@@ -190,7 +213,8 @@ function computeValues() {
 
   // Stage 4: convert SGP above to $. Sum positive SGPAbove for hitters/pitchers
   // separately, then scale to (budget * pct) - (slots * $1 floor).
-  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams; // 3120
+  // Reserve $48 league-wide for 4 bench slots × 12 teams at $1 each.
+  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams - VALUATION.benchSlots; // 3120 - 48 = 3072
   const hitBudget = totalBudget * VALUATION.hitBudgetPct;
   const pitBudget = totalBudget * (1 - VALUATION.hitBudgetPct);
   // Total draftable slots (positive-value players we expect to draft)
