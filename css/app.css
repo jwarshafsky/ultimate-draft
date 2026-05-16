@@ -296,6 +296,23 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .team-strip-card .ts-label { color: var(--text-3); }
 .team-strip-card .ts-val { color: var(--text); }
 
+.pace-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.pace-val { font-size: 22px; font-family: var(--mono); margin: 2px 0; }
+.pace-val.warn { color: var(--warn); }
+.pace-val.good { color: var(--good); }
+.pace-val.bad { color: var(--bad); }
+.pace-bar { background: var(--bg-3); height: 10px; border-radius: 5px; margin-top: 4px; overflow: hidden; }
+.pace-bar-hit { background: var(--accent); height: 100%; transition: width 200ms ease; }
+
+/* Modal overlay (used for note editor + comparison picker) */
+.modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
+.modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }
+.modal-card { position: relative; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 22px; min-width: 420px; max-width: 720px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.modal-card h3 { margin: 0 0 14px; font-size: 17px; }
+.tag-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag-btn { background: var(--bg-3); border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; opacity: 0.55; font-family: inherit; }
+.tag-btn.on { opacity: 1; border-color: currentColor; }
+
 .toast-host {
   position: fixed; bottom: 28px; right: 16px;
   z-index: 200; display: flex; flex-direction: column; gap: 8px;

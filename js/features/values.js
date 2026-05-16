@@ -70,8 +70,9 @@ function renderValues() {
     const sig = statcastBuySell(p.name);
     const xstat = sc?.xwOBA ? sc.xwOBA.toFixed(3) : sc?.xERA ? sc.xERA.toFixed(2) : null;
     html += '<tr' + (isKept ? ' class="kept"' : '') + '>';
-    html += '<td>' + esc(p.name) + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') +
-      (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;" title="' + esc(sig.reason) + '">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') + '</td>';
+    html += '<td><span class="player-name" data-player="' + esc(p.name) + '" style="cursor: pointer;">' + esc(p.name) + '</span>' + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') +
+      (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;" title="' + esc(sig.reason) + '">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') +
+      renderTagIcons(p.name) + '</td>';
     html += '<td>' + esc(p.pos) + '</td>';
     html += '<td class="dim">' + esc(p.team) + '</td>';
     html += '<td class="num">' + p.sgpAbove.toFixed(1) + '</td>';
@@ -107,5 +108,8 @@ function renderValues() {
       else { _valuesState.sort = k; _valuesState.dir = -1; }
       renderValues();
     });
+  });
+  document.querySelectorAll(".player-name").forEach(el => {
+    el.addEventListener("click", () => openNoteEditor(el.dataset.player));
   });
 }

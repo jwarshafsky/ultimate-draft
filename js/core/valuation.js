@@ -192,54 +192,67 @@ function computeValues() {
     });
   }
 
+  // Two-way player handling. Detect same-name entries in both hitter and
+  // pitcher feeds (e.g. Ohtani). Merge into one entity, summing fgDollars
+  // (FG splits the value across roles for two-ways already).
+  const byName = new Map();
+  for (const pl of all) {
+    const k = pl.name;
+    if (!byName.has(k)) { byName.set(k, pl); continue; }
+    const existing = byName.get(k);
+    // Already a hitter AND pitcher entry — merge values, keep dual flag
+    existing.isTwoWay = true;
+    existing.value = (existing.value || 0) + (pl.value || 0);
+    existing.fgDollars = (existing.fgDollars || 0) + (pl.fgDollars || 0);
+    existing.totalSGP = (existing.totalSGP || 0) + (pl.totalSGP || 0);
+    // Position labelling: combine, e.g. "DH/SP" so it shows up at both spots in boards
+    existing.posSecondary = pl.posKey;
+  }
+  const dedup = Array.from(byName.values());
+
   // FG dollar mode: use FG-supplied values directly.
   if (fgMode) {
-    for (const pl of all) {
-      pl.value = pl.fgDollars != null ? pl.fgDollars : VALUATION.minDollar;
+    for (const pl of dedup) {
+      if (pl.value == null) pl.value = pl.fgDollars != null ? pl.fgDollars : VALUATION.minDollar;
       pl.sgpAbove = pl.totalSGP; // informational only
       pl.replacementSGP = 0;
     }
-    all.sort((a, b) => b.value - a.value);
-    return all;
+    dedup.sort((a, b) => b.value - a.value);
+    return dedup;
   }
 
   // Stage 2: replacement levels per position bucket
-  const repl = computeReplacementLevels(all);
+  const repl = computeReplacementLevels(dedup);
 
   // Stage 3: SGP above replacement
-  for (const pl of all) {
+  for (const pl of dedup) {
     pl.sgpAbove = pl.totalSGP - (repl[pl.posKey] || 0);
   }
 
   // Stage 4: convert SGP above to $. Sum positive SGPAbove for hitters/pitchers
   // separately, then scale to (budget * pct) - (slots * $1 floor).
   // Reserve $48 league-wide for 4 bench slots × 12 teams at $1 each.
-  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams - VALUATION.benchSlots; // 3120 - 48 = 3072
+  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams - VALUATION.benchSlots;
   const hitBudget = totalBudget * VALUATION.hitBudgetPct;
   const pitBudget = totalBudget * (1 - VALUATION.hitBudgetPct);
-  // Total draftable slots (positive-value players we expect to draft)
   const hitSlotCount = Object.values(VALUATION.hitSlots).reduce((s, n) => s + n, 0);
   const pitSlotCount = VALUATION.pitSlots;
-  // Total SGP above replacement
-  const hitPosSGP = all.filter(p => p.type === "H" && p.sgpAbove > 0).reduce((s, p) => s + p.sgpAbove, 0);
-  const pitPosSGP = all.filter(p => p.type === "P" && p.sgpAbove > 0).reduce((s, p) => s + p.sgpAbove, 0);
-  // Money available above $1 floor
+  const hitPosSGP = dedup.filter(p => p.type === "H" && p.sgpAbove > 0).reduce((s, p) => s + p.sgpAbove, 0);
+  const pitPosSGP = dedup.filter(p => p.type === "P" && p.sgpAbove > 0).reduce((s, p) => s + p.sgpAbove, 0);
   const hitMoneyAbove = hitBudget - hitSlotCount * VALUATION.minDollar;
   const pitMoneyAbove = pitBudget - pitSlotCount * VALUATION.minDollar;
   const hitPerSGP = hitPosSGP > 0 ? hitMoneyAbove / hitPosSGP : 0;
   const pitPerSGP = pitPosSGP > 0 ? pitMoneyAbove / pitPosSGP : 0;
 
-  for (const pl of all) {
+  for (const pl of dedup) {
     const perSGP = pl.type === "H" ? hitPerSGP : pitPerSGP;
     const raw = pl.sgpAbove > 0 ? pl.sgpAbove * perSGP + VALUATION.minDollar : pl.sgpAbove * perSGP + VALUATION.minDollar;
-    // Clamp positive players to $1 floor; allow negatives for non-rosterable.
     pl.value = pl.sgpAbove > 0 ? Math.max(VALUATION.minDollar, raw) : raw;
     pl.replacementSGP = repl[pl.posKey] || 0;
   }
 
-  // Sort by value desc
-  all.sort((a, b) => b.value - a.value);
-  return all;
+  dedup.sort((a, b) => b.value - a.value);
+  return dedup;
 }
 
 // Cached value list — recomputed when projections change.

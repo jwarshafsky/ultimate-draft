@@ -85,6 +85,14 @@ function renderDraft() {
     html += renderEndgamePanel();
   }
 
+  // === Inflation curve + Spending pace ===
+  if (_liveDraft.picks.length >= 2) {
+    html += '<div class="grid cols-2">';
+    html += renderInflationCurve();
+    html += renderSpendingPace();
+    html += '</div>';
+  }
+
   // === Main two-column body ===
   html += '<div class="grid cols-2">';
 
@@ -364,6 +372,7 @@ function soldCurrent() {
   _liveDraft.highBid = 0;
   _liveDraft.highBidder = null;
   saveLiveDraft();
+  if (typeof recordInflationSnapshot === "function") recordInflationSnapshot();
   renderDraft();
 }
 

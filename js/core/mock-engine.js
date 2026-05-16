@@ -32,31 +32,43 @@ const DEFAULT_PROFILE = {
 };
 
 // Build a per-team state at simulation start, given current keepers.
+// Owner profiles auto-apply from draft history if available; explicit
+// opts.profiles[teamId] overrides.
 function buildMockTeamStates(opts) {
   const states = {};
   const selections = getKeeperSelections();
+  // Pre-compute history-derived profiles if available
+  const historyProfiles = (typeof computeAllOwnerProfiles === "function") ? computeAllOwnerProfiles() : {};
   for (const t of LEAGUE.teams) {
     const teamSel = selections[t.id] || {};
     const kept = [];
     let keptCost = 0;
     for (const [name, flags] of Object.entries(teamSel)) {
-      if (flags.minorKeeper) continue; // minors don't take ML roster slots
+      if (flags.minorKeeper) continue;
       if (flags.keeper) {
         const price = getKeeperPriceExceptions()[name] || 0;
         kept.push({ name, price, pos: getPlayerValue(name)?.posKey || "UTIL" });
         keptCost += price;
       }
     }
+    // Layer profiles: DEFAULT_PROFILE → history overlay → opts overlay
+    let profile = { ...DEFAULT_PROFILE };
+    const histProfile = historyProfiles[t.owner];
+    if (histProfile && typeof profileToMockOverlay === "function") {
+      const overlay = profileToMockOverlay(histProfile);
+      if (overlay) profile = { ...profile, ...overlay, posBias: { ...profile.posBias, ...overlay.posBias } };
+    }
+    if (opts.profiles?.[t.id]) profile = { ...profile, ...opts.profiles[t.id] };
     states[t.id] = {
       teamId: t.id,
       teamName: t.name,
       ownerName: t.owner,
       isMe: !!t.isMe,
-      profile: { ...DEFAULT_PROFILE, ...(opts.profiles?.[t.id] || {}) },
+      profile,
       budget: LEAGUE.draftBudget - keptCost,
       kept,
       drafted: [],
-      slotsByPos: countSlotsByPos(kept),  // C: 0, 1B: 1, etc.
+      slotsByPos: countSlotsByPos(kept),
       slotsRemaining: LEAGUE.rosterSize - kept.length,
     };
   }

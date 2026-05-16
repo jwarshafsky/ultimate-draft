@@ -3,14 +3,18 @@
 let currentView = "overview";
 
 const VIEWS = {
-  overview: { render: () => renderOverview() },
-  keepers:  { render: () => renderKeepers() },
-  values:   { render: () => renderValues() },
-  board:    { render: () => renderBoard() },
-  trade:    { render: () => renderTrade() },
-  mock:     { render: () => renderMock() },
-  draft:    { render: () => renderDraft() },
-  data:     { render: () => renderData() },
+  overview:  { render: () => renderOverview() },
+  keepers:   { render: () => renderKeepers() },
+  values:    { render: () => renderValues() },
+  board:     { render: () => renderBoard() },
+  compare:   { render: () => renderCompare() },
+  trade:     { render: () => renderTrade() },
+  scenarios: { render: () => renderScenarios() },
+  mock:      { render: () => renderMock() },
+  draft:     { render: () => renderDraft() },
+  roster:    { render: () => renderRoster() },
+  history:   { render: () => renderHistory() },
+  data:      { render: () => renderData() },
 };
 
 function switchView(name) {
