@@ -72,7 +72,8 @@ function renderValues() {
     html += '<tr' + (isKept ? ' class="kept"' : '') + '>';
     html += '<td><span class="player-name" data-player="' + esc(p.name) + '" style="cursor: pointer;">' + esc(p.name) + '</span>' + (isKept ? ' <span class="kbd" style="color: var(--keeper);">K</span>' : '') +
       (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;" title="' + esc(sig.reason) + '">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') +
-      renderTagIcons(p.name) + '</td>';
+      renderTagIcons(p.name) +
+      renderTargetBadge(p.name, inflV) + '</td>';
     html += '<td>' + esc(p.pos) + '</td>';
     html += '<td class="dim">' + esc(p.team) + '</td>';
     html += '<td class="num">' + p.sgpAbove.toFixed(1) + '</td>';

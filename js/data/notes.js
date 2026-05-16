@@ -44,7 +44,30 @@ function saveNotesToStorage() {
 }
 
 function getPlayerNote(name) {
-  return _notes.byName[notesKey(name)] || { tags: [], note: "" };
+  return _notes.byName[notesKey(name)] || { tags: [], note: "", dreamPrice: null, fairPrice: null, walkAwayPrice: null };
+}
+
+// Returns target prices for a player. Empty if not set.
+function getTargetPrices(name) {
+  const n = _notes.byName[notesKey(name)];
+  if (!n) return null;
+  if (n.dreamPrice == null && n.fairPrice == null && n.walkAwayPrice == null) return null;
+  return { dream: n.dreamPrice, fair: n.fairPrice, walkAway: n.walkAwayPrice };
+}
+
+// Classify current inflated value vs the target tiers. Returns:
+//   "dream" if <= dream price (steal!)
+//   "fair"  if <= fair price (good buy)
+//   "stretch" if <= walk-away (paying up)
+//   "overpay" if > walk-away (don't bid)
+//   null if no targets set
+function classifyPriceVsTargets(name, currentInflatedValue) {
+  const t = getTargetPrices(name);
+  if (!t) return null;
+  if (t.dream != null && currentInflatedValue <= t.dream) return "dream";
+  if (t.fair != null && currentInflatedValue <= t.fair) return "fair";
+  if (t.walkAway != null && currentInflatedValue <= t.walkAway) return "stretch";
+  return "overpay";
 }
 
 function setPlayerNote(name, patch) {
@@ -116,7 +139,25 @@ function openNoteEditor(playerName) {
           return `<button class="tag-btn${on ? " on" : ""}" data-tag="${tag}" style="color: ${def.color};">${def.icon} ${def.label}</button>`;
         }).join("")}
       </div>
-      <textarea id="note-text" rows="4" style="width: 100%; margin-top: 12px;" placeholder="Free-text note…">${esc(note.note || "")}</textarea>
+      <div style="margin-top: 14px;">
+        <div class="muted small" style="margin-bottom: 6px;">Target prices ($ — leave blank to skip)</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+          <div>
+            <label class="muted small" style="color: var(--good);">Dream ↓</label>
+            <input id="note-dream" type="number" placeholder="steal" value="${note.dreamPrice ?? ""}" style="width: 100%;">
+          </div>
+          <div>
+            <label class="muted small" style="color: var(--accent);">Fair</label>
+            <input id="note-fair" type="number" placeholder="par" value="${note.fairPrice ?? ""}" style="width: 100%;">
+          </div>
+          <div>
+            <label class="muted small" style="color: var(--bad);">Walk-away ↑</label>
+            <input id="note-walk" type="number" placeholder="last $" value="${note.walkAwayPrice ?? ""}" style="width: 100%;">
+          </div>
+        </div>
+        <div class="muted small" style="margin-top: 4px;">Below dream = steal. Between fair/walk-away = paying up. Above walk-away = don't bid.</div>
+      </div>
+      <textarea id="note-text" rows="3" style="width: 100%; margin-top: 12px;" placeholder="Free-text note…">${esc(note.note || "")}</textarea>
       <div style="display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end;">
         <button class="btn" id="note-close">Close</button>
         <button class="btn primary" id="note-save" style="width: auto; padding: 8px 16px;">Save</button>
@@ -133,10 +174,37 @@ function openNoteEditor(playerName) {
   });
   host.querySelector("#note-save").addEventListener("click", () => {
     const tags = Array.from(host.querySelectorAll(".tag-btn.on")).map(b => b.dataset.tag);
-    const note = host.querySelector("#note-text").value;
-    setPlayerNote(playerName, { tags, note });
+    const noteText = host.querySelector("#note-text").value;
+    const parseOpt = (id) => {
+      const raw = host.querySelector(id).value.trim();
+      return raw === "" ? null : (parseFloat(raw) || null);
+    };
+    setPlayerNote(playerName, {
+      tags,
+      note: noteText,
+      dreamPrice: parseOpt("#note-dream"),
+      fairPrice: parseOpt("#note-fair"),
+      walkAwayPrice: parseOpt("#note-walk"),
+    });
     host.remove();
   });
+}
+
+// Render small inline target-price badge for a player given a current inflated value.
+// e.g. " 💎$28" for a dream price.
+function renderTargetBadge(name, currentInflatedValue) {
+  const t = getTargetPrices(name);
+  if (!t) return "";
+  const cls = classifyPriceVsTargets(name, currentInflatedValue || 0);
+  const palette = { dream: "var(--good)", fair: "var(--accent)", stretch: "var(--warn)", overpay: "var(--bad)" };
+  const labels = {
+    dream: '💎 $' + (t.dream || "?"),
+    fair: '✓ $' + (t.fair || "?"),
+    stretch: '⚠ $' + (t.walkAway || "?"),
+    overpay: '✕ over $' + (t.walkAway || "?"),
+  };
+  if (!cls) return "";
+  return ' <span title="targets: dream $' + (t.dream ?? "?") + ' / fair $' + (t.fair ?? "?") + ' / walk $' + (t.walkAway ?? "?") + '" style="color: ' + palette[cls] + '; font-size: 10px; margin-left: 4px;">' + labels[cls] + '</span>';
 }
 
 loadNotesFromStorage();

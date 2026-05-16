@@ -57,6 +57,17 @@ function buildAiContext() {
       inflated: Math.round(inflatedValue(p, inflation)),
     }));
 
+  // My pre-set target prices (dream/fair/walk-away) for any flagged players
+  const myTargets = [];
+  for (const p of topPool) {
+    const t = getTargetPrices(p.name);
+    if (t) {
+      myTargets.push({ name: p.name, pos: p.pos, dream: t.dream, fair: t.fair, walkAway: t.walkAway, currentInflated: p.inflated });
+    }
+  }
+  // My strategy prefs from Settings
+  const strategy = (typeof getMyStrategy === "function") ? getMyStrategy() : null;
+
   return {
     myTeam: me.name,
     myBudget,
@@ -66,6 +77,8 @@ function buildAiContext() {
     inflation: inflation?.multiplier.toFixed(2),
     myCategoryRanks: cats.ranks,
     myRotoPoints: cats.rotoPoints.toFixed(1),
+    myStrategy: strategy,
+    myTargetPrices: myTargets,
     topPool,
     recentPicks: (typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).slice(-6).map(p => ({
       player: p.player, team: p.team, price: p.price,
@@ -79,7 +92,9 @@ function buildAiContext() {
 async function callAi(context, userMessage) {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured (set in Live Draft view).");
   const proxyClaudeUrl = ESPN.proxyUrl.replace(/\/$/, "") + "/claude";
-  const system = `You are an expert fantasy baseball draft assistant for a 12-team keeper auction league using OBP, QS, SV+HLD as categories. The budget is $260 with a $350 luxury tax. You give short, actionable advice: which players to bid on, target prices, when to nominate dump candidates, and category-balance trade-offs. Keep responses under 150 words. Use specific dollar amounts and player names. Format as 1-3 bullets when appropriate.`;
+  const system = `You are an expert fantasy baseball draft assistant for a 12-team keeper auction league using OBP, QS, SV+HLD as categories. Budget is $260 per team, 70/30 hitter/pitcher split. Roster: 1 C, 1 1B, 1 2B, 1 3B, 1 SS, 5 OF, 1 MI, 1 CI, 1 UTIL, 6 SP, 4 RP, 4 BN.
+
+You give short, actionable advice: which players to bid on, target prices, when to nominate dump candidates, and category-balance trade-offs. Honor the user's pre-set dream/fair/walk-away prices (never recommend bidding above walk-away). Respect user's strategy preferences (stars-vs-scrubs tilt, risk tolerance, punt categories). Keep responses under 150 words. Use specific dollar amounts and player names. Format as 1-3 tight bullets.`;
   const userPrompt = `Current draft state:
 \`\`\`
 ${JSON.stringify(context, null, 2)}

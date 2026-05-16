@@ -85,7 +85,10 @@ function renderRoster() {
   const myPicks = (_liveDraft.picks || []).filter(p => p.team === me.id).map(p => p.player);
   const allPlayers = [...kept, ...myPicks];
 
-  let html = '<div class="card"><h2>Roster Optimizer <span class="muted small">' + esc(me.name) + '</span></h2>';
+  // Draft grade card at top
+  let html = renderDraftGrade();
+
+  html += '<div class="card"><h2>Roster Optimizer <span class="muted small">' + esc(me.name) + '</span></h2>';
   html += '<p class="muted small">Greedy assignment of your kept + drafted players to optimal lineup slots. Most-restrictive position filled first (C, SS, 2B, 3B, 1B); flex slots (MI/CI/UTIL) absorb spillover; bench absorbs overflow.</p>';
 
   if (!allPlayers.length) {

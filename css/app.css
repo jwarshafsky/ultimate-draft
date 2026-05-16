@@ -310,6 +310,19 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 .grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
 
+/* Draft grade card */
+.grade-grid { display: grid; grid-template-columns: 180px 1fr 1fr; gap: 22px; align-items: start; }
+.grade-letter { font-size: 80px; font-weight: 700; line-height: 0.9; text-align: center; }
+.grade-letter .grade-score { font-size: 14px; font-weight: 500; color: var(--text-2); margin-top: 6px; }
+.grade-summary .stat-row { padding: 3px 0; font-size: 13px; }
+.grade-summary .stat-row .value { font-family: var(--mono); }
+.grade-summary .stat-row .value.good { color: var(--good); }
+.grade-summary .stat-row .value.bad { color: var(--bad); }
+.grade-breakdown { display: flex; flex-direction: column; gap: 4px; }
+.breakdown-row { display: grid; grid-template-columns: 80px 1fr 40px; gap: 6px; align-items: center; }
+.breakdown-bar { background: var(--bg-3); height: 7px; border-radius: 3px; overflow: hidden; }
+.breakdown-bar-fill { background: var(--accent); height: 100%; }
+
 /* Modal overlay (used for note editor + comparison picker) */
 .modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }

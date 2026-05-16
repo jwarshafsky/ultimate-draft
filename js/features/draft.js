@@ -211,8 +211,9 @@ function renderPlayerPool(inflation) {
     const nfbc = getNfbc(p.name);
     const sc = getStatcast(p.name);
     const sig = statcastBuySell(p.name);
-    html += '<tr>';
-    html += '<td>' + esc(p.name) + (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') + '</td>';
+    const targetClass = classifyPriceVsTargets(p.name, inf);
+    html += '<tr' + (targetClass === "dream" ? ' style="background: rgba(63,185,80,.08);"' : targetClass === "overpay" ? ' style="background: rgba(248,81,73,.05);"' : '') + '>';
+    html += '<td><span class="player-name" data-player="' + esc(p.name) + '" style="cursor: pointer;">' + esc(p.name) + '</span>' + (sig ? ' <span style="color: ' + (sig.signal === "buy" ? "var(--good)" : "var(--bad)") + '; font-size: 10px;">' + (sig.signal === "buy" ? "↑" : "↓") + '</span>' : '') + renderTagIcons(p.name) + renderTargetBadge(p.name, inf) + '</td>';
     html += '<td>' + esc(p.posKey) + '</td>';
     html += '<td class="num">$' + p.value.toFixed(0) + '</td>';
     html += '<td class="num">$' + inf.toFixed(0) + '</td>';
@@ -277,6 +278,10 @@ function renderLiveSourcesPanel() {
 // === Event wiring ===
 
 function wireDraftHandlers() {
+  // Click player name to open note editor
+  document.querySelectorAll("#view-root .player-name").forEach(el => {
+    el.addEventListener("click", () => openNoteEditor(el.dataset.player));
+  });
   // Pool filters
   document.getElementById("pool-search")?.addEventListener("input", (e) => {
     _liveDraft.poolFilter.search = e.target.value;
