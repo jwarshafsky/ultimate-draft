@@ -117,14 +117,14 @@ async function proxyEspnTeams(url, env) {
 async function proxyEspnHistory(url, env) {
   const leagueId = url.searchParams.get("leagueId");
   const season = url.searchParams.get("season");
-  // For prior seasons use leagueHistory endpoint; current season uses regular.
   const currentYear = new Date().getFullYear();
   const base = (parseInt(season, 10) < currentYear)
     ? ESPN_BASE + "/leagueHistory/" + leagueId + "?seasonId=" + season
     : ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?";
-  const target = base + "&view=mDraftDetail&view=mTeam&view=players_wl";
+  // mRoster is the reliable way to get player names+positions for historical
+  // seasons. players_wl doesn't populate via leagueHistory.
+  const target = base + "&view=mDraftDetail&view=mTeam&view=mRoster";
   const data = await espnFetch(target, env);
-  // leagueHistory returns an array; current season returns an object
   const sd = Array.isArray(data) ? data[0] : data;
   if (!sd) return { season, picks: [], teamMap: {}, error: "no_data" };
 
@@ -140,25 +140,59 @@ async function proxyEspnHistory(url, env) {
       primaryOwner: t.primaryOwner || null,
     };
   }
+
+  // Build player map from team rosters (most reliable for historical seasons).
   const playerMap = {};
-  for (const p of sd.players || []) {
-    if (p.player) playerMap[p.id] = { name: p.player.fullName, defaultPositionId: p.player.defaultPositionId };
+  for (const t of sd.teams || []) {
+    for (const e of (t.roster?.entries || [])) {
+      const p = e.playerPoolEntry?.player;
+      if (p && !playerMap[p.id]) {
+        playerMap[p.id] = {
+          name: p.fullName,
+          defaultPositionId: p.defaultPositionId,
+          eligibleSlots: p.eligibleSlots || [],
+        };
+      }
+    }
   }
-  // Position ID → label (ESPN constants)
-  const POS_BY_ID = { 1: "SP", 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "OF", 8: "OF", 9: "OF", 10: "DH", 11: "RP", 12: "P" };
+  // Fallback to sd.players if present
+  for (const p of sd.players || []) {
+    if (p.player && !playerMap[p.id]) {
+      playerMap[p.id] = {
+        name: p.player.fullName,
+        defaultPositionId: p.player.defaultPositionId,
+        eligibleSlots: p.player.eligibleSlots || [],
+      };
+    }
+  }
+
+  // Resolve a position label. ESPN's defaultPositionId 1 = "Pitcher" generically,
+  // so we use eligibleSlots to distinguish SP (slot 13) vs RP (slot 14).
+  function resolvePos(info) {
+    if (!info) return "";
+    const dpid = info.defaultPositionId;
+    const slots = info.eligibleSlots || [];
+    if (dpid === 1) {
+      if (slots.includes(13)) return "SP";
+      if (slots.includes(14)) return "RP";
+      return "SP";
+    }
+    const POS_BY_ID = { 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "OF", 8: "OF", 9: "OF", 10: "DH", 11: "RP", 12: "P" };
+    return POS_BY_ID[dpid] || "";
+  }
 
   const picks = (sd.draftDetail?.picks || []).map(p => {
-    const playerInfo = playerMap[p.playerId] || {};
+    const playerInfo = playerMap[p.playerId] || null;
     const tm = teamMap[p.teamId] || {};
     return {
       overallPickNumber: p.overallPickNumber,
       teamId: p.teamId,
       teamName: tm.name || ("Team " + p.teamId),
-      primaryOwner: tm.primaryOwner || null,    // stable ESPN owner GUID
+      primaryOwner: tm.primaryOwner || null,
       nominatingTeamId: p.nominatingTeamId,
       playerId: p.playerId,
-      playerName: playerInfo.name || ("Player " + p.playerId),
-      pos: POS_BY_ID[playerInfo.defaultPositionId] || "",
+      playerName: (playerInfo && playerInfo.name) || ("Player " + p.playerId),
+      pos: resolvePos(playerInfo),
       bidAmount: p.bidAmount || 0,
       keeper: !!p.keeper,
     };
