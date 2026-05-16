@@ -33,14 +33,20 @@ function renderHistory() {
     html += '<p class="muted small">Each row is one unique person across all years (keyed by ESPN owner GUID, so team renames AND ownership transfers roll up correctly). Map each to a current owner.</p>';
 
     if (guidOwners.length) {
-      html += '<table style="font-size: 12px;"><thead><tr><th>Team names used</th><th>Years</th><th class="num">Picks</th><th>→</th><th>Current Owner</th></tr></thead><tbody>';
+      html += '<table style="font-size: 12px;"><thead><tr><th>Team names used</th><th>Years</th><th>Most recent (current team)</th><th class="num">Picks</th><th>→</th><th>Current Owner</th></tr></thead><tbody>';
       for (const o of guidOwners) {
         const aliased = _ownerAliases.byGuid[o.guid];
-        // Auto-suggest if a team name matches a current owner exactly
-        const autoMatch = o.teamNames.find(n => currentOwners.includes(n));
+        // Auto-suggest if either (a) most recent ESPN team ID maps to a current owner,
+        // or (b) a team name happens to match a current owner exactly.
+        const autoFromTeam = o.currentTeam?.owner;
+        const autoFromName = o.teamNames.find(n => currentOwners.includes(n));
+        const autoMatch = autoFromTeam || autoFromName;
+        const recentLabel = (o.mostRecentEspnTeamId != null ? "Team " + o.mostRecentEspnTeamId : "?") +
+          (o.currentTeam ? ' <span class="muted">(' + esc(o.currentTeam.name) + " · " + esc(o.currentTeam.owner) + ')</span>' : "");
         html += '<tr>';
-        html += '<td>' + o.teamNames.map(esc).join(", ") + (autoMatch && !aliased ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">EXACT</span>' : '') + '</td>';
+        html += '<td>' + o.teamNames.map(esc).join(", ") + (autoMatch && !aliased ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">AUTO</span>' : '') + '</td>';
         html += '<td class="small muted">' + o.years.join(", ") + '</td>';
+        html += '<td class="small">' + recentLabel + '</td>';
         html += '<td class="num">' + o.pickCount + '</td>';
         html += '<td class="dim">→</td>';
         html += '<td><select class="hist-alias-guid" data-guid="' + esc(o.guid) + '">';

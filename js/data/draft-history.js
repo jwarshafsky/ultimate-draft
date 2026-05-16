@@ -72,21 +72,44 @@ function listHistoricalOwners() {
   return Array.from(new Set(_history.picks.map(p => p.owner))).filter(Boolean).sort();
 }
 // List unique owner GUIDs found in history, with their team-name aliases.
+// Also tracks the most recent ESPN team ID so the UI can render the
+// CURRENT team name (per LEAGUE.teams + ESPN_TEAM_ID_MAP) for context.
 function listHistoricalOwnerGuids() {
   const byGuid = {};
   for (const p of _history.picks) {
     if (!p.espnOwnerGuid) continue;
-    if (!byGuid[p.espnOwnerGuid]) byGuid[p.espnOwnerGuid] = { guid: p.espnOwnerGuid, teamNames: new Set(), years: new Set(), pickCount: 0 };
-    byGuid[p.espnOwnerGuid].teamNames.add(p.owner);
-    byGuid[p.espnOwnerGuid].years.add(p.year);
-    byGuid[p.espnOwnerGuid].pickCount += 1;
+    if (!byGuid[p.espnOwnerGuid]) {
+      byGuid[p.espnOwnerGuid] = { guid: p.espnOwnerGuid, teamNames: new Set(), years: new Set(), pickCount: 0, mostRecentYear: 0, mostRecentEspnTeamId: null };
+    }
+    const o = byGuid[p.espnOwnerGuid];
+    o.teamNames.add(p.owner);
+    o.years.add(p.year);
+    o.pickCount += 1;
+    if (p.year > o.mostRecentYear) {
+      o.mostRecentYear = p.year;
+      o.mostRecentEspnTeamId = p.espnTeamId;
+    }
   }
-  return Object.values(byGuid).map(o => ({
-    guid: o.guid,
-    teamNames: Array.from(o.teamNames).sort(),
-    years: Array.from(o.years).sort(),
-    pickCount: o.pickCount,
-  })).sort((a, b) => b.pickCount - a.pickCount);
+  // Resolve mostRecentEspnTeamId → current team (uses ESPN_TEAM_ID_MAP from espn.js)
+  return Object.values(byGuid).map(o => {
+    let currentTeam = null;
+    if (o.mostRecentEspnTeamId != null && typeof ESPN_TEAM_ID_MAP !== "undefined") {
+      const internalId = ESPN_TEAM_ID_MAP[o.mostRecentEspnTeamId];
+      if (internalId) {
+        const t = getTeam(internalId);
+        if (t) currentTeam = { id: internalId, name: t.name, owner: t.owner };
+      }
+    }
+    return {
+      guid: o.guid,
+      teamNames: Array.from(o.teamNames).sort(),
+      years: Array.from(o.years).sort(),
+      pickCount: o.pickCount,
+      mostRecentYear: o.mostRecentYear,
+      mostRecentEspnTeamId: o.mostRecentEspnTeamId,
+      currentTeam,
+    };
+  }).sort((a, b) => b.pickCount - a.pickCount);
 }
 loadOwnerAliases();
 
