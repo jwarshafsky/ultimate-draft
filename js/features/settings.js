@@ -190,6 +190,16 @@ function renderSettings() {
   html += '</div></div></div></div>';
   html += '</div>';
 
+  // === Proxy URL (ESPN + Claude) ===
+  html += '<div class="card"><h2>Proxy URL</h2>';
+  html += '<p class="muted small">Cloudflare Worker URL for ESPN history sync and Claude AI assistant. Set once here, used everywhere.</p>';
+  html += '<div style="display: flex; gap: 8px; align-items: center;">';
+  html += '<input id="set-proxy-url" type="url" placeholder="https://ultimate-draft-proxy.your-subdomain.workers.dev" value="' + esc(ESPN.proxyUrl) + '" style="flex: 1;">';
+  html += '<button class="btn primary" id="set-proxy-save" style="width: auto; padding: 8px 14px;">Save</button>';
+  html += '</div>';
+  html += '<div class="small muted" style="margin-top: 6px;">' + (ESPN.proxyUrl ? '✓ Currently set' : 'Not yet configured') + '</div>';
+  html += '</div>';
+
   // === AI Assistant ===
   html += '<div class="card"><h2>AI Assistant</h2>';
   html += '<div class="grid cols-3" style="gap: 18px;">';
@@ -253,6 +263,11 @@ function wireSettingsHandlers() {
     });
   });
 
+  document.getElementById("set-proxy-save")?.addEventListener("click", () => {
+    const v = document.getElementById("set-proxy-url").value;
+    setProxyUrl(v);
+    renderSettings();
+  });
   document.getElementById("set-save")?.addEventListener("click", () => {
     _settings.hitBudgetPct = parseInt(document.getElementById("set-hit-pct").value, 10) / 100;
     _settings.benchSlots = parseInt(document.getElementById("set-bench").value, 10) || 48;
