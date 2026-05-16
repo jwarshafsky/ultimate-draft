@@ -130,6 +130,19 @@ function renderHistory() {
   // Per-owner profiles
   const profiles = computeAllOwnerProfiles();
   const leagueAvg = computeLeagueAverages();
+  // Rank-based style classification: rank owners by top3Share. Top quartile =
+  // stars+scrubs, bottom quartile = spread, middle = balanced/top-heavy.
+  const profileList = Object.values(profiles).filter(p => p);
+  const rankedByConcentration = profileList.slice().sort((a, b) => b.top3Share - a.top3Share);
+  const n = rankedByConcentration.length;
+  const styleByOwner = {};
+  for (let i = 0; i < n; i++) {
+    const owner = rankedByConcentration[i].owner;
+    if (i < Math.ceil(n * 0.25)) styleByOwner[owner] = "stars+scrubs";
+    else if (i < Math.ceil(n * 0.5)) styleByOwner[owner] = "top-heavy";
+    else if (i < Math.ceil(n * 0.75)) styleByOwner[owner] = "balanced";
+    else styleByOwner[owner] = "spread";
+  }
   html += '<div class="card"><h2>Owner Tendency Profiles</h2>';
   html += '<p class="muted small">Click an owner row to see their full draft history: top picks of all time, repeat targets, year-by-year biggest bid, and position spending vs league average.</p>';
 
@@ -150,10 +163,8 @@ function renderHistory() {
 
   const sorted = Object.values(profiles).filter(p => p).sort((a, b) => b.totalSpent - a.totalSpent);
   for (const p of sorted) {
-    const insights = ownerInsights(p, leagueAvg);
-    const styleLabel = (p.top3Share > 0.35 || p.bigBidsPerYear >= 3) ? "stars+scrubs" :
-                       (p.top3Share > 0.27 || p.bigBidsPerYear >= 2) ? "top-heavy" :
-                       (p.top3Share < 0.22 && p.bigBidsPerYear < 1.5) ? "spread" : "balanced";
+    const styleLabel = styleByOwner[p.owner] || "balanced";
+    const insights = ownerInsights(p, leagueAvg, styleLabel);
     html += '<div class="owner-card">';
     // Header
     html += '<div class="owner-card-head" data-owner="' + esc(p.owner) + '">';

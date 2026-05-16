@@ -356,16 +356,18 @@ function computeLeagueAverages() {
 }
 
 // Generate human-readable insight strings for an owner.
-function ownerInsights(profile, leagueAvg) {
+function ownerInsights(profile, leagueAvg, styleLabel) {
   if (!profile || !leagueAvg) return [];
   const out = [];
-  // Style — uses per-year top-3 share and big-bids-per-year
-  if (profile.top3Share > 0.35 || profile.bigBidsPerYear >= 3) {
-    out.push({ kind: "style", text: "Stars+scrubs — avg " + profile.bigBidsPerYear.toFixed(1) + " bids of $25+ per draft, top 3 picks each year = " + (profile.top3Share * 100).toFixed(0) + "% of spending" });
-  } else if (profile.top3Share < 0.22 && profile.bigBidsPerYear < 1.5) {
-    out.push({ kind: "style", text: "Spread drafter — rarely makes mega-bids, top 3 picks only " + (profile.top3Share * 100).toFixed(0) + "% of budget per year" });
+  // Style insight: relative to league
+  const top3Delta = (profile.top3Share - leagueAvg.top3Share) * 100;
+  const bidsDelta = profile.bigBidsPerYear - leagueAvg.bigBidsPerYear;
+  if (styleLabel === "stars+scrubs") {
+    out.push({ kind: "style", text: "Stars+scrubs — top 3 picks = " + (profile.top3Share * 100).toFixed(0) + "% of budget/year (vs league " + (leagueAvg.top3Share * 100).toFixed(0) + "%), avg " + profile.bigBidsPerYear.toFixed(1) + " bids ≥$25 per draft" });
+  } else if (styleLabel === "spread") {
+    out.push({ kind: "style", text: "Spread drafter — only " + (profile.bigBidsPerYear.toFixed(1)) + " bids ≥$25/year (league " + leagueAvg.bigBidsPerYear.toFixed(1) + "), top 3 = " + (profile.top3Share * 100).toFixed(0) + "% of budget" });
   } else {
-    out.push({ kind: "style", text: "Balanced drafter — top 3 picks " + (profile.top3Share * 100).toFixed(0) + "% per year, " + profile.bigBidsPerYear.toFixed(1) + " big bids" });
+    out.push({ kind: "style", text: esc(styleLabel.charAt(0).toUpperCase() + styleLabel.slice(1)) + " — top 3 share " + (profile.top3Share * 100).toFixed(0) + "% (lg " + (leagueAvg.top3Share * 100).toFixed(0) + "%), " + profile.bigBidsPerYear.toFixed(1) + " big bids/yr (lg " + leagueAvg.bigBidsPerYear.toFixed(1) + ")" });
   }
   // Big spender check
   if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.10) out.push({ kind: "style", text: "Goes hard on the top guy — avg $" + profile.avgMaxBidPerYear.toFixed(0) + "/year on biggest bid (league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ")" });
