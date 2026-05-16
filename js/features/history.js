@@ -219,22 +219,26 @@ function renderHistory() {
       html += '<div><h4 class="muted small">Repeat targets</h4><p class="muted small">No players drafted multiple times.</p></div>';
     }
 
-    // Position spending vs league
-    html += '<div><h4 class="muted small">Position spending vs league avg</h4>';
-    html += '<table style="font-size: 12px;"><thead><tr><th>Pos</th><th class="num">Spend %</th><th class="num">vs Lg</th><th class="num">Avg $</th><th class="num">vs Lg</th></tr></thead><tbody>';
-    const allPositions = Array.from(new Set([...Object.keys(p.posSpendPct), ...Object.keys(leagueAvg?.posSpendPct || {})])).sort();
+    // Position footprint vs league — KEEPER-AWARE
+    html += '<div><h4 class="muted small">Position footprint vs league (keepers + drafted)</h4>';
+    html += '<table style="font-size: 12px;"><thead><tr><th>Pos</th><th class="num">Keepers/yr</th><th class="num">Drafted/yr</th><th class="num">Total</th><th class="num">vs Lg</th><th class="num">Draft Avg $</th></tr></thead><tbody>';
+    const allPositions = Array.from(new Set([
+      ...Object.keys(p.totalSlotByPos || {}),
+      ...Object.keys(leagueAvg?.totalSlotByPos || {}),
+    ])).sort();
     for (const pos of allPositions) {
-      const myPct = p.posSpendPct[pos] || 0;
-      const lgPct = leagueAvg?.posSpendPct[pos] || 0;
+      const myKept = (p.avgKeepersByPos || {})[pos] || 0;
+      const myDraft = (p.avgDraftedByPos || {})[pos] || 0;
+      const myTotal = (p.totalSlotByPos || {})[pos] || 0;
+      const lgTotal = (leagueAvg?.totalSlotByPos || {})[pos] || 0;
+      const totalDelta = myTotal - lgTotal;
       const myAvg = p.posAvgPrice[pos] || 0;
-      const lgAvg = leagueAvg?.posAvgPrice[pos] || 0;
-      const pctDelta = (myPct - lgPct) * 100;
-      const avgDelta = myAvg - lgAvg;
       html += '<tr><td><strong>' + pos + '</strong></td>';
-      html += '<td class="num">' + (myPct * 100).toFixed(1) + '%</td>';
-      html += '<td class="num ' + (Math.abs(pctDelta) > 3 ? (pctDelta > 0 ? "bad" : "good") : "muted") + '">' + (pctDelta > 0 ? "+" : "") + pctDelta.toFixed(1) + '%</td>';
+      html += '<td class="num">' + myKept.toFixed(1) + '</td>';
+      html += '<td class="num">' + myDraft.toFixed(1) + '</td>';
+      html += '<td class="num"><strong>' + myTotal.toFixed(1) + '</strong></td>';
+      html += '<td class="num ' + (Math.abs(totalDelta) > 0.8 ? (totalDelta > 0 ? "bad" : "good") : "muted") + '">' + (totalDelta > 0 ? "+" : "") + totalDelta.toFixed(1) + '</td>';
       html += '<td class="num">$' + myAvg.toFixed(0) + '</td>';
-      html += '<td class="num ' + (Math.abs(avgDelta) > 5 ? (avgDelta > 0 ? "bad" : "good") : "muted") + '">' + (avgDelta > 0 ? "+" : "") + avgDelta.toFixed(0) + '</td>';
       html += '</tr>';
     }
     html += '</tbody></table></div>';

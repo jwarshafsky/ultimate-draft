@@ -189,12 +189,13 @@ function getHistoryPicks(year) {
 // aliases (GUID-first, name fallback) so historical team names roll up
 // under the current owner. Skips picks from excluded GUIDs (former owners).
 function computeOwnerProfile(ownerName) {
-  const picks = _history.picks.filter(p =>
+  const allOwnerPicks = _history.picks.filter(p =>
     !isOwnerExcluded(p.espnOwnerGuid) &&
-    resolveOwnerForPick(p) === ownerName &&
-    !p.keeper
+    resolveOwnerForPick(p) === ownerName
   );
-  if (!picks.length) return null;
+  const picks = allOwnerPicks.filter(p => !p.keeper);
+  const keeperPicks = allOwnerPicks.filter(p => p.keeper);
+  if (!picks.length && !keeperPicks.length) return null;
 
   const totalSpent = picks.reduce((s, p) => s + p.price, 0);
   const meanPrice = totalSpent / picks.length;
@@ -299,9 +300,42 @@ function computeOwnerProfile(ownerName) {
     }
   }
 
+  // === Keeper context: avg keepers + total roster slots per position per year ===
+  // Tells us if owners' draft tendencies are filling holes vs adding more.
+  const yearPosKeepers = {};  // {year: {pos: count}}
+  const yearPosDrafted = {};  // {year: {pos: count}}
+  for (const p of keeperPicks) {
+    if (!yearPosKeepers[p.year]) yearPosKeepers[p.year] = {};
+    const k = normalizePosKey(p.pos);
+    yearPosKeepers[p.year][k] = (yearPosKeepers[p.year][k] || 0) + 1;
+  }
+  for (const p of picks) {
+    if (!yearPosDrafted[p.year]) yearPosDrafted[p.year] = {};
+    const k = normalizePosKey(p.pos);
+    yearPosDrafted[p.year][k] = (yearPosDrafted[p.year][k] || 0) + 1;
+  }
+  // Avg keepers per position per year + avg drafted per position per year
+  const avgKeepersByPos = {};
+  const avgDraftedByPos = {};
+  const yrCount = yearsPlayed.length || 1;
+  for (const yr of yearsPlayed) {
+    const yk = yearPosKeepers[yr] || {};
+    const yd = yearPosDrafted[yr] || {};
+    for (const [k, v] of Object.entries(yk)) avgKeepersByPos[k] = (avgKeepersByPos[k] || 0) + v;
+    for (const [k, v] of Object.entries(yd)) avgDraftedByPos[k] = (avgDraftedByPos[k] || 0) + v;
+  }
+  for (const k of Object.keys(avgKeepersByPos)) avgKeepersByPos[k] /= yrCount;
+  for (const k of Object.keys(avgDraftedByPos)) avgDraftedByPos[k] /= yrCount;
+  // Total slot footprint (keepers + drafted) per position
+  const totalSlotByPos = {};
+  for (const k of new Set([...Object.keys(avgKeepersByPos), ...Object.keys(avgDraftedByPos)])) {
+    totalSlotByPos[k] = (avgKeepersByPos[k] || 0) + (avgDraftedByPos[k] || 0);
+  }
+
   return {
     owner: ownerName,
     picks: picks.length,
+    keeperCount: keeperPicks.length,
     totalSpent,
     meanPrice,
     maxPrice,
@@ -309,6 +343,9 @@ function computeOwnerProfile(ownerName) {
     posSpendPct,
     posAvgPrice,
     posCount,
+    avgKeepersByPos,
+    avgDraftedByPos,
+    totalSlotByPos,
     closerBias,
     spSpend,
     hitSpend,
@@ -330,28 +367,28 @@ function computeLeagueAverages() {
   const profiles = computeAllOwnerProfiles();
   const owners = Object.values(profiles).filter(p => p);
   if (!owners.length) return null;
-  const avg = { posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0, bigBidsPerYear: 0, avgMaxBidPerYear: 0 };
+  const avg = {
+    posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0,
+    bigBidsPerYear: 0, avgMaxBidPerYear: 0,
+    avgKeepersByPos: {}, avgDraftedByPos: {}, totalSlotByPos: {},
+  };
   for (const p of owners) {
     avg.meanPrice += p.meanPrice;
     avg.top3Share += p.top3Share;
     avg.maxPrice += p.maxPrice;
     avg.bigBidsPerYear += p.bigBidsPerYear || 0;
     avg.avgMaxBidPerYear += p.avgMaxBidPerYear || 0;
-    for (const [k, v] of Object.entries(p.posSpendPct)) {
-      avg.posSpendPct[k] = (avg.posSpendPct[k] || 0) + v;
-    }
-    for (const [k, v] of Object.entries(p.posAvgPrice)) {
-      avg.posAvgPrice[k] = (avg.posAvgPrice[k] || 0) + v;
-    }
+    for (const [k, v] of Object.entries(p.posSpendPct)) avg.posSpendPct[k] = (avg.posSpendPct[k] || 0) + v;
+    for (const [k, v] of Object.entries(p.posAvgPrice)) avg.posAvgPrice[k] = (avg.posAvgPrice[k] || 0) + v;
+    for (const [k, v] of Object.entries(p.avgKeepersByPos || {})) avg.avgKeepersByPos[k] = (avg.avgKeepersByPos[k] || 0) + v;
+    for (const [k, v] of Object.entries(p.avgDraftedByPos || {})) avg.avgDraftedByPos[k] = (avg.avgDraftedByPos[k] || 0) + v;
+    for (const [k, v] of Object.entries(p.totalSlotByPos || {})) avg.totalSlotByPos[k] = (avg.totalSlotByPos[k] || 0) + v;
   }
   const n = owners.length;
-  avg.meanPrice /= n;
-  avg.top3Share /= n;
-  avg.maxPrice /= n;
-  avg.bigBidsPerYear /= n;
-  avg.avgMaxBidPerYear /= n;
-  for (const k of Object.keys(avg.posSpendPct)) avg.posSpendPct[k] /= n;
-  for (const k of Object.keys(avg.posAvgPrice)) avg.posAvgPrice[k] /= n;
+  for (const f of ["meanPrice", "top3Share", "maxPrice", "bigBidsPerYear", "avgMaxBidPerYear"]) avg[f] /= n;
+  for (const m of ["posSpendPct", "posAvgPrice", "avgKeepersByPos", "avgDraftedByPos", "totalSlotByPos"]) {
+    for (const k of Object.keys(avg[m])) avg[m][k] /= n;
+  }
   return avg;
 }
 
@@ -371,20 +408,28 @@ function ownerInsights(profile, leagueAvg, styleLabel) {
   }
   // Big spender check
   if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.10) out.push({ kind: "style", text: "Goes hard on the top guy — avg $" + profile.avgMaxBidPerYear.toFixed(0) + "/year on biggest bid (league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ")" });
-  // Position tendencies — flag any position where they spend 1.5x+ league avg per pick
-  for (const [pos, avg] of Object.entries(profile.posAvgPrice)) {
-    const lg = leagueAvg.posAvgPrice[pos];
-    if (!lg || (profile.posCount[pos] || 0) < 2) continue;
-    const ratio = avg / lg;
-    if (ratio >= 1.5 && avg >= 8) out.push({ kind: "pos-up", text: "Pays up for " + pos + ": avg $" + avg.toFixed(0) + " vs league $" + lg.toFixed(0) + " (" + (ratio * 100 - 100).toFixed(0) + "% above)" });
-    else if (ratio <= 0.6) out.push({ kind: "pos-down", text: "Bargain hunts at " + pos + ": avg $" + avg.toFixed(0) + " vs league $" + lg.toFixed(0) });
+  // KEEPER-AWARE position tendencies. Look at total slot footprint
+  // (keepers + drafted) per position vs league. This catches "SP build" or
+  // "OF hoarder" patterns even when most SP comes from keepers.
+  for (const pos of ["SP", "RP", "C", "1B", "2B", "3B", "SS", "OF"]) {
+    const myTotal = profile.totalSlotByPos[pos] || 0;
+    const lgTotal = leagueAvg.totalSlotByPos[pos] || 0;
+    if (myTotal < 0.5 || lgTotal < 0.5) continue;
+    const diff = myTotal - lgTotal;
+    if (diff >= 0.8) {
+      const keptShare = (profile.avgKeepersByPos[pos] || 0) / myTotal;
+      const buildNote = keptShare > 0.6 ? " (mostly via keepers)" : keptShare > 0.3 ? " (mix of keepers + draft)" : " (drafts heavy)";
+      out.push({ kind: "pos-up", text: pos + "-heavy build — " + myTotal.toFixed(1) + " avg slots/year vs league " + lgTotal.toFixed(1) + buildNote });
+    } else if (diff <= -0.8) {
+      out.push({ kind: "pos-down", text: "Light on " + pos + " — " + myTotal.toFixed(1) + " avg slots vs league " + lgTotal.toFixed(1) });
+    }
   }
-  // RP tendency
-  if (profile.closerBias > 0.13) out.push({ kind: "closer-up", text: "Closer hoarder — " + (profile.closerBias * 100).toFixed(0) + "% of budget on RP (league avg " + ((leagueAvg.posSpendPct.RP || 0) * 100).toFixed(0) + "%)" });
-  else if (profile.closerBias < 0.04) out.push({ kind: "closer-down", text: "Punts saves — only " + (profile.closerBias * 100).toFixed(0) + "% on RP" });
-  // SP tendency
-  if (profile.spSpend > 0.30) out.push({ kind: "sp-up", text: "SP-heavy build — " + (profile.spSpend * 100).toFixed(0) + "% on starters" });
-  else if (profile.spSpend < 0.15) out.push({ kind: "sp-down", text: "Light on SP — " + (profile.spSpend * 100).toFixed(0) + "% only" });
+  // RP tendency (drafted spend), but only flag if not already heavy via keepers
+  if (profile.closerBias > 0.13) out.push({ kind: "closer-up", text: "Pays for closers in the draft — " + (profile.closerBias * 100).toFixed(0) + "% of draft budget on RP (league " + ((leagueAvg.posSpendPct.RP || 0) * 100).toFixed(0) + "%)" });
+  else if (profile.closerBias < 0.04 && (profile.avgKeepersByPos.RP || 0) < 1) out.push({ kind: "closer-down", text: "Streams saves — " + (profile.closerBias * 100).toFixed(0) + "% on RP and few RP keepers" });
+  // SP draft tendency, contextual
+  if (profile.spSpend > 0.30 && (profile.avgKeepersByPos.SP || 0) < 2) out.push({ kind: "sp-up", text: "Drafts SP heavily — " + (profile.spSpend * 100).toFixed(0) + "% of draft $ on starters (and only " + (profile.avgKeepersByPos.SP || 0).toFixed(1) + " avg SP keepers)" });
+  else if (profile.spSpend < 0.15 && (profile.avgKeepersByPos.SP || 0) >= 2.5) out.push({ kind: "sp-down", text: "Builds around SP keepers — avg " + (profile.avgKeepersByPos.SP || 0).toFixed(1) + " SP kept, only " + (profile.spSpend * 100).toFixed(0) + "% of draft $ on SP" });
   // Repeat targets
   if (profile.repeatTargets.length > 0) {
     const top = profile.repeatTargets[0];
