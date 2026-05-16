@@ -5,12 +5,17 @@ const SUPABASE_URL = "https://fbllfkrtjsihrkwnbmlw.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_aRh0MmQKrMCr8YnTwv9xIg_1F08WXf2";
 const ALLOWED_EMAILS = ["jwarshafsky@gmail.com"];
 
+// Use a unique storage key so we don't collide with The League App (which
+// also lives on jwarshafsky.github.io and shares localStorage). Switching to
+// PKCE flow which is more reliable for SPAs and handles refresh better than
+// the legacy implicit flow.
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    flowType: "implicit",
+    flowType: "pkce",
+    storageKey: "sb-ud-auth-v1",
   },
 });
 
