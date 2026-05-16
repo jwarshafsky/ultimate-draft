@@ -22,31 +22,71 @@ const _history = {
   meta: { years: [] },
 };
 
-// { historicalName: currentOwnerName } — applied during profile computation so
-// e.g. "Jeff" → "Jeff", "Old Jeff Team Name" → "Jeff", etc.
-const _ownerAliases = { map: {} };
+// Two alias maps:
+//   byGuid: ESPN owner GUID → current owner name (preferred — stable across years)
+//   byName: historical team name → current owner name (fallback when GUID missing)
+const _ownerAliases = { byGuid: {}, byName: {} };
 
 function loadOwnerAliases() {
   try {
     const v = JSON.parse(localStorage.getItem(OWNER_ALIAS_KEY) || "null");
-    if (v) _ownerAliases.map = v.map || v;
+    if (v) {
+      _ownerAliases.byGuid = v.byGuid || {};
+      _ownerAliases.byName = v.byName || v.map || {};
+    }
   } catch (e) {}
 }
 function saveOwnerAliases() {
-  localStorage.setItem(OWNER_ALIAS_KEY, JSON.stringify({ map: _ownerAliases.map }));
+  localStorage.setItem(OWNER_ALIAS_KEY, JSON.stringify(_ownerAliases));
 }
-function setOwnerAlias(historicalName, currentName) {
-  if (!historicalName) return;
-  if (!currentName) delete _ownerAliases.map[historicalName];
-  else _ownerAliases.map[historicalName] = currentName;
+function setOwnerAliasByGuid(guid, currentName) {
+  if (!guid) return;
+  if (!currentName) delete _ownerAliases.byGuid[guid];
+  else _ownerAliases.byGuid[guid] = currentName;
   saveOwnerAliases();
   if (typeof rerender === "function") rerender();
 }
+function setOwnerAlias(historicalName, currentName) {
+  if (!historicalName) return;
+  if (!currentName) delete _ownerAliases.byName[historicalName];
+  else _ownerAliases.byName[historicalName] = currentName;
+  saveOwnerAliases();
+  if (typeof rerender === "function") rerender();
+}
+// Resolve a pick to its current-owner name. Prefer GUID alias (stable
+// across team renames + ownership transfers); fall back to name alias.
+function resolveOwnerForPick(pick) {
+  if (pick.espnOwnerGuid && _ownerAliases.byGuid[pick.espnOwnerGuid]) {
+    return _ownerAliases.byGuid[pick.espnOwnerGuid];
+  }
+  if (pick.owner && _ownerAliases.byName[pick.owner]) {
+    return _ownerAliases.byName[pick.owner];
+  }
+  return pick.owner;
+}
+// Legacy name-only resolver retained for callers that only have a name.
 function resolveOwner(name) {
-  return _ownerAliases.map[name] || name;
+  return _ownerAliases.byName[name] || name;
 }
 function listHistoricalOwners() {
   return Array.from(new Set(_history.picks.map(p => p.owner))).filter(Boolean).sort();
+}
+// List unique owner GUIDs found in history, with their team-name aliases.
+function listHistoricalOwnerGuids() {
+  const byGuid = {};
+  for (const p of _history.picks) {
+    if (!p.espnOwnerGuid) continue;
+    if (!byGuid[p.espnOwnerGuid]) byGuid[p.espnOwnerGuid] = { guid: p.espnOwnerGuid, teamNames: new Set(), years: new Set(), pickCount: 0 };
+    byGuid[p.espnOwnerGuid].teamNames.add(p.owner);
+    byGuid[p.espnOwnerGuid].years.add(p.year);
+    byGuid[p.espnOwnerGuid].pickCount += 1;
+  }
+  return Object.values(byGuid).map(o => ({
+    guid: o.guid,
+    teamNames: Array.from(o.teamNames).sort(),
+    years: Array.from(o.years).sort(),
+    pickCount: o.pickCount,
+  })).sort((a, b) => b.pickCount - a.pickCount);
 }
 loadOwnerAliases();
 
@@ -102,9 +142,10 @@ function getHistoryPicks(year) {
 }
 
 // Compute behavior profile for one owner across all years. Applies owner
-// aliases so historical team names roll up under the current owner.
+// aliases (GUID-first, name fallback) so historical team names roll up
+// under the current owner.
 function computeOwnerProfile(ownerName) {
-  const picks = _history.picks.filter(p => resolveOwner(p.owner) === ownerName && !p.keeper);
+  const picks = _history.picks.filter(p => resolveOwnerForPick(p) === ownerName && !p.keeper);
   if (!picks.length) return null;
 
   const totalSpent = picks.reduce((s, p) => s + p.price, 0);
@@ -180,10 +221,10 @@ function normalizePosKey(pos) {
 }
 
 // Build profiles for every owner in the history. Returns { owner: profile }.
-// Uses resolved (alias-applied) owner names so historical team-renames roll
-// up under the current owner.
+// Uses GUID-first resolution so historical team-renames AND ownership
+// transfers roll up correctly.
 function computeAllOwnerProfiles() {
-  const owners = Array.from(new Set(_history.picks.map(p => resolveOwner(p.owner)))).filter(Boolean);
+  const owners = Array.from(new Set(_history.picks.map(p => resolveOwnerForPick(p)))).filter(Boolean);
   const out = {};
   for (const o of owners) {
     out[o] = computeOwnerProfile(o);

@@ -21,33 +21,55 @@ function renderHistory() {
   html += '<div id="espn-sync-log" class="small muted" style="margin-top: 10px;"></div>';
   html += '</div>';
 
-  // Owner alias mapping section (if data exists)
+  // Owner alias mapping section (if data exists) — GUID-based primary
   if (picks.length) {
-    const histOwners = listHistoricalOwners();
     const currentOwners = LEAGUE.teams.map(t => t.owner);
-    const unmapped = histOwners.filter(h => !currentOwners.includes(h) && !_ownerAliases.map[h]);
-    html += '<div class="card"><h2>Owner Mapping <span class="muted small">' + Object.keys(_ownerAliases.map).length + ' aliases set</span></h2>';
-    html += '<p class="muted small">Map historical team names to current owners. Necessary when owners change team names or teams change hands across seasons.</p>';
-    html += '<table style="font-size: 12px;"><thead><tr><th>Historical Name</th><th>→</th><th>Current Owner</th><th class="num">Picks</th></tr></thead><tbody>';
-    for (const h of histOwners) {
-      const aliased = _ownerAliases.map[h];
-      const isCurrentExact = currentOwners.includes(h);
-      const picksByThisName = picks.filter(p => p.owner === h).length;
-      html += '<tr>';
-      html += '<td>' + esc(h) + (isCurrentExact ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">EXACT</span>' : '') + '</td>';
-      html += '<td class="dim">→</td>';
-      html += '<td><select class="hist-alias" data-name="' + esc(h) + '">';
-      html += '<option value="">(no alias — use name as-is)</option>';
-      for (const o of currentOwners) {
-        html += '<option value="' + esc(o) + '"' + (aliased === o ? ' selected' : '') + '>' + esc(o) + '</option>';
+    const guidOwners = listHistoricalOwnerGuids();
+    const totalAliases = Object.keys(_ownerAliases.byGuid).length + Object.keys(_ownerAliases.byName).length;
+    html += '<div class="card"><h2>Owner Mapping <span class="muted small">' + totalAliases + ' aliases set</span></h2>';
+    html += '<p class="muted small">Each row is one unique person across all years (keyed by ESPN owner GUID, so team renames AND ownership transfers roll up correctly). Map each to a current owner.</p>';
+
+    if (guidOwners.length) {
+      html += '<table style="font-size: 12px;"><thead><tr><th>Team names used</th><th>Years</th><th class="num">Picks</th><th>→</th><th>Current Owner</th></tr></thead><tbody>';
+      for (const o of guidOwners) {
+        const aliased = _ownerAliases.byGuid[o.guid];
+        // Auto-suggest if a team name matches a current owner exactly
+        const autoMatch = o.teamNames.find(n => currentOwners.includes(n));
+        html += '<tr>';
+        html += '<td>' + o.teamNames.map(esc).join(", ") + (autoMatch && !aliased ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">EXACT</span>' : '') + '</td>';
+        html += '<td class="small muted">' + o.years.join(", ") + '</td>';
+        html += '<td class="num">' + o.pickCount + '</td>';
+        html += '<td class="dim">→</td>';
+        html += '<td><select class="hist-alias-guid" data-guid="' + esc(o.guid) + '">';
+        html += '<option value="">(no alias)</option>';
+        for (const own of currentOwners) {
+          html += '<option value="' + esc(own) + '"' + (aliased === own ? ' selected' : (!aliased && autoMatch === own ? ' selected' : '')) + '>' + esc(own) + '</option>';
+        }
+        html += '</select></td>';
+        html += '</tr>';
       }
-      html += '</select></td>';
-      html += '<td class="num">' + picksByThisName + '</td>';
-      html += '</tr>';
-    }
-    html += '</tbody></table>';
-    if (unmapped.length) {
-      html += '<p class="bad small" style="margin-top: 8px;">' + unmapped.length + " historical name(s) don't match a current owner: " + unmapped.map(esc).join(", ") + '. Map them above so their picks roll up correctly.</p>';
+      html += '</tbody></table>';
+    } else {
+      // No GUIDs available (old data): fall back to name-based mapping
+      const histOwners = listHistoricalOwners();
+      html += '<p class="warn small">No ESPN owner GUIDs in current data. Re-sync from ESPN to get stable owner IDs, or use the name-based fallback below.</p>';
+      html += '<table style="font-size: 12px;"><thead><tr><th>Team Name</th><th>→</th><th>Current Owner</th><th class="num">Picks</th></tr></thead><tbody>';
+      for (const h of histOwners) {
+        const aliased = _ownerAliases.byName[h];
+        const picksByThisName = picks.filter(p => p.owner === h).length;
+        html += '<tr>';
+        html += '<td>' + esc(h) + '</td>';
+        html += '<td class="dim">→</td>';
+        html += '<td><select class="hist-alias" data-name="' + esc(h) + '">';
+        html += '<option value="">(no alias)</option>';
+        for (const o of currentOwners) {
+          html += '<option value="' + esc(o) + '"' + (aliased === o ? ' selected' : '') + '>' + esc(o) + '</option>';
+        }
+        html += '</select></td>';
+        html += '<td class="num">' + picksByThisName + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
     }
     html += '</div>';
   }
@@ -158,7 +180,12 @@ function wireHistoryHandlers() {
       renderHistory();
     }
   });
-  // Owner alias dropdowns
+  // Owner alias dropdowns (GUID-based and name-based)
+  document.querySelectorAll(".hist-alias-guid").forEach(sel => {
+    sel.addEventListener("change", (e) => {
+      setOwnerAliasByGuid(e.target.dataset.guid, e.target.value);
+    });
+  });
   document.querySelectorAll(".hist-alias").forEach(sel => {
     sel.addEventListener("change", (e) => {
       setOwnerAlias(e.target.dataset.name, e.target.value);

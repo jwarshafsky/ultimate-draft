@@ -79,6 +79,7 @@ async function syncAllEspnHistory(opts) {
           year,
           owner: p.teamName || ("Team " + p.teamId),
           espnTeamId: p.teamId,
+          espnOwnerGuid: p.primaryOwner || null,  // stable across years
           player: p.playerName,
           espnPlayerId: p.playerId,
           pos: p.pos || "",

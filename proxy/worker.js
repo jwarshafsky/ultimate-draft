@@ -149,10 +149,12 @@ async function proxyEspnHistory(url, env) {
 
   const picks = (sd.draftDetail?.picks || []).map(p => {
     const playerInfo = playerMap[p.playerId] || {};
+    const tm = teamMap[p.teamId] || {};
     return {
       overallPickNumber: p.overallPickNumber,
       teamId: p.teamId,
-      teamName: teamMap[p.teamId]?.name || ("Team " + p.teamId),
+      teamName: tm.name || ("Team " + p.teamId),
+      primaryOwner: tm.primaryOwner || null,    // stable ESPN owner GUID
       nominatingTeamId: p.nominatingTeamId,
       playerId: p.playerId,
       playerName: playerInfo.name || ("Player " + p.playerId),
