@@ -46,6 +46,62 @@ async function fetchEspnPlayers() {
   return r.json();
 }
 
+// Fetch one season's draft history (uses leagueHistory endpoint server-side).
+async function fetchEspnHistory(season) {
+  if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
+  const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/history?leagueId=" + ESPN.leagueId + "&season=" + season;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("ESPN history " + season + " responded " + r.status);
+  return r.json();
+}
+
+// Sync all historical seasons in one shot. Default seasons: 2017-2025 minus
+// 2020 (Jeff said to exclude that COVID-shortened year). Adds to _history and
+// returns a summary.
+async function syncAllEspnHistory(opts) {
+  opts = opts || {};
+  const years = opts.years || [2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025];
+  const onProgress = opts.onProgress || (() => {});
+  const result = { seasons: [], failed: [], totalPicks: 0, teamMapsBySeason: {} };
+  for (const year of years) {
+    onProgress({ year, status: "fetching" });
+    try {
+      const data = await fetchEspnHistory(year);
+      if (!data.picks || !data.picks.length) {
+        result.failed.push({ year, reason: "no picks" });
+        onProgress({ year, status: "empty" });
+        continue;
+      }
+      // Strip existing picks from this year (re-syncing replaces)
+      _history.picks = _history.picks.filter(p => p.year !== year);
+      for (const p of data.picks) {
+        _history.picks.push({
+          year,
+          owner: p.teamName || ("Team " + p.teamId),
+          espnTeamId: p.teamId,
+          player: p.playerName,
+          espnPlayerId: p.playerId,
+          pos: p.pos || "",
+          price: p.bidAmount || 0,
+          keeper: !!p.keeper,
+        });
+      }
+      result.teamMapsBySeason[year] = data.teamMap;
+      result.seasons.push({ year, pickCount: data.picks.length });
+      result.totalPicks += data.picks.length;
+      onProgress({ year, status: "done", picks: data.picks.length });
+    } catch (e) {
+      result.failed.push({ year, reason: e.message || String(e) });
+      onProgress({ year, status: "failed", error: e.message });
+    }
+  }
+  _history.meta.years = Array.from(new Set(_history.picks.map(p => p.year))).sort();
+  _history.meta.teamMapsBySeason = result.teamMapsBySeason;
+  saveHistoryToStorage();
+  if (typeof rerender === "function") rerender();
+  return result;
+}
+
 // Start polling ESPN every N seconds for new picks. Each new pick is dispatched
 // to live draft state and triggers re-render. Idempotent — picks de-duped by
 // playerId/lotIndex.

@@ -304,6 +304,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .pace-bar { background: var(--bg-3); height: 10px; border-radius: 5px; margin-top: 4px; overflow: hidden; }
 .pace-bar-hit { background: var(--accent); height: 100%; transition: width 200ms ease; }
 
+.settings-slider { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.cat-chip { padding: 4px 8px; font-size: 11px; }
+
+.grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
+
 /* Modal overlay (used for note editor + comparison picker) */
 .modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }

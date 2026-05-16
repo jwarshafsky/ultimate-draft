@@ -15,6 +15,7 @@ const VIEWS = {
   roster:    { render: () => renderRoster() },
   history:   { render: () => renderHistory() },
   data:      { render: () => renderData() },
+  settings:  { render: () => renderSettings() },
 };
 
 function switchView(name) {

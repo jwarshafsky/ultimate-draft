@@ -40,6 +40,8 @@ export default {
         body = await proxyEspnTeams(url, env);
       } else if (url.pathname === "/espn/players") {
         body = await proxyEspnPlayers(url, env);
+      } else if (url.pathname === "/espn/history") {
+        body = await proxyEspnHistory(url, env);
       } else if (url.pathname === "/claude" && request.method === "POST") {
         body = await proxyClaude(request, env);
       } else {
@@ -110,6 +112,56 @@ async function proxyEspnTeams(url, env) {
   const season = url.searchParams.get("season");
   const target = ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?view=mTeam&view=mRoster";
   return espnFetch(target, env);
+}
+
+async function proxyEspnHistory(url, env) {
+  const leagueId = url.searchParams.get("leagueId");
+  const season = url.searchParams.get("season");
+  // For prior seasons use leagueHistory endpoint; current season uses regular.
+  const currentYear = new Date().getFullYear();
+  const base = (parseInt(season, 10) < currentYear)
+    ? ESPN_BASE + "/leagueHistory/" + leagueId + "?seasonId=" + season
+    : ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?";
+  const target = base + "&view=mDraftDetail&view=mTeam&view=players_wl";
+  const data = await espnFetch(target, env);
+  // leagueHistory returns an array; current season returns an object
+  const sd = Array.isArray(data) ? data[0] : data;
+  if (!sd) return { season, picks: [], teamMap: {}, error: "no_data" };
+
+  const teamMap = {};
+  for (const t of sd.teams || []) {
+    teamMap[t.id] = {
+      teamId: t.id,
+      location: t.location || "",
+      nickname: t.nickname || "",
+      name: ((t.location || "") + " " + (t.nickname || "")).trim() || ("Team " + t.id),
+      abbrev: t.abbrev,
+      owners: t.owners || [],
+      primaryOwner: t.primaryOwner || null,
+    };
+  }
+  const playerMap = {};
+  for (const p of sd.players || []) {
+    if (p.player) playerMap[p.id] = { name: p.player.fullName, defaultPositionId: p.player.defaultPositionId };
+  }
+  // Position ID → label (ESPN constants)
+  const POS_BY_ID = { 1: "SP", 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "OF", 8: "OF", 9: "OF", 10: "DH", 11: "RP", 12: "P" };
+
+  const picks = (sd.draftDetail?.picks || []).map(p => {
+    const playerInfo = playerMap[p.playerId] || {};
+    return {
+      overallPickNumber: p.overallPickNumber,
+      teamId: p.teamId,
+      teamName: teamMap[p.teamId]?.name || ("Team " + p.teamId),
+      nominatingTeamId: p.nominatingTeamId,
+      playerId: p.playerId,
+      playerName: playerInfo.name || ("Player " + p.playerId),
+      pos: POS_BY_ID[playerInfo.defaultPositionId] || "",
+      bidAmount: p.bidAmount || 0,
+      keeper: !!p.keeper,
+    };
+  });
+  return { season: parseInt(season, 10), picks, teamMap, playerCount: Object.keys(playerMap).length };
 }
 
 async function proxyEspnPlayers(url, env) {

@@ -9,9 +9,52 @@ function renderHistory() {
 
   let html = '';
 
-  // Import section
-  html += '<div class="card"><h2>Import Draft History</h2>';
-  html += '<p class="muted small">Paste a CSV of past auction results to fit per-owner tendency profiles. Expected columns: Year, Owner, Player, Pos, Price, Value (optional), Keeper (optional). Multiple years can be combined in one CSV.</p>';
+  // ESPN sync section (uses proxy)
+  html += '<div class="card"><h2>Sync from ESPN</h2>';
+  html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons 2017-2025 (excluding 2020). Requires proxy URL configured in Live Draft tab.</p>';
+  html += '<div style="display: flex; gap: 8px; align-items: center;">';
+  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025";
+  html += '<input id="hist-espn-years" placeholder="' + seasons + '" value="' + seasons + '" style="flex: 1;">';
+  html += '<button class="btn primary" id="hist-espn-sync" style="width: auto; padding: 8px 14px;"' + (ESPN.proxyUrl ? '' : ' disabled') + '>Sync from ESPN</button>';
+  html += '</div>';
+  html += '<div class="muted small" style="margin-top: 6px;">' + (ESPN.proxyUrl ? "Proxy ready: " + esc(ESPN.proxyUrl) : "Set proxy URL in Live Draft tab first.") + '</div>';
+  html += '<div id="espn-sync-log" class="small muted" style="margin-top: 10px;"></div>';
+  html += '</div>';
+
+  // Owner alias mapping section (if data exists)
+  if (picks.length) {
+    const histOwners = listHistoricalOwners();
+    const currentOwners = LEAGUE.teams.map(t => t.owner);
+    const unmapped = histOwners.filter(h => !currentOwners.includes(h) && !_ownerAliases.map[h]);
+    html += '<div class="card"><h2>Owner Mapping <span class="muted small">' + Object.keys(_ownerAliases.map).length + ' aliases set</span></h2>';
+    html += '<p class="muted small">Map historical team names to current owners. Necessary when owners change team names or teams change hands across seasons.</p>';
+    html += '<table style="font-size: 12px;"><thead><tr><th>Historical Name</th><th>→</th><th>Current Owner</th><th class="num">Picks</th></tr></thead><tbody>';
+    for (const h of histOwners) {
+      const aliased = _ownerAliases.map[h];
+      const isCurrentExact = currentOwners.includes(h);
+      const picksByThisName = picks.filter(p => p.owner === h).length;
+      html += '<tr>';
+      html += '<td>' + esc(h) + (isCurrentExact ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">EXACT</span>' : '') + '</td>';
+      html += '<td class="dim">→</td>';
+      html += '<td><select class="hist-alias" data-name="' + esc(h) + '">';
+      html += '<option value="">(no alias — use name as-is)</option>';
+      for (const o of currentOwners) {
+        html += '<option value="' + esc(o) + '"' + (aliased === o ? ' selected' : '') + '>' + esc(o) + '</option>';
+      }
+      html += '</select></td>';
+      html += '<td class="num">' + picksByThisName + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    if (unmapped.length) {
+      html += '<p class="bad small" style="margin-top: 8px;">' + unmapped.length + " historical name(s) don't match a current owner: " + unmapped.map(esc).join(", ") + '. Map them above so their picks roll up correctly.</p>';
+    }
+    html += '</div>';
+  }
+
+  // Manual CSV import section
+  html += '<div class="card"><h2>Manual CSV Import</h2>';
+  html += '<p class="muted small">Alternative to ESPN sync. Expected columns: Year, Owner, Player, Pos, Price, Value (optional), Keeper (optional).</p>';
   html += '<textarea id="hist-csv" rows="6" style="width: 100%; font-family: var(--mono); font-size: 12px;" placeholder="Year,Owner,Player,Pos,Price,Value..."></textarea>';
   html += '<div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">';
   html += '<input id="hist-year" type="number" placeholder="Year (if not in CSV)" style="width: 200px;">';
@@ -88,6 +131,39 @@ function renderHistory() {
 }
 
 function wireHistoryHandlers() {
+  // ESPN sync
+  document.getElementById("hist-espn-sync")?.addEventListener("click", async () => {
+    const yearsRaw = document.getElementById("hist-espn-years").value;
+    const years = yearsRaw.split(/[,\s]+/).map(s => parseInt(s, 10)).filter(y => y > 2000);
+    if (!years.length) { alert("Enter at least one year."); return; }
+    const log = document.getElementById("espn-sync-log");
+    const lines = [];
+    const btn = document.getElementById("hist-espn-sync");
+    btn.disabled = true; btn.textContent = "Syncing…";
+    try {
+      const summary = await syncAllEspnHistory({
+        years,
+        onProgress: (p) => {
+          lines.push(p.year + " · " + p.status + (p.picks ? " (" + p.picks + " picks)" : "") + (p.error ? ": " + p.error : ""));
+          log.innerHTML = lines.map(esc).join("<br>");
+        },
+      });
+      lines.push("Done. " + summary.totalPicks + " total picks across " + summary.seasons.length + " seasons.");
+      log.innerHTML = lines.map(esc).join("<br>");
+    } catch (e) {
+      lines.push("Error: " + (e.message || e));
+      log.innerHTML = lines.map(esc).join("<br>");
+    } finally {
+      btn.disabled = false; btn.textContent = "Sync from ESPN";
+      renderHistory();
+    }
+  });
+  // Owner alias dropdowns
+  document.querySelectorAll(".hist-alias").forEach(sel => {
+    sel.addEventListener("change", (e) => {
+      setOwnerAlias(e.target.dataset.name, e.target.value);
+    });
+  });
   document.getElementById("hist-import")?.addEventListener("click", () => {
     const text = document.getElementById("hist-csv").value;
     const year = parseInt(document.getElementById("hist-year").value, 10) || null;

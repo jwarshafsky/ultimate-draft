@@ -1,0 +1,286 @@
+// Settings tab. Lets you tune the engine to refine your draft approach.
+// All settings persist to localStorage and re-apply on next load.
+//
+// Adjustable knobs:
+//   - Hitter/pitcher budget split (default 70%)
+//   - Tier inflation absorption weights (T1-T5)
+//   - Bench slots reserved at $1 each
+//   - RP cap (drp= equivalent — how many RPs get above-$1 value)
+//   - My strategy preferences (used by AI assistant + nomination):
+//       * stars vs. scrubs tilt (-2 spread to +2 stars+scrubs)
+//       * risk tolerance (-2 conservative to +2 ceiling chaser)
+//       * preferred budget allocation curve
+//   - AI assistant settings (model, cooldown, auto-trigger)
+//   - Inflation mode (flat vs tiered)
+
+const SETTINGS_KEY = "ud_settings_v1";
+
+const _settings = {
+  // Engine defaults — overridable via this UI
+  hitBudgetPct: VALUATION.hitBudgetPct,   // 0.70
+  benchSlots: VALUATION.benchSlots,        // 48
+  rpCap: FANGRAPHS_SETTINGS.rpCap,         // 30
+  tierAbsorption: { ...TIER_ABSORPTION },  // T1-T5 multipliers
+  inflationMode: "tiered",                 // "tiered" | "flat"
+
+  // My strategy preferences
+  myStrategy: {
+    starsVsScrubs: 0,    // -2 spread / 0 balanced / +2 stars+scrubs
+    riskTolerance: 0,    // -2 safe floors / +2 high ceilings
+    closerStance: "stream", // "pay-up" | "moderate" | "stream"
+    catcherStance: "stream", // "pay-up" | "elite-only" | "stream"
+    targetCategories: [], // categories to prioritize building toward
+    puntCategories: [],   // categories you intentionally punt
+  },
+
+  // AI assistant settings
+  ai: {
+    enabled: false,
+    autoTrigger: true,            // trigger AI on each new pick
+    cooldownMs: 8000,
+    model: "claude-opus-4-7",
+  },
+};
+
+function loadSettings() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+    if (v) {
+      Object.assign(_settings, v);
+      // Push into engine globals
+      VALUATION.hitBudgetPct = _settings.hitBudgetPct;
+      VALUATION.benchSlots = _settings.benchSlots;
+      FANGRAPHS_SETTINGS.rpCap = _settings.rpCap;
+      VALUATION.replacement.RP = _settings.rpCap;
+      Object.assign(TIER_ABSORPTION, _settings.tierAbsorption);
+      if (typeof AI !== "undefined") {
+        AI.model = _settings.ai.model;
+        AI.cooldownMs = _settings.ai.cooldownMs;
+      }
+    }
+  } catch (e) {}
+}
+
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(_settings));
+  // Re-apply
+  VALUATION.hitBudgetPct = _settings.hitBudgetPct;
+  VALUATION.benchSlots = _settings.benchSlots;
+  FANGRAPHS_SETTINGS.rpCap = _settings.rpCap;
+  VALUATION.replacement.RP = _settings.rpCap;
+  Object.assign(TIER_ABSORPTION, _settings.tierAbsorption);
+  if (typeof AI !== "undefined") {
+    AI.model = _settings.ai.model;
+    AI.cooldownMs = _settings.ai.cooldownMs;
+  }
+  // Force values re-computation
+  if (typeof refreshValues === "function") refreshValues();
+  if (typeof rerender === "function") rerender();
+}
+
+function resetSettings() {
+  localStorage.removeItem(SETTINGS_KEY);
+  window.location.reload();
+}
+
+function renderSettings() {
+  const root = document.getElementById("view-root");
+  const s = _settings;
+  let html = '';
+
+  // === Budget & Inflation ===
+  html += '<div class="card"><h2>Budget & Inflation</h2>';
+  html += '<div class="grid cols-2" style="gap: 18px;">';
+  html += '<div>';
+  html += '<h3>Hitter / Pitcher Split</h3>';
+  html += '<p class="muted small">Share of $260 budget allocated to hitters. FanGraphs default is 70% (Jeff\'s setting).</p>';
+  html += '<div class="settings-slider"><input type="range" min="50" max="85" value="' + (s.hitBudgetPct * 100).toFixed(0) + '" id="set-hit-pct" style="flex: 1;">';
+  html += '<span id="set-hit-pct-val" style="font-family: var(--mono); width: 80px; text-align: right;">' + (s.hitBudgetPct * 100).toFixed(0) + '% / ' + ((1 - s.hitBudgetPct) * 100).toFixed(0) + '%</span></div>';
+  html += '</div>';
+  html += '<div>';
+  html += '<h3>Bench Reserve</h3>';
+  html += '<p class="muted small">$$ pulled out of the value pool to cover bench picks at $1 each. Default 48 (4 bench × 12 teams).</p>';
+  html += '<input id="set-bench" type="number" min="0" max="100" value="' + s.benchSlots + '" style="width: 120px;">';
+  html += '</div>';
+  html += '<div>';
+  html += '<h3>RP Cap (drp=)</h3>';
+  html += '<p class="muted small">Only top N relievers receive above-$1 value. FanGraphs default 30.</p>';
+  html += '<input id="set-rp-cap" type="number" min="10" max="60" value="' + s.rpCap + '" style="width: 120px;">';
+  html += '</div>';
+  html += '<div>';
+  html += '<h3>Inflation Mode</h3>';
+  html += '<p class="muted small">Flat = uniform multiplier. Tiered = stars absorb more inflation than $1 endgame players (more realistic).</p>';
+  html += '<select id="set-inf-mode" style="width: 160px;">';
+  html += '<option value="tiered"' + (s.inflationMode === "tiered" ? " selected" : "") + '>Tiered (recommended)</option>';
+  html += '<option value="flat"' + (s.inflationMode === "flat" ? " selected" : "") + '>Flat</option>';
+  html += '</select>';
+  html += '</div>';
+  html += '</div></div>';
+
+  // === Tier Absorption ===
+  html += '<div class="card"><h2>Tier Absorption Weights</h2>';
+  html += '<p class="muted small">How much of total inflation each tier absorbs. T1 elite ($35+) takes most; T5 endgame ($1-4) barely moves. Tune toward 1.0 across the board for flat-ish, or steepen the curve for harder star inflation.</p>';
+  html += '<div class="grid cols-5" style="gap: 12px;">';
+  const tierLabels = { T1: "T1 $35+", T2: "T2 $20-34", T3: "T3 $10-19", T4: "T4 $5-9", T5: "T5 $1-4" };
+  for (const t of ["T1", "T2", "T3", "T4", "T5"]) {
+    html += '<div>';
+    html += '<div class="muted small">' + tierLabels[t] + '</div>';
+    html += '<input id="set-tier-' + t + '" type="number" step="0.05" min="0" max="3" value="' + s.tierAbsorption[t] + '" style="width: 100%;">';
+    html += '</div>';
+  }
+  html += '</div></div>';
+
+  // === My Strategy ===
+  html += '<div class="card"><h2>My Draft Strategy</h2>';
+  html += '<p class="muted small">These preferences flow into nomination suggestions, the AI assistant, and the mock simulator when it plays YOUR team.</p>';
+  html += '<div class="grid cols-2" style="gap: 18px;">';
+
+  html += '<div>';
+  html += '<h3>Stars vs. Scrubs</h3>';
+  html += '<p class="muted small">Spread (-2) buys many mid-tier players. Stars+Scrubs (+2) loads up on $40+ studs and fills with $1 endgame.</p>';
+  html += '<div class="settings-slider"><input type="range" min="-2" max="2" step="1" value="' + s.myStrategy.starsVsScrubs + '" id="set-sv-scrubs" style="flex: 1;">';
+  html += '<span id="set-sv-scrubs-val" style="font-family: var(--mono); width: 100px; text-align: right;">' + sliderLabel(s.myStrategy.starsVsScrubs, ["Spread", "Balanced", "Stars+Scrubs"]) + '</span></div>';
+  html += '</div>';
+
+  html += '<div>';
+  html += '<h3>Risk Tolerance</h3>';
+  html += '<p class="muted small">Safe floors (-2) prefer proven veterans. High ceilings (+2) chase upside / breakouts / younger players.</p>';
+  html += '<div class="settings-slider"><input type="range" min="-2" max="2" step="1" value="' + s.myStrategy.riskTolerance + '" id="set-risk" style="flex: 1;">';
+  html += '<span id="set-risk-val" style="font-family: var(--mono); width: 100px; text-align: right;">' + sliderLabel(s.myStrategy.riskTolerance, ["Safe", "Moderate", "Ceiling"]) + '</span></div>';
+  html += '</div>';
+
+  html += '<div>';
+  html += '<h3>Closer Stance</h3>';
+  html += '<select id="set-closer" style="width: 100%;">';
+  for (const opt of ["pay-up", "moderate", "stream"]) {
+    html += '<option value="' + opt + '"' + (s.myStrategy.closerStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
+  }
+  html += '</select>';
+  html += '<p class="muted small" style="margin-top: 4px;">Pay-up = buy 2 elite closers early. Moderate = 1 closer + setup men. Stream = punt SV+HLD or only buy at endgame discount.</p>';
+  html += '</div>';
+
+  html += '<div>';
+  html += '<h3>Catcher Stance</h3>';
+  html += '<select id="set-catcher" style="width: 100%;">';
+  for (const opt of ["pay-up", "elite-only", "stream"]) {
+    html += '<option value="' + opt + '"' + (s.myStrategy.catcherStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
+  }
+  html += '</select>';
+  html += '<p class="muted small" style="margin-top: 4px;">Pay-up = $15+ for backstop. Elite-only = top 5 or punt. Stream = endgame only.</p>';
+  html += '</div>';
+  html += '</div>';
+
+  // Punt / Target categories
+  html += '<div style="margin-top: 14px;"><h3>Category Strategy</h3>';
+  html += '<div class="grid cols-2"><div>';
+  html += '<div class="muted small">Target (extra weight)</div>';
+  html += '<div class="cat-chips" data-target-list="target">';
+  const allCats = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
+  for (const c of allCats) {
+    const on = s.myStrategy.targetCategories.includes(c);
+    html += '<button class="tag-btn cat-chip' + (on ? " on" : "") + '" data-cat="' + c + '" data-list="targetCategories">' + esc(c) + '</button>';
+  }
+  html += '</div></div><div>';
+  html += '<div class="muted small">Punt (zero weight)</div>';
+  html += '<div class="cat-chips" data-target-list="punt">';
+  for (const c of allCats) {
+    const on = s.myStrategy.puntCategories.includes(c);
+    html += '<button class="tag-btn cat-chip' + (on ? " on" : "") + '" data-cat="' + c + '" data-list="puntCategories">' + esc(c) + '</button>';
+  }
+  html += '</div></div></div></div>';
+  html += '</div>';
+
+  // === AI Assistant ===
+  html += '<div class="card"><h2>AI Assistant</h2>';
+  html += '<div class="grid cols-3" style="gap: 18px;">';
+  html += '<div>';
+  html += '<h3>Model</h3>';
+  html += '<select id="set-ai-model" style="width: 100%;">';
+  for (const m of ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]) {
+    html += '<option value="' + m + '"' + (s.ai.model === m ? " selected" : "") + '>' + esc(m) + '</option>';
+  }
+  html += '</select>';
+  html += '</div>';
+  html += '<div>';
+  html += '<h3>Cooldown (s)</h3>';
+  html += '<input id="set-ai-cooldown" type="number" min="0" max="60" value="' + (s.ai.cooldownMs / 1000) + '" style="width: 100%;">';
+  html += '<p class="muted small">Min seconds between auto-calls.</p>';
+  html += '</div>';
+  html += '<div>';
+  html += '<h3>Auto-trigger</h3>';
+  html += '<label style="display: flex; align-items: center; gap: 8px; margin-top: 8px;"><input type="checkbox" id="set-ai-auto"' + (s.ai.autoTrigger ? " checked" : "") + '> Fire automatically on each new pick</label>';
+  html += '</div>';
+  html += '</div></div>';
+
+  // === Buttons ===
+  html += '<div style="display: flex; gap: 8px; margin-top: 12px;">';
+  html += '<button class="btn primary" id="set-save" style="width: auto; padding: 10px 18px;">Save Settings</button>';
+  html += '<button class="btn ghost danger" id="set-reset">Reset to Defaults</button>';
+  html += '</div>';
+
+  root.innerHTML = html;
+  wireSettingsHandlers();
+}
+
+function sliderLabel(val, labels) {
+  if (val <= -2) return "←← " + labels[0];
+  if (val === -1) return "← " + labels[0];
+  if (val === 0) return labels[1];
+  if (val === 1) return labels[2] + " →";
+  return labels[2] + " →→";
+}
+
+function wireSettingsHandlers() {
+  const live = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", fn);
+  };
+  live("set-hit-pct", (e) => {
+    const v = parseInt(e.target.value, 10);
+    document.getElementById("set-hit-pct-val").textContent = v + "% / " + (100 - v) + "%";
+  });
+  live("set-sv-scrubs", (e) => {
+    document.getElementById("set-sv-scrubs-val").textContent = sliderLabel(parseInt(e.target.value, 10), ["Spread", "Balanced", "Stars+Scrubs"]);
+  });
+  live("set-risk", (e) => {
+    document.getElementById("set-risk-val").textContent = sliderLabel(parseInt(e.target.value, 10), ["Safe", "Moderate", "Ceiling"]);
+  });
+
+  // Category chips toggle on click without saving
+  document.querySelectorAll(".cat-chip").forEach(b => {
+    b.addEventListener("click", () => {
+      b.classList.toggle("on");
+    });
+  });
+
+  document.getElementById("set-save")?.addEventListener("click", () => {
+    _settings.hitBudgetPct = parseInt(document.getElementById("set-hit-pct").value, 10) / 100;
+    _settings.benchSlots = parseInt(document.getElementById("set-bench").value, 10) || 48;
+    _settings.rpCap = parseInt(document.getElementById("set-rp-cap").value, 10) || 30;
+    _settings.inflationMode = document.getElementById("set-inf-mode").value;
+    for (const t of ["T1", "T2", "T3", "T4", "T5"]) {
+      _settings.tierAbsorption[t] = parseFloat(document.getElementById("set-tier-" + t).value) || 1;
+    }
+    _settings.myStrategy.starsVsScrubs = parseInt(document.getElementById("set-sv-scrubs").value, 10);
+    _settings.myStrategy.riskTolerance = parseInt(document.getElementById("set-risk").value, 10);
+    _settings.myStrategy.closerStance = document.getElementById("set-closer").value;
+    _settings.myStrategy.catcherStance = document.getElementById("set-catcher").value;
+    _settings.myStrategy.targetCategories = Array.from(document.querySelectorAll('.cat-chip.on[data-list="targetCategories"]')).map(b => b.dataset.cat);
+    _settings.myStrategy.puntCategories = Array.from(document.querySelectorAll('.cat-chip.on[data-list="puntCategories"]')).map(b => b.dataset.cat);
+    _settings.ai.model = document.getElementById("set-ai-model").value;
+    _settings.ai.cooldownMs = (parseInt(document.getElementById("set-ai-cooldown").value, 10) || 8) * 1000;
+    _settings.ai.autoTrigger = document.getElementById("set-ai-auto").checked;
+    saveSettings();
+    alert("Settings saved.");
+  });
+  document.getElementById("set-reset")?.addEventListener("click", () => {
+    if (confirm("Reset all settings to defaults?")) resetSettings();
+  });
+}
+
+// Helpers for other modules to read strategy
+function getMyStrategy() { return _settings.myStrategy; }
+function getSettings() { return _settings; }
+
+// Load settings at startup. Must run AFTER VALUATION and other globals exist.
+loadSettings();

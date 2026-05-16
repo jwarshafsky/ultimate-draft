@@ -15,11 +15,40 @@
 //   nominationStyle:eager-bidder vs patient (avg nomination position they end up winning)
 
 const HISTORY_KEY = "ud_draft_history_v1";
+const OWNER_ALIAS_KEY = "ud_owner_aliases_v1";
 
 const _history = {
   picks: [],   // [{ year, owner, player, pos, price, value?, keeper? }]
   meta: { years: [] },
 };
+
+// { historicalName: currentOwnerName } — applied during profile computation so
+// e.g. "Jeff" → "Jeff", "Old Jeff Team Name" → "Jeff", etc.
+const _ownerAliases = { map: {} };
+
+function loadOwnerAliases() {
+  try {
+    const v = JSON.parse(localStorage.getItem(OWNER_ALIAS_KEY) || "null");
+    if (v) _ownerAliases.map = v.map || v;
+  } catch (e) {}
+}
+function saveOwnerAliases() {
+  localStorage.setItem(OWNER_ALIAS_KEY, JSON.stringify({ map: _ownerAliases.map }));
+}
+function setOwnerAlias(historicalName, currentName) {
+  if (!historicalName) return;
+  if (!currentName) delete _ownerAliases.map[historicalName];
+  else _ownerAliases.map[historicalName] = currentName;
+  saveOwnerAliases();
+  if (typeof rerender === "function") rerender();
+}
+function resolveOwner(name) {
+  return _ownerAliases.map[name] || name;
+}
+function listHistoricalOwners() {
+  return Array.from(new Set(_history.picks.map(p => p.owner))).filter(Boolean).sort();
+}
+loadOwnerAliases();
 
 function loadHistoryFromStorage() {
   try {
@@ -72,9 +101,10 @@ function getHistoryPicks(year) {
   return _history.picks.filter(p => p.year === year);
 }
 
-// Compute behavior profile for one owner across all years.
+// Compute behavior profile for one owner across all years. Applies owner
+// aliases so historical team names roll up under the current owner.
 function computeOwnerProfile(ownerName) {
-  const picks = _history.picks.filter(p => p.owner === ownerName && !p.keeper);
+  const picks = _history.picks.filter(p => resolveOwner(p.owner) === ownerName && !p.keeper);
   if (!picks.length) return null;
 
   const totalSpent = picks.reduce((s, p) => s + p.price, 0);
@@ -149,9 +179,11 @@ function normalizePosKey(pos) {
   return t || "UTIL";
 }
 
-// Build profiles for every owner in the history. Returns { owner: profile }
+// Build profiles for every owner in the history. Returns { owner: profile }.
+// Uses resolved (alias-applied) owner names so historical team-renames roll
+// up under the current owner.
 function computeAllOwnerProfiles() {
-  const owners = Array.from(new Set(_history.picks.map(p => p.owner))).filter(Boolean);
+  const owners = Array.from(new Set(_history.picks.map(p => resolveOwner(p.owner)))).filter(Boolean);
   const out = {};
   for (const o of owners) {
     out[o] = computeOwnerProfile(o);
