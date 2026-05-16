@@ -214,9 +214,31 @@ function computeOwnerProfile(ownerName) {
   const spSpend = posSpendPct.SP || 0;
   const hitSpend = ["C","1B","2B","3B","SS","OF","UTIL","DH"].reduce((s, k) => s + (posSpendPct[k] || 0), 0);
 
-  const sortedPrices = picks.map(p => p.price).sort((a, b) => b - a);
-  const top3Sum = sortedPrices.slice(0, 3).reduce((s, v) => s + v, 0);
-  const top3Share = totalSpent > 0 ? top3Sum / totalSpent : 0;
+  // Per-year top-3 share — average of (top 3 prices that year / total spent that
+  // year). This actually measures style: a stars-and-scrubs drafter does it
+  // every draft, while a spread drafter never has runaway top picks.
+  const byYear = {};
+  for (const p of picks) {
+    if (!byYear[p.year]) byYear[p.year] = { prices: [], total: 0 };
+    byYear[p.year].prices.push(p.price);
+    byYear[p.year].total += p.price;
+  }
+  let perYearTop3Sum = 0, yearCount = 0;
+  let perYearBigBidsSum = 0;
+  let perYearMaxBidSum = 0;
+  for (const y of Object.values(byYear)) {
+    const sorted = y.prices.slice().sort((a, b) => b - a);
+    const top3 = sorted.slice(0, 3).reduce((s, v) => s + v, 0);
+    if (y.total > 0) {
+      perYearTop3Sum += top3 / y.total;
+      yearCount += 1;
+      perYearBigBidsSum += sorted.filter(p => p >= 25).length;
+      perYearMaxBidSum += sorted[0] || 0;
+    }
+  }
+  const top3Share = yearCount > 0 ? perYearTop3Sum / yearCount : 0;
+  const bigBidsPerYear = yearCount > 0 ? perYearBigBidsSum / yearCount : 0;
+  const avgMaxBidPerYear = yearCount > 0 ? perYearMaxBidSum / yearCount : 0;
   const bigMoneyShare = picks.filter(p => p.price >= 25).length / picks.length;
 
   // Tier breakdown
@@ -291,6 +313,8 @@ function computeOwnerProfile(ownerName) {
     spSpend,
     hitSpend,
     top3Share,
+    bigBidsPerYear,
+    avgMaxBidPerYear,
     bigMoneyShare,
     tierShape,
     mostSpentOn,
@@ -306,11 +330,13 @@ function computeLeagueAverages() {
   const profiles = computeAllOwnerProfiles();
   const owners = Object.values(profiles).filter(p => p);
   if (!owners.length) return null;
-  const avg = { posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0 };
+  const avg = { posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0, bigBidsPerYear: 0, avgMaxBidPerYear: 0 };
   for (const p of owners) {
     avg.meanPrice += p.meanPrice;
     avg.top3Share += p.top3Share;
     avg.maxPrice += p.maxPrice;
+    avg.bigBidsPerYear += p.bigBidsPerYear || 0;
+    avg.avgMaxBidPerYear += p.avgMaxBidPerYear || 0;
     for (const [k, v] of Object.entries(p.posSpendPct)) {
       avg.posSpendPct[k] = (avg.posSpendPct[k] || 0) + v;
     }
@@ -322,6 +348,8 @@ function computeLeagueAverages() {
   avg.meanPrice /= n;
   avg.top3Share /= n;
   avg.maxPrice /= n;
+  avg.bigBidsPerYear /= n;
+  avg.avgMaxBidPerYear /= n;
   for (const k of Object.keys(avg.posSpendPct)) avg.posSpendPct[k] /= n;
   for (const k of Object.keys(avg.posAvgPrice)) avg.posAvgPrice[k] /= n;
   return avg;
@@ -331,11 +359,16 @@ function computeLeagueAverages() {
 function ownerInsights(profile, leagueAvg) {
   if (!profile || !leagueAvg) return [];
   const out = [];
-  // Style label
-  if (profile.top3Share > 0.55) out.push({ kind: "style", text: "Stars+scrubs drafter — top 3 picks soak up " + (profile.top3Share * 100).toFixed(0) + "% of budget" });
-  else if (profile.top3Share < 0.40) out.push({ kind: "style", text: "Spread drafter — depth-focused, few mega-bids" });
+  // Style — uses per-year top-3 share and big-bids-per-year
+  if (profile.top3Share > 0.35 || profile.bigBidsPerYear >= 3) {
+    out.push({ kind: "style", text: "Stars+scrubs — avg " + profile.bigBidsPerYear.toFixed(1) + " bids of $25+ per draft, top 3 picks each year = " + (profile.top3Share * 100).toFixed(0) + "% of spending" });
+  } else if (profile.top3Share < 0.22 && profile.bigBidsPerYear < 1.5) {
+    out.push({ kind: "style", text: "Spread drafter — rarely makes mega-bids, top 3 picks only " + (profile.top3Share * 100).toFixed(0) + "% of budget per year" });
+  } else {
+    out.push({ kind: "style", text: "Balanced drafter — top 3 picks " + (profile.top3Share * 100).toFixed(0) + "% per year, " + profile.bigBidsPerYear.toFixed(1) + " big bids" });
+  }
   // Big spender check
-  if (profile.maxPrice >= leagueAvg.maxPrice * 1.15) out.push({ kind: "style", text: "Will pay $" + profile.maxPrice + " for a player — well above league norm" });
+  if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.10) out.push({ kind: "style", text: "Goes hard on the top guy — avg $" + profile.avgMaxBidPerYear.toFixed(0) + "/year on biggest bid (league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ")" });
   // Position tendencies — flag any position where they spend 1.5x+ league avg per pick
   for (const [pos, avg] of Object.entries(profile.posAvgPrice)) {
     const lg = leagueAvg.posAvgPrice[pos];

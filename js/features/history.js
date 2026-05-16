@@ -151,7 +151,9 @@ function renderHistory() {
   const sorted = Object.values(profiles).filter(p => p).sort((a, b) => b.totalSpent - a.totalSpent);
   for (const p of sorted) {
     const insights = ownerInsights(p, leagueAvg);
-    const styleLabel = p.top3Share > 0.55 ? "stars+scrubs" : p.top3Share > 0.45 ? "top-heavy" : p.top3Share > 0.35 ? "balanced" : "spread";
+    const styleLabel = (p.top3Share > 0.35 || p.bigBidsPerYear >= 3) ? "stars+scrubs" :
+                       (p.top3Share > 0.27 || p.bigBidsPerYear >= 2) ? "top-heavy" :
+                       (p.top3Share < 0.22 && p.bigBidsPerYear < 1.5) ? "spread" : "balanced";
     html += '<div class="owner-card">';
     // Header
     html += '<div class="owner-card-head" data-owner="' + esc(p.owner) + '">';
