@@ -82,6 +82,11 @@ async function espnFetch(url, env, headers) {
     headers: {
       "cookie": cookieHeader,
       "accept": "application/json",
+      "origin": "https://fantasy.espn.com",
+      "referer": "https://fantasy.espn.com/",
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+      "x-fantasy-platform": "espn-fantasy-web",
+      "x-fantasy-source": "kona",
       ...(headers || {}),
     },
   });
@@ -119,13 +124,11 @@ async function proxyEspnHistory(url, env) {
   const season = url.searchParams.get("season");
   const currentYear = new Date().getFullYear();
 
-  // Try multiple endpoints. ESPN's lm-api-reads host doesn't have data for
-  // seasons before ~2018. fantasy.espn.com still does. Fall back automatically.
+  // lm-api-reads/leagueHistory works for ALL old seasons when the right
+  // headers + fresh cookies are sent. (Empirically confirmed via the browser
+  // curl that ESPN uses this same endpoint to populate the draftrecap page.)
   const candidates = parseInt(season, 10) < currentYear
-    ? [
-        "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/leagueHistory/" + leagueId + "?seasonId=" + season,
-        "https://fantasy.espn.com/apis/v3/games/flb/leagueHistory/" + leagueId + "?seasonId=" + season,
-      ]
+    ? ["https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/leagueHistory/" + leagueId + "?seasonId=" + season]
     : [ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?"];
 
   let data = null;
