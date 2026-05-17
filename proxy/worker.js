@@ -118,13 +118,29 @@ async function proxyEspnHistory(url, env) {
   const leagueId = url.searchParams.get("leagueId");
   const season = url.searchParams.get("season");
   const currentYear = new Date().getFullYear();
-  const base = (parseInt(season, 10) < currentYear)
-    ? ESPN_BASE + "/leagueHistory/" + leagueId + "?seasonId=" + season
-    : ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?";
-  // mRoster is the reliable way to get player names+positions for historical
-  // seasons. players_wl doesn't populate via leagueHistory.
-  const target = base + "&view=mDraftDetail&view=mTeam&view=mRoster";
-  const data = await espnFetch(target, env);
+
+  // Try multiple endpoints. ESPN's lm-api-reads host doesn't have data for
+  // seasons before ~2018. fantasy.espn.com still does. Fall back automatically.
+  const candidates = parseInt(season, 10) < currentYear
+    ? [
+        "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/leagueHistory/" + leagueId + "?seasonId=" + season,
+        "https://fantasy.espn.com/apis/v3/games/flb/leagueHistory/" + leagueId + "?seasonId=" + season,
+      ]
+    : [ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?"];
+
+  let data = null;
+  let lastError = null;
+  for (const base of candidates) {
+    const target = base + "&view=mDraftDetail&view=mTeam&view=mRoster";
+    try {
+      data = await espnFetch(target, env);
+      break;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  if (!data) throw lastError || new Error("All ESPN endpoints failed for season " + season);
+
   const sd = Array.isArray(data) ? data[0] : data;
   if (!sd) return { season, picks: [], teamMap: {}, error: "no_data" };
 
