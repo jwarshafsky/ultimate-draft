@@ -103,53 +103,45 @@ function positionNeed(state, posKey) {
 // What's the most this team would bid for player p in the current state?
 // Returns an integer (auction prices are whole dollars).
 //
-// Real-world calibration: owners spend ~95-99% of budgets every year. So we
-// want bidders to track inflated value closely, NOT discount aggressively.
-// We use a soft need adjustment (max 15% discount) and let $/slot pressure
-// PUSH bids UP when budget is flush relative to remaining slots.
+// Real-world calibration: owners spend ~95-99% of budgets every year. The
+// simulator MUST burn through cash. When $/slot is well above the natural
+// norm (~$10), bidders push toward their full safety cap so the auction
+// price escalates against competition.
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
   const baseValue = inflatedValue(p, inflation);
   if (!isFinite(baseValue)) return 0;
-  const posMult = state.profile.posBias[p.posKey] || 1;
-  const noise = 1 + (Math.random() - 0.5) * state.profile.noise * 2;
-  let perceived = baseValue * state.profile.aggression * posMult * noise;
-
-  // Soft need adjustment — bid 85% of value at full positions (still in play
-  // if cheap), full value at unfilled positions.
-  const need = positionNeed(state, p.posKey);
-  perceived *= 0.85 + 0.15 * need;
-
-  // Budget pressure: real owners spend 95-99% every year. The simulator must
-  // burn through cash. When $/slot exceeds the typical ~$10 norm, push bids
-  // up. In late draft with few slots left, push HARD — $96 leftover at end
-  // is unrealistic.
-  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
-  let budgetPressureBoost = 1;
-  if (state.slotsRemaining <= 3 && dollarsPerSlot > 6) {
-    // Endgame burn: must spend down
-    budgetPressureBoost = Math.min(2.2, dollarsPerSlot / 6);
-  } else if (state.slotsRemaining <= 6 && dollarsPerSlot > 10) {
-    budgetPressureBoost = Math.min(1.7, dollarsPerSlot / 10);
-  } else if (dollarsPerSlot > 18) budgetPressureBoost = 1.30;
-  else if (dollarsPerSlot > 14) budgetPressureBoost = 1.18;
-  else if (dollarsPerSlot > 11) budgetPressureBoost = 1.10;
-  else if (dollarsPerSlot < 3) budgetPressureBoost = 0.75;
-  perceived *= budgetPressureBoost;
 
   // Hard safety: reserve $1 per future slot. Never bid past this.
   const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - state.profile.safetyMargin;
+  if (safetyCap <= 0) return 0;
 
-  // Endgame floor: when very few slots left, the bid floor IS the spend-down
-  // rate. If team has $30 with 3 slots remaining and we have a player they
-  // need, push their max bid toward $10+.
-  let endgameFloor = 0;
-  if (state.slotsRemaining > 0 && state.slotsRemaining <= 5 && need > 0.2) {
-    endgameFloor = Math.floor((state.budget - state.slotsRemaining + 1) / state.slotsRemaining);
+  const need = positionNeed(state, p.posKey);
+  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+
+  // FORCE-SPEND: when a team is sitting on extra cash, max out the bid.
+  // This is the realistic behavior — owners with money to burn drive prices.
+  if (dollarsPerSlot >= 12 && need > 0.15) {
+    return safetyCap;
+  }
+  // Endgame: even tighter trigger when slots are almost gone.
+  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 6) {
+    return safetyCap;
   }
 
-  const calculated = Math.max(endgameFloor, Math.floor(Math.min(perceived, safetyCap)));
-  return Math.max(0, Math.min(calculated, safetyCap));
+  // Normal bid calculation
+  const posMult = state.profile.posBias[p.posKey] || 1;
+  const noise = 1 + (Math.random() - 0.5) * state.profile.noise * 2;
+  let perceived = baseValue * state.profile.aggression * posMult * noise;
+  perceived *= 0.85 + 0.15 * need;
+
+  // Moderate $/slot pressure for typical (8-12 $/slot) ranges
+  let boost = 1;
+  if (dollarsPerSlot > 10) boost = 1.10;
+  else if (dollarsPerSlot < 3) boost = 0.75;
+  perceived *= boost;
+
+  return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
 }
 
 // Nomination logic — pick a player to nominate based on the owner's strategy
@@ -285,7 +277,10 @@ function runMockDraft(opts) {
     if (!nominee) break;
     const opening = Math.max(1, Math.round(nominee.value * 0.4));
 
-    const { winner, price } = runBiddingRound(states, nominee, nominatorId, opening, inflation);
+    // Higher opening (50% of value) so the auction starts closer to fair —
+    // prevents nominators from winning cheap when no one else competes.
+    const opening2 = Math.max(1, Math.round(nominee.value * 0.5));
+    const { winner, price } = runBiddingRound(states, nominee, nominatorId, opening2, inflation);
     // Apply pick
     winner.budget -= price;
     winner.drafted.push({ name: nominee.name, pos: nominee.posKey, price, value: nominee.value, type: nominee.type });

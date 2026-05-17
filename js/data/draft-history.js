@@ -212,46 +212,47 @@ function getHistoryPicks(year) {
   return _history.picks.filter(p => p.year === year);
 }
 
-// Look up the salary a keeper is locked into THIS year. Resolution order:
+// Returns the year of the upcoming draft. Defaults to latest data year + 1.
+// (The latest year in _history.picks is the season just played; the NEXT
+// draft is for the following year.)
+function getUpcomingDraftYear() {
+  const years = _history.meta.years || [];
+  if (!years.length) return new Date().getFullYear();
+  return Math.max(...years) + 1;
+}
+
+// Look up the keeper salary for the UPCOMING draft year. Per the constitution,
+// a keeper's price is their most recent draft cost + $2 per year held.
+// Resolution order:
 //   1. Manual override in keeper_price_exceptions (most authoritative)
-//   2. Current year's ESPN keeper pick (mDraftDetail with keeper=true)
-//   3. Current year's ESPN draft pick (won at auction this year)
-//   4. Most recent prior year's appearance + $2/year escalator (best estimate)
+//   2. Most recent year's pick price + $2 × (upcoming year - that year)
 // Returns null only if we have no record of this player anywhere.
 function getCurrentKeeperSalary(playerName) {
   if (!playerName) return null;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
   if (exc[playerName] != null) return exc[playerName];
-  const years = _history.meta.years || [];
-  if (!years.length) return null;
-  const latest = Math.max(...years);
-
-  // Direct current-year hit (keeper OR new draft pick)
-  const currentYearPick = _history.picks.find(p => p.year === latest && p.player === playerName);
-  if (currentYearPick) return currentYearPick.price;
-
-  // Fallback: most recent prior year's pick + $2/year escalator
   const allOfPlayer = _history.picks.filter(p => p.player === playerName).sort((a, b) => b.year - a.year);
-  if (allOfPlayer.length) {
-    const mostRecent = allOfPlayer[0];
-    const yearsLater = latest - mostRecent.year;
-    return Math.max(1, mostRecent.price + 2 * yearsLater);
-  }
-  return null;
+  if (!allOfPlayer.length) return null;
+  const upcomingYear = getUpcomingDraftYear();
+  const mostRecent = allOfPlayer[0];
+  const yearsLater = upcomingYear - mostRecent.year;
+  return Math.max(1, mostRecent.price + 2 * yearsLater);
 }
 
-// True if a keeper salary was filled from a fallback (prior-year derivation)
-// rather than a direct match. Useful for surfacing data quality issues.
+// True if a keeper salary was derived with multi-year escalator (player
+// missed at least one year between most recent appearance and upcoming year).
+// Useful for surfacing data quality issues — most kept players appear every
+// year (kept again or drafted again), so a gap > 1 year may indicate
+// a FAAB pickup the user should manually override.
 function isKeeperSalaryEstimated(playerName) {
   if (!playerName) return false;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
   if (exc[playerName] != null) return false;
-  const years = _history.meta.years || [];
-  if (!years.length) return false;
-  const latest = Math.max(...years);
-  const direct = _history.picks.some(p => p.year === latest && p.player === playerName);
-  if (direct) return false;
-  return _history.picks.some(p => p.player === playerName);
+  const allOfPlayer = _history.picks.filter(p => p.player === playerName).sort((a, b) => b.year - a.year);
+  if (!allOfPlayer.length) return false;
+  const upcomingYear = getUpcomingDraftYear();
+  const mostRecent = allOfPlayer[0];
+  return (upcomingYear - mostRecent.year) > 1;
 }
 
 // Compute behavior profile for one owner across all years. Applies owner
