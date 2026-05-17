@@ -9,27 +9,46 @@ function renderHistory() {
 
   let html = '';
 
-  // ESPN sync section (uses proxy)
-  html += '<div class="card"><h2>Sync from ESPN</h2>';
+  // ESPN sync section (collapsible — collapsed by default if data already loaded)
+  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026";
+  const syncSummary = picks.length
+    ? picks.length + " picks loaded · " + (_history.meta.years || []).length + " seasons"
+    : "No data yet";
+  const syncCollapsed = picks.length > 0;
+  html += '<div class="collapsible-card' + (syncCollapsed ? ' collapsed' : '') + '" id="card-sync">';
+  html += '<div class="collapsible-head" data-target="card-sync">';
+  html += '<div><h2 style="margin: 0;">Sync from ESPN</h2><div class="muted small">' + esc(syncSummary) + '</div></div>';
+  html += '<span class="collapsible-toggle">▾</span>';
+  html += '</div>';
+  html += '<div class="collapsible-body">';
   html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons 2017-2026 (excluding 2020). Requires proxy URL configured in Settings tab.</p>';
   html += '<div style="display: flex; gap: 8px; align-items: center;">';
-  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026";
   html += '<input id="hist-espn-years" placeholder="' + seasons + '" value="' + seasons + '" style="flex: 1;">';
   html += '<button class="btn primary" id="hist-espn-sync" style="width: auto; padding: 8px 14px;"' + (ESPN.proxyUrl ? '' : ' disabled') + '>Sync from ESPN</button>';
   html += '</div>';
-  html += '<div class="muted small" style="margin-top: 6px;">' + (ESPN.proxyUrl ? "Proxy ready: " + esc(ESPN.proxyUrl) : "Set proxy URL in Live Draft tab first.") + '</div>';
+  html += '<div class="muted small" style="margin-top: 6px;">' + (ESPN.proxyUrl ? "Proxy ready: " + esc(ESPN.proxyUrl) : "Set proxy URL in Settings tab first.") + '</div>';
   html += '<div id="espn-sync-log" class="small muted" style="margin-top: 10px;"></div>';
   if (picks.length) {
     html += '<div style="margin-top: 10px;"><button class="btn ghost danger" id="hist-clear-top">Clear all history</button></div>';
   }
-  html += '</div>';
+  html += '</div></div>';
 
-  // Owner alias mapping section (if data exists) — GUID-based primary
+  // Owner alias mapping section (collapsible — collapsed by default if mostly set up)
   if (picks.length) {
     const currentOwners = LEAGUE.teams.map(t => t.owner);
     const guidOwners = listHistoricalOwnerGuids();
     const totalAliases = Object.keys(_ownerAliases.byGuid).length + Object.keys(_ownerAliases.byName).length;
-    html += '<div class="card"><h2>Owner Mapping <span class="muted small">' + totalAliases + ' aliases set</span></h2>';
+    const totalExclusions = Object.keys(_ownerAliases.excludedGuids || {}).length;
+    const mappedCount = guidOwners.filter(o => _ownerAliases.byGuid[o.guid] || isOwnerExcluded(o.guid)).length;
+    const unmappedCount = guidOwners.length - mappedCount;
+    const mapCollapsed = unmappedCount === 0 && guidOwners.length > 0;
+    const mapSummary = guidOwners.length + " unique owners · " + totalAliases + " aliased · " + totalExclusions + " excluded" + (unmappedCount > 0 ? " · " + unmappedCount + " unmapped" : "");
+    html += '<div class="collapsible-card' + (mapCollapsed ? ' collapsed' : '') + '" id="card-map">';
+    html += '<div class="collapsible-head" data-target="card-map">';
+    html += '<div><h2 style="margin: 0;">Owner Mapping</h2><div class="muted small">' + esc(mapSummary) + '</div></div>';
+    html += '<span class="collapsible-toggle">▾</span>';
+    html += '</div>';
+    html += '<div class="collapsible-body">';
     html += '<p class="muted small">Each row is one unique person across all years (keyed by ESPN owner GUID, so team renames AND ownership transfers roll up correctly). Map each to a current owner.</p>';
 
     if (guidOwners.length) {
@@ -97,7 +116,7 @@ function renderHistory() {
       }
       html += '</tbody></table>';
     }
-    html += '</div>';
+    html += '</div></div>';  // close collapsible body + card
   }
 
   // Manual CSV import section
@@ -246,6 +265,15 @@ function renderHistory() {
     }
     html += '</tbody></table></div>';
 
+    // Keeper financial summary
+    html += '<div><h4 class="muted small">Keeper financials (avg/year)</h4>';
+    html += '<table style="font-size: 12px;"><tbody>';
+    html += '<tr><td>$ locked in keepers</td><td class="num"><strong>$' + p.avgKeeperCost.toFixed(0) + '</strong></td><td class="small muted">vs lg $' + (leagueAvg?.avgKeeperCost || 0).toFixed(0) + '</td></tr>';
+    html += '<tr><td>Draft $ remaining</td><td class="num"><strong>$' + p.avgDraftBudget.toFixed(0) + '</strong></td><td class="small muted">vs lg $' + (leagueAvg?.avgDraftBudget || 0).toFixed(0) + '</td></tr>';
+    html += '<tr><td>Priciest keeper</td><td class="num"><strong>$' + p.avgMaxKeeperPrice.toFixed(0) + '</strong></td><td class="small muted">vs lg $' + (leagueAvg?.avgMaxKeeperPrice || 0).toFixed(0) + '</td></tr>';
+    html += '<tr><td>$20+ keepers</td><td class="num"><strong>' + p.avgExpensiveKeepersPerYear.toFixed(1) + '</strong></td><td class="small muted">vs lg ' + (leagueAvg?.avgExpensiveKeepersPerYear || 0).toFixed(1) + '</td></tr>';
+    html += '</tbody></table></div>';
+
     html += '</div>';   // close grid
     html += '</div>';   // close historical record section
     html += '</div>';   // close card body
@@ -277,6 +305,14 @@ function renderHistory() {
 }
 
 function wireHistoryHandlers() {
+  // Collapsible card heads toggle the card's .collapsed class
+  document.querySelectorAll(".collapsible-head").forEach(h => {
+    h.addEventListener("click", () => {
+      const id = h.dataset.target;
+      const card = document.getElementById(id);
+      if (card) card.classList.toggle("collapsed");
+    });
+  });
   // ESPN sync
   document.getElementById("hist-espn-sync")?.addEventListener("click", async () => {
     const yearsRaw = document.getElementById("hist-espn-years").value;

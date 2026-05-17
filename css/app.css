@@ -372,6 +372,28 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   color: var(--text);
 }
 
+/* Collapsible cards */
+.collapsible-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.collapsible-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+.collapsible-head:hover { background: var(--bg-3); }
+.collapsible-toggle { font-size: 14px; color: var(--text-2); transition: transform 200ms; }
+.collapsible-card.collapsed .collapsible-toggle { transform: rotate(-90deg); }
+.collapsible-body { padding: 0 16px 16px 16px; }
+.collapsible-card.collapsed .collapsible-body { display: none; }
+
 /* Modal overlay (used for note editor + comparison picker) */
 .modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }

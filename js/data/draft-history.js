@@ -304,17 +304,22 @@ function computeOwnerProfile(ownerName) {
   // Tells us if owners' draft tendencies are filling holes vs adding more.
   const yearPosKeepers = {};  // {year: {pos: count}}
   const yearPosDrafted = {};  // {year: {pos: count}}
+  const yearKeeperCost = {};  // {year: total $ in keepers}
+  const yearMaxKeeperPrice = {}; // {year: priciest single keeper}
+  const yearExpensiveKeepers = {}; // {year: count of $20+ keepers}
   for (const p of keeperPicks) {
     if (!yearPosKeepers[p.year]) yearPosKeepers[p.year] = {};
     const k = normalizePosKey(p.pos);
     yearPosKeepers[p.year][k] = (yearPosKeepers[p.year][k] || 0) + 1;
+    yearKeeperCost[p.year] = (yearKeeperCost[p.year] || 0) + p.price;
+    if (!yearMaxKeeperPrice[p.year] || p.price > yearMaxKeeperPrice[p.year]) yearMaxKeeperPrice[p.year] = p.price;
+    if (p.price >= 20) yearExpensiveKeepers[p.year] = (yearExpensiveKeepers[p.year] || 0) + 1;
   }
   for (const p of picks) {
     if (!yearPosDrafted[p.year]) yearPosDrafted[p.year] = {};
     const k = normalizePosKey(p.pos);
     yearPosDrafted[p.year][k] = (yearPosDrafted[p.year][k] || 0) + 1;
   }
-  // Avg keepers per position per year + avg drafted per position per year
   const avgKeepersByPos = {};
   const avgDraftedByPos = {};
   const yrCount = yearsPlayed.length || 1;
@@ -326,11 +331,16 @@ function computeOwnerProfile(ownerName) {
   }
   for (const k of Object.keys(avgKeepersByPos)) avgKeepersByPos[k] /= yrCount;
   for (const k of Object.keys(avgDraftedByPos)) avgDraftedByPos[k] /= yrCount;
-  // Total slot footprint (keepers + drafted) per position
   const totalSlotByPos = {};
   for (const k of new Set([...Object.keys(avgKeepersByPos), ...Object.keys(avgDraftedByPos)])) {
     totalSlotByPos[k] = (avgKeepersByPos[k] || 0) + (avgDraftedByPos[k] || 0);
   }
+
+  // Avg keeper financial profile
+  const avgKeeperCost = Object.values(yearKeeperCost).reduce((s, v) => s + v, 0) / yrCount;
+  const avgMaxKeeperPrice = Object.values(yearMaxKeeperPrice).reduce((s, v) => s + v, 0) / Math.max(1, Object.keys(yearMaxKeeperPrice).length);
+  const avgExpensiveKeepersPerYear = Object.values(yearExpensiveKeepers).reduce((s, v) => s + v, 0) / yrCount;
+  const avgDraftBudget = 260 - avgKeeperCost;  // remaining $ to spend on draft
 
   return {
     owner: ownerName,
@@ -346,6 +356,10 @@ function computeOwnerProfile(ownerName) {
     avgKeepersByPos,
     avgDraftedByPos,
     totalSlotByPos,
+    avgKeeperCost,
+    avgMaxKeeperPrice,
+    avgExpensiveKeepersPerYear,
+    avgDraftBudget,
     closerBias,
     spSpend,
     hitSpend,
@@ -371,6 +385,8 @@ function computeLeagueAverages() {
     posSpendPct: {}, posAvgPrice: {}, meanPrice: 0, top3Share: 0, maxPrice: 0,
     bigBidsPerYear: 0, avgMaxBidPerYear: 0,
     avgKeepersByPos: {}, avgDraftedByPos: {}, totalSlotByPos: {},
+    avgKeeperCost: 0, avgMaxKeeperPrice: 0, avgExpensiveKeepersPerYear: 0,
+    avgDraftBudget: 0,
   };
   for (const p of owners) {
     avg.meanPrice += p.meanPrice;
@@ -378,6 +394,10 @@ function computeLeagueAverages() {
     avg.maxPrice += p.maxPrice;
     avg.bigBidsPerYear += p.bigBidsPerYear || 0;
     avg.avgMaxBidPerYear += p.avgMaxBidPerYear || 0;
+    avg.avgKeeperCost += p.avgKeeperCost || 0;
+    avg.avgMaxKeeperPrice += p.avgMaxKeeperPrice || 0;
+    avg.avgExpensiveKeepersPerYear += p.avgExpensiveKeepersPerYear || 0;
+    avg.avgDraftBudget += p.avgDraftBudget || 0;
     for (const [k, v] of Object.entries(p.posSpendPct)) avg.posSpendPct[k] = (avg.posSpendPct[k] || 0) + v;
     for (const [k, v] of Object.entries(p.posAvgPrice)) avg.posAvgPrice[k] = (avg.posAvgPrice[k] || 0) + v;
     for (const [k, v] of Object.entries(p.avgKeepersByPos || {})) avg.avgKeepersByPos[k] = (avg.avgKeepersByPos[k] || 0) + v;
@@ -385,7 +405,7 @@ function computeLeagueAverages() {
     for (const [k, v] of Object.entries(p.totalSlotByPos || {})) avg.totalSlotByPos[k] = (avg.totalSlotByPos[k] || 0) + v;
   }
   const n = owners.length;
-  for (const f of ["meanPrice", "top3Share", "maxPrice", "bigBidsPerYear", "avgMaxBidPerYear"]) avg[f] /= n;
+  for (const f of ["meanPrice", "top3Share", "maxPrice", "bigBidsPerYear", "avgMaxBidPerYear", "avgKeeperCost", "avgMaxKeeperPrice", "avgExpensiveKeepersPerYear", "avgDraftBudget"]) avg[f] /= n;
   for (const m of ["posSpendPct", "posAvgPrice", "avgKeepersByPos", "avgDraftedByPos", "totalSlotByPos"]) {
     for (const k of Object.keys(avg[m])) avg[m][k] /= n;
   }
@@ -450,11 +470,29 @@ function ownerNarrative(profile, leagueAvg, styleLabel) {
   else if (profile.spSpend < 0.15 && (profile.avgKeepersByPos.SP || 0) >= 2.5) tendencies.push("builds around cheap SP keepers and uses draft $ for hitting");
   if (tendencies.length) sentences.push("Behavioral tilts: " + tendencies.join("; ") + ".");
 
-  // 4. Top-bid aggressiveness
-  if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.12) {
-    sentences.push("Willing to go to war on a single player — biggest annual bid averages $" + profile.avgMaxBidPerYear.toFixed(0) + ", well above the league norm of $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
-  } else if (profile.avgMaxBidPerYear <= leagueAvg.avgMaxBidPerYear * 0.85) {
-    sentences.push("Restrained at the top — never pushes past $" + profile.avgMaxBidPerYear.toFixed(0) + " on a single player, compared to league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
+  // 4. Keeper financial profile + how it constrains draft bids
+  const kc = profile.avgKeeperCost;
+  const lgKc = leagueAvg.avgKeeperCost || 0;
+  const maxK = profile.avgMaxKeeperPrice || 0;
+  const lgMaxK = leagueAvg.avgMaxKeeperPrice || 0;
+  if (kc >= lgKc * 1.15 && lgKc > 0) {
+    const heavyKeeperNote = "Heavy keeper commitment — locks $" + kc.toFixed(0) + " into keepers each year (league $" + lgKc.toFixed(0) + "), leaving roughly $" + profile.avgDraftBudget.toFixed(0) + " for the auction.";
+    let bidNote = "";
+    if (profile.avgMaxBidPerYear < leagueAvg.avgMaxBidPerYear * 0.92) {
+      bidNote = " That explains the restrained top draft bid ($" + profile.avgMaxBidPerYear.toFixed(0) + " avg vs league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ") — the money's already committed.";
+    } else if (maxK >= 30) {
+      bidNote = " Top keeper averages $" + maxK.toFixed(0) + " — they're stacking talent before the gavel even drops.";
+    }
+    sentences.push(heavyKeeperNote + bidNote);
+  } else if (kc <= lgKc * 0.85 && lgKc > 0) {
+    sentences.push("Light keeper load — only $" + kc.toFixed(0) + " committed pre-draft (league $" + lgKc.toFixed(0) + "), so they walk in with $" + profile.avgDraftBudget.toFixed(0) + "+ to deploy. Their drafted top bid ($" + profile.avgMaxBidPerYear.toFixed(0) + ") reflects that flexibility.");
+  } else {
+    // 5. Top-bid aggressiveness (only if keeper load is average)
+    if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.12) {
+      sentences.push("Willing to go to war on a single player — biggest annual bid averages $" + profile.avgMaxBidPerYear.toFixed(0) + ", well above the league norm of $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
+    } else if (profile.avgMaxBidPerYear <= leagueAvg.avgMaxBidPerYear * 0.85) {
+      sentences.push("Restrained at the top — never pushes past $" + profile.avgMaxBidPerYear.toFixed(0) + " on a single player vs league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
+    }
   }
 
   return sentences.join(" ");
