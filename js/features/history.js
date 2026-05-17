@@ -164,29 +164,12 @@ function renderHistory() {
   const sorted = Object.values(profiles).filter(p => p).sort((a, b) => b.totalSpent - a.totalSpent);
   for (const p of sorted) {
     const styleLabel = styleByOwner[p.owner] || "balanced";
-    const insights = ownerInsights(p, leagueAvg, styleLabel);
+    const narrative = ownerNarrative(p, leagueAvg, styleLabel);
     html += '<div class="owner-card">';
     // Header
     html += '<div class="owner-card-head" data-owner="' + esc(p.owner) + '">';
     html += '<div>';
     html += '<div class="owner-name">' + esc(p.owner) + ' <span class="muted small">· ' + styleLabel + ' · ' + p.picks + ' picks across ' + p.years.length + ' years</span></div>';
-    if (insights.length) {
-      html += '<div class="owner-insights">';
-      for (const ins of insights.slice(0, 4)) {
-        const colorByKind = {
-          style: "var(--accent)",
-          "pos-up": "var(--bad)",
-          "pos-down": "var(--good)",
-          "closer-up": "var(--bad)",
-          "closer-down": "var(--good)",
-          "sp-up": "var(--warn)",
-          "sp-down": "var(--accent)",
-          loyalty: "var(--keeper)",
-        };
-        html += '<span class="owner-insight" style="border-color: ' + (colorByKind[ins.kind] || "var(--border)") + ';">' + esc(ins.text) + '</span>';
-      }
-      html += '</div>';
-    }
     html += '</div>';
     html += '<div class="owner-quick">';
     html += '<div><span class="muted small">Avg/pick</span><span class="owner-q-val">$' + p.meanPrice.toFixed(0) + '</span></div>';
@@ -195,8 +178,18 @@ function renderHistory() {
     html += '</div>';
     html += '</div>';
 
-    // Detail: top picks + repeat targets + per-year top pick + pos vs league
+    // Body: narrative profile + historical record
     html += '<div class="owner-card-body">';
+
+    // === Tendency Profile (narrative) ===
+    html += '<div class="profile-section">';
+    html += '<div class="profile-label">Tendency Profile</div>';
+    html += '<p class="profile-narrative">' + esc(narrative) + '</p>';
+    html += '</div>';
+
+    // === Historical Record ===
+    html += '<div class="profile-section">';
+    html += '<div class="profile-label">Historical Record</div>';
     html += '<div class="grid cols-2" style="gap: 14px;">';
 
     // Top picks
@@ -253,7 +246,10 @@ function renderHistory() {
     }
     html += '</tbody></table></div>';
 
-    html += '</div></div></div>';
+    html += '</div>';   // close grid
+    html += '</div>';   // close historical record section
+    html += '</div>';   // close card body
+    html += '</div>';   // close owner card
   }
   html += '</div>';
 

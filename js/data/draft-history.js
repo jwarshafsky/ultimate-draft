@@ -392,6 +392,74 @@ function computeLeagueAverages() {
   return avg;
 }
 
+// Generate a written tendency profile paragraph for an owner. Position-neutral
+// where possible (no specific player names) — synthesizes style, position
+// emphasis, and behavioral patterns into a 2-4 sentence narrative.
+function ownerNarrative(profile, leagueAvg, styleLabel) {
+  if (!profile || !leagueAvg) return "";
+  const sentences = [];
+
+  // 1. Overall spending style
+  const top3 = (profile.top3Share * 100).toFixed(0);
+  const lgTop3 = (leagueAvg.top3Share * 100).toFixed(0);
+  const bigs = profile.bigBidsPerYear.toFixed(1);
+  const lgBigs = leagueAvg.bigBidsPerYear.toFixed(1);
+  if (styleLabel === "stars+scrubs") {
+    sentences.push("Classic stars-and-scrubs drafter — concentrates " + top3 + "% of each draft's spending in the top 3 picks (league " + lgTop3 + "%) and makes " + bigs + " bids of $25+ per year (league " + lgBigs + ").");
+  } else if (styleLabel === "spread") {
+    sentences.push("Spread drafter that goes for depth over star power, rarely making mega-bids (" + bigs + " bids of $25+ per year vs league " + lgBigs + "). Top 3 picks only soak up " + top3 + "% of the budget.");
+  } else if (styleLabel === "top-heavy") {
+    sentences.push("Top-heavy build with calculated bursts of spending. Biggest bid averages $" + profile.avgMaxBidPerYear.toFixed(0) + " per year and top 3 picks claim " + top3 + "% of the budget.");
+  } else {
+    sentences.push("Balanced approach — neither concentrated stars-and-scrubs nor pure depth play. Top 3 picks take " + top3 + "% of each draft's budget (close to league " + lgTop3 + "%).");
+  }
+
+  // 2. Position emphasis (keeper-aware, using total slot footprint)
+  const heavyPositions = [];
+  const lightPositions = [];
+  const fromKeepers = {};
+  for (const pos of ["SP", "RP", "OF", "C", "1B", "2B", "3B", "SS"]) {
+    const myTotal = profile.totalSlotByPos[pos] || 0;
+    const lgTotal = leagueAvg.totalSlotByPos[pos] || 0;
+    const diff = myTotal - lgTotal;
+    if (myTotal < 0.5) continue;
+    if (diff >= 0.8) {
+      const keptShare = (profile.avgKeepersByPos[pos] || 0) / myTotal;
+      fromKeepers[pos] = keptShare > 0.6 ? "mostly via keepers" : keptShare > 0.3 ? "keepers+draft mix" : "drafts heavy";
+      heavyPositions.push(pos);
+    } else if (diff <= -0.8) {
+      lightPositions.push(pos);
+    }
+  }
+  if (heavyPositions.length || lightPositions.length) {
+    const heavyDesc = heavyPositions.length
+      ? "leans heavy on " + heavyPositions.map(p => p + " (" + fromKeepers[p] + ")").join(", ")
+      : "";
+    const lightDesc = lightPositions.length ? "underweights " + lightPositions.join(", ") : "";
+    const join = heavyDesc && lightDesc ? "; " : "";
+    sentences.push("Position-wise, " + heavyDesc + join + lightDesc + ".");
+  } else {
+    sentences.push("Position-neutral — no major over- or underweights relative to league.");
+  }
+
+  // 3. Closer / SP behavioral patterns
+  const tendencies = [];
+  if (profile.closerBias > 0.13) tendencies.push("pays up for closers in the draft (" + (profile.closerBias * 100).toFixed(0) + "% of draft budget on RP vs league " + ((leagueAvg.posSpendPct.RP || 0) * 100).toFixed(0) + "%)");
+  else if (profile.closerBias < 0.04 && (profile.avgKeepersByPos.RP || 0) < 1) tendencies.push("streams saves rather than buying them");
+  if (profile.spSpend > 0.30 && (profile.avgKeepersByPos.SP || 0) < 2) tendencies.push("drafts SP aggressively to compensate for thin pitching keepers");
+  else if (profile.spSpend < 0.15 && (profile.avgKeepersByPos.SP || 0) >= 2.5) tendencies.push("builds around cheap SP keepers and uses draft $ for hitting");
+  if (tendencies.length) sentences.push("Behavioral tilts: " + tendencies.join("; ") + ".");
+
+  // 4. Top-bid aggressiveness
+  if (profile.avgMaxBidPerYear >= leagueAvg.avgMaxBidPerYear * 1.12) {
+    sentences.push("Willing to go to war on a single player — biggest annual bid averages $" + profile.avgMaxBidPerYear.toFixed(0) + ", well above the league norm of $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
+  } else if (profile.avgMaxBidPerYear <= leagueAvg.avgMaxBidPerYear * 0.85) {
+    sentences.push("Restrained at the top — never pushes past $" + profile.avgMaxBidPerYear.toFixed(0) + " on a single player, compared to league $" + leagueAvg.avgMaxBidPerYear.toFixed(0) + ".");
+  }
+
+  return sentences.join(" ");
+}
+
 // Generate human-readable insight strings for an owner.
 function ownerInsights(profile, leagueAvg, styleLabel) {
   if (!profile || !leagueAvg) return [];

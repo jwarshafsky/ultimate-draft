@@ -354,6 +354,24 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .owner-card-body { padding: 14px; }
 .owner-card-body h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
 
+.profile-section { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.profile-section:last-child { border-bottom: none; padding-bottom: 0; }
+.profile-section:first-child { padding-top: 0; }
+.profile-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.profile-narrative {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
 /* Modal overlay (used for note editor + comparison picker) */
 .modal-host { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; }
 .modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.5); }
