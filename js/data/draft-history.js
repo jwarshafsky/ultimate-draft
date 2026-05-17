@@ -27,7 +27,9 @@ const _history = {
 //   byName: historical team name → current owner name (fallback when GUID missing)
 //   excludedGuids: GUIDs of former owners no longer in the league. Their
 //     picks are filtered out of tendency profiles entirely.
-const _ownerAliases = { byGuid: {}, byName: {}, excludedGuids: {} };
+//   defunctAutoProcessed: GUIDs we've auto-marked as defunct (last played < latest
+//     year). Tracked so we don't re-auto-exclude if user manually re-includes.
+const _ownerAliases = { byGuid: {}, byName: {}, excludedGuids: {}, defunctAutoProcessed: {} };
 
 function loadOwnerAliases() {
   try {
@@ -36,8 +38,33 @@ function loadOwnerAliases() {
       _ownerAliases.byGuid = v.byGuid || {};
       _ownerAliases.byName = v.byName || v.map || {};
       _ownerAliases.excludedGuids = v.excludedGuids || {};
+      _ownerAliases.defunctAutoProcessed = v.defunctAutoProcessed || {};
     }
   } catch (e) {}
+}
+
+// Auto-exclude any GUID whose mostRecentYear is older than the latest year in
+// the data. Runs once per GUID (tracked in defunctAutoProcessed) so users
+// can manually un-exclude without it bouncing back.
+function autoExcludeDefunctOwners() {
+  if (!_history.picks.length) return;
+  const latestYear = Math.max(..._history.picks.map(p => p.year));
+  const byGuid = {};
+  for (const p of _history.picks) {
+    if (!p.espnOwnerGuid) continue;
+    if (!byGuid[p.espnOwnerGuid] || p.year > byGuid[p.espnOwnerGuid]) {
+      byGuid[p.espnOwnerGuid] = p.year;
+    }
+  }
+  let anyChange = false;
+  for (const [guid, lastYear] of Object.entries(byGuid)) {
+    if (lastYear < latestYear && !_ownerAliases.defunctAutoProcessed[guid]) {
+      _ownerAliases.excludedGuids[guid] = true;
+      _ownerAliases.defunctAutoProcessed[guid] = true;
+      anyChange = true;
+    }
+  }
+  if (anyChange) saveOwnerAliases();
 }
 
 function setOwnerExcluded(guid, excluded) {

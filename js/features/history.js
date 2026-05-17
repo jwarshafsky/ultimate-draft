@@ -52,6 +52,8 @@ function renderHistory() {
     html += '<p class="muted small">Each row is one unique person across all years (keyed by ESPN owner GUID, so team renames AND ownership transfers roll up correctly). Map each to a current owner.</p>';
 
     if (guidOwners.length) {
+      // Auto-exclude defunct owners (most recent season < latest year in data).
+      autoExcludeDefunctOwners();
       // Auto-save AUTO suggestions for rows that don't have an alias yet and
       // aren't excluded. One-time op per row so the bottom profile section
       // shows current owner names without requiring the user to click each dropdown.
