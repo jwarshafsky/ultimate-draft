@@ -121,16 +121,6 @@ function renderHistory() {
     html += '</div></div>';  // close collapsible body + card
   }
 
-  // Manual CSV import section
-  html += '<div class="card"><h2>Manual CSV Import</h2>';
-  html += '<p class="muted small">Alternative to ESPN sync. Expected columns: Year, Owner, Player, Pos, Price, Value (optional), Keeper (optional).</p>';
-  html += '<textarea id="hist-csv" rows="6" style="width: 100%; font-family: var(--mono); font-size: 12px;" placeholder="Year,Owner,Player,Pos,Price,Value..."></textarea>';
-  html += '<div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">';
-  html += '<input id="hist-year" type="number" placeholder="Year (if not in CSV)" style="width: 200px;">';
-  html += '<button class="btn primary" id="hist-import" style="width: auto; padding: 8px 16px;">Import</button>';
-  html += '<label class="muted small">Or upload: <input type="file" id="hist-file" accept=".csv,text/csv"></label>';
-  html += '</div></div>';
-
   if (!picks.length) {
     html += '<div class="empty"><p>No draft history yet.</p><p class="small">Import past results above to unlock per-owner tendency profiles.</p></div>';
     root.innerHTML = html;
@@ -357,27 +347,6 @@ function wireHistoryHandlers() {
     sel.addEventListener("change", (e) => {
       setOwnerAlias(e.target.dataset.name, e.target.value);
     });
-  });
-  document.getElementById("hist-import")?.addEventListener("click", () => {
-    const text = document.getElementById("hist-csv").value;
-    const year = parseInt(document.getElementById("hist-year").value, 10) || null;
-    if (!text.trim()) { alert("Paste CSV first."); return; }
-    const added = importHistoryCSV(text, year);
-    alert("Imported " + added + " picks.");
-  });
-  document.getElementById("hist-file")?.addEventListener("change", (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const year = parseInt(document.getElementById("hist-year").value, 10) || null;
-      const added = importHistoryCSV(reader.result, year);
-      alert("Imported " + added + " picks from " + file.name + ".");
-    };
-    reader.readAsText(file);
-  });
-  document.getElementById("hist-clear")?.addEventListener("click", () => {
-    if (confirm("Clear all draft history?")) clearHistory();
   });
   document.getElementById("hist-clear-top")?.addEventListener("click", () => {
     if (confirm("Clear all draft history?")) clearHistory();
