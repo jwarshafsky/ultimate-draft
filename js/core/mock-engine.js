@@ -59,17 +59,22 @@ function buildMockTeamStates(opts) {
       if (overlay) profile = { ...profile, ...overlay, posBias: { ...profile.posBias, ...overlay.posBias } };
     }
     if (opts.profiles?.[t.id]) profile = { ...profile, ...opts.profiles[t.id] };
+    const startingBudget = LEAGUE.draftBudget - keptCost;
+    const slotsToFill = LEAGUE.rosterSize - kept.length;
+    // Floor budget at slotsToFill ($1 per remaining slot minimum) so a team
+    // with very expensive keepers can still afford $1 picks the rest of the way.
+    const safeBudget = Math.max(slotsToFill, startingBudget);
     states[t.id] = {
       teamId: t.id,
       teamName: t.name,
       ownerName: t.owner,
       isMe: !!t.isMe,
       profile,
-      budget: LEAGUE.draftBudget - keptCost,
+      budget: safeBudget,
       kept,
       drafted: [],
       slotsByPos: countSlotsByPos(kept),
-      slotsRemaining: LEAGUE.rosterSize - kept.length,
+      slotsRemaining: slotsToFill,
     };
   }
   return states;
@@ -323,12 +328,22 @@ function runMockDraft(opts) {
     if (!nominee) break;
     const opening = Math.max(1, Math.round(nominee.value * 0.4));
 
-    // Higher opening (50% of value) so the auction starts closer to fair —
-    // prevents nominators from winning cheap when no one else competes.
-    const opening2 = Math.max(1, Math.round(nominee.value * 0.5));
-    const { winner, price } = runBiddingRound(states, nominee, nominatorId, opening2, inflation);
-    // Apply pick
-    winner.budget -= price;
+    // Higher opening (50% of value) so the auction starts closer to fair.
+    // Cap opening at nominator's affordable budget so they don't get assigned
+    // as winner at a price they can't pay.
+    let opening2 = Math.max(1, Math.round(nominee.value * 0.5));
+    const nominator = states[nominatorId];
+    const nomMaxAffordable = Math.max(1, nominator.budget - Math.max(0, nominator.slotsRemaining - 1));
+    opening2 = Math.min(opening2, nomMaxAffordable);
+    const { winner, price: rawPrice } = runBiddingRound(states, nominee, nominatorId, opening2, inflation);
+
+    // Hard guard: actual price can never exceed winner's available budget.
+    // Reserve $1 per future remaining slot.
+    const winnerReserve = Math.max(0, winner.slotsRemaining - 1);
+    const winnerMaxPrice = Math.max(1, winner.budget - winnerReserve);
+    const price = Math.min(rawPrice, winnerMaxPrice);
+
+    winner.budget = Math.max(0, winner.budget - price);
     winner.drafted.push({ name: nominee.name, pos: nominee.posKey, price, value: nominee.value, type: nominee.type });
     winner.slotsByPos[nominee.posKey] = (winner.slotsByPos[nominee.posKey] || 0) + 1;
     winner.slotsRemaining -= 1;
