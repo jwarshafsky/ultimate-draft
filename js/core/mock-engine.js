@@ -103,95 +103,126 @@ function positionNeed(state, posKey) {
 // What's the most this team would bid for player p in the current state?
 // Returns an integer (auction prices are whole dollars).
 //
-// Real-world calibration: owners spend ~95-99% of budgets every year. The
-// simulator MUST burn through cash. When $/slot is well above the natural
-// norm (~$10), bidders push toward their full safety cap so the auction
-// price escalates against competition.
+// Real-world calibration:
+//   - Owners spend 95-99% of budgets every year. Force-spend at high $/slot.
+//   - Stars-and-scrubs drafters pay 10-20% over value for T1/T2; underpay T4/T5.
+//   - Spread drafters underpay T1, bid AT value for T3/T4.
+//   - Position need scales bid 0.4 (full position) → 1.0 (unfilled).
+//   - Owner-specific position biases (history-derived) tilt bids by position.
+//   - Auction natural inflation: even average bidders pay 3-5% over baseline.
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
   const baseValue = inflatedValue(p, inflation);
   if (!isFinite(baseValue)) return 0;
 
-  // Hard safety: reserve $1 per future slot. Never bid past this.
+  // Hard safety: reserve $1 per future slot.
   const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - state.profile.safetyMargin;
   if (safetyCap <= 0) return 0;
 
+  const profile = state.profile;
   const need = positionNeed(state, p.posKey);
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
 
-  // FORCE-SPEND: when a team is sitting on extra cash, max out the bid even
-  // for bench depth. Owners with money to burn drive prices on EVERY player
-  // late in the draft, regardless of whether position is full.
-  if (dollarsPerSlot >= 12) {
-    return safetyCap;
-  }
-  // Endgame burn: tighter trigger when slots are almost gone.
-  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 5) {
-    return safetyCap;
+  // Endgame force-spend: when budget overhangs slots, bid full cap.
+  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 5) return safetyCap;
+  if (dollarsPerSlot >= 13) return safetyCap;
+
+  // Tier classification
+  const tier = baseValue >= 35 ? "T1" : baseValue >= 20 ? "T2" : baseValue >= 10 ? "T3" : baseValue >= 5 ? "T4" : "T5";
+
+  // Tendency-driven tier aggression.
+  // Stars+scrubs profile (topTierAppetite >= 1.2) hits T1/T2 hard, saves on T4/T5.
+  // Spread profile (topTierAppetite < 1.0) underpays T1, pays at value for mid tiers.
+  let tierAgg = profile.aggression;
+  const tta = profile.topTierAppetite || 1;
+  if (tta >= 1.25) {
+    if (tier === "T1") tierAgg *= 1.18;
+    else if (tier === "T2") tierAgg *= 1.10;
+    else if (tier === "T4") tierAgg *= 0.85;
+    else if (tier === "T5") tierAgg *= 0.7;
+  } else if (tta < 1.05) {
+    if (tier === "T1") tierAgg *= 0.90;
+    else if (tier === "T3") tierAgg *= 1.05;
+    else if (tier === "T4") tierAgg *= 1.08;
   }
 
-  // Normal bid calculation
-  const posMult = state.profile.posBias[p.posKey] || 1;
-  const noise = 1 + (Math.random() - 0.5) * state.profile.noise * 2;
-  let perceived = baseValue * state.profile.aggression * posMult * noise;
-  perceived *= 0.85 + 0.15 * need;
+  // Position bias from history (e.g., closer hoarder, SP-heavy)
+  const posMult = profile.posBias[p.posKey] || 1;
 
-  // Moderate $/slot pressure for typical (8-12 $/slot) ranges
-  let boost = 1;
-  if (dollarsPerSlot > 10) boost = 1.10;
-  else if (dollarsPerSlot < 3) boost = 0.75;
-  perceived *= boost;
+  // Need factor: full position → 40% of bid; partial → 75%; full need → 100%.
+  let needFactor;
+  if (need <= 0) needFactor = 0.40;
+  else if (need < 0.3) needFactor = 0.75;
+  else if (need < 0.6) needFactor = 0.92;
+  else needFactor = 1.00;
+
+  // Auction natural inflation — even neutral bidders pay slightly above raw value.
+  const auctionInflation = 1.03;
+
+  // Random per-pick noise (5-15% swing)
+  const noise = 1 + (Math.random() - 0.5) * profile.noise * 2;
+
+  let perceived = baseValue * tierAgg * posMult * needFactor * auctionInflation * noise;
+
+  // Moderate $/slot pressure for mid-range
+  if (dollarsPerSlot > 11) perceived *= 1.08;
+  else if (dollarsPerSlot < 4) perceived *= 0.80;
 
   return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
 }
 
-// Nomination logic — pick a player to nominate based on the owner's strategy
-// mix. As the draft moves into the endgame, nominators favor higher-value
-// players so leftover budgets get drained.
+// Nomination logic — tendency-driven. Stars+scrubs owners drop big names
+// early to drain opponents. Spread owners nominate mid-tier value plays.
+// Endgame: everyone nominates pricier players to burn budgets.
 function chooseNomination(state, pool, inflation) {
   if (!pool.length) return null;
-  const mix = state.profile.nomMix;
-  const r = Math.random();
-  let cum = 0;
-  let kind = "target";
-  for (const [k, v] of Object.entries(mix)) {
-    cum += v;
-    if (r < cum) { kind = k; break; }
-  }
-
-  // Endgame override: when $/slot is high league-wide, nominate big-money
-  // players to force spending.
+  const profile = state.profile;
+  const tta = profile.topTierAppetite || 1;
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
-  if (state.slotsRemaining <= 8 && dollarsPerSlot > 10) {
-    const splashy = pool.filter(p => p.value > 8);
-    if (splashy.length) return splashy[Math.floor(Math.random() * Math.min(5, splashy.length))];
+
+  // ENDGAME (slots low + budget hot): nominate biggest remaining to burn cash
+  if (state.slotsRemaining <= 8 && dollarsPerSlot > 9) {
+    const splashy = pool.filter(p => p.value > 6);
+    if (splashy.length) return splashy[Math.floor(Math.random() * Math.min(6, splashy.length))];
   }
 
-  if (kind === "target") {
-    const candidates = pool.filter(p => p.value > 10 && positionNeed(state, p.posKey) > 0.4);
-    if (candidates.length) return candidates[Math.floor(Math.random() * Math.min(8, candidates.length))];
+  // EARLY (lots of budget): stars+scrubs hammers T1/T2 to drain or grab.
+  // Spread drafters nominate mid-tier they actually want.
+  if (state.budget > 180) {
+    if (tta >= 1.2) {
+      const big = pool.filter(p => p.value > 28);
+      if (big.length && Math.random() < 0.5) return big[Math.floor(Math.random() * Math.min(5, big.length))];
+    }
+    // Standard target: a player in a position I need, in my tier preference
+    const targetTier = tta >= 1.2 ? 25 : tta < 1.05 ? 10 : 15;
+    const targets = pool.filter(p => p.value >= targetTier && positionNeed(state, p.posKey) > 0.4);
+    if (targets.length) return targets[Math.floor(Math.random() * Math.min(8, targets.length))];
   }
-  if (kind === "dump") {
-    const candidates = pool.filter(p => p.value > 25 && positionNeed(state, p.posKey) < 0.5);
-    if (candidates.length) return candidates[Math.floor(Math.random() * candidates.length)];
+
+  // MID: position-need targets, with some random dumps
+  if (Math.random() < 0.6) {
+    const need = pool.filter(p => positionNeed(state, p.posKey) > 0.4 && p.value > 5);
+    if (need.length) return need[Math.floor(Math.random() * Math.min(8, need.length))];
   }
-  if (kind === "drain") {
-    const scarce = pool.filter(p => ["C", "SS", "RP"].includes(p.posKey) && p.value > 5);
-    if (scarce.length) return scarce[Math.floor(Math.random() * scarce.length)];
-  }
-  const cheap = pool.filter(p => p.value > 1 && p.value < 8);
+  // Dump: nominate a buzzy player at a position I'm full on
+  const dumpCandidates = pool.filter(p => p.value > 20 && positionNeed(state, p.posKey) <= 0.2);
+  if (dumpCandidates.length) return dumpCandidates[Math.floor(Math.random() * Math.min(4, dumpCandidates.length))];
+
+  // Default: cheap value play
+  const cheap = pool.filter(p => p.value > 1 && p.value < 10);
   if (cheap.length) return cheap[Math.floor(Math.random() * cheap.length)];
-
   return pool[0];
 }
 
 // Simulate the bidding war for one nomination. Returns {winner: teamState, price}.
+// Bid increments scale with current price — real auctions jump $3-5 at high
+// dollar levels, not $1.
 function runBiddingRound(states, player, nominatorId, opening, inflation) {
   let currentBid = Math.max(1, Math.floor(opening || 1));
   let currentWinner = states[nominatorId];
   let activeIds = Object.keys(states).filter(id => states[id].slotsRemaining > 0 && states[id].budget > currentBid);
   let rounds = 0;
-  while (activeIds.length && rounds < 50) {
+  while (activeIds.length && rounds < 80) {
     rounds++;
     let anyBumped = false;
     for (const id of activeIds) {
@@ -199,7 +230,8 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
       const s = states[id];
       const max = computeMaxBid(s, player, inflation);
       if (max > currentBid) {
-        const increment = currentBid < 10 ? 1 : currentBid < 30 ? 2 : 3;
+        // Real-world auction increments
+        const increment = currentBid < 5 ? 1 : currentBid < 12 ? 1 : currentBid < 25 ? 2 : currentBid < 40 ? 3 : 4;
         const newBid = Math.min(max, currentBid + increment);
         if (newBid > currentBid) {
           currentBid = Math.floor(newBid);
@@ -211,8 +243,6 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
     if (!anyBumped) break;
     activeIds = activeIds.filter(id => states[id].budget > currentBid);
   }
-  // Ensure winner can afford it (their max calc factored slotsRemaining, but
-  // the nominator was forced in at the opening price — guard against that).
   if (currentWinner.budget < currentBid) {
     currentBid = Math.max(1, currentWinner.budget);
   }
