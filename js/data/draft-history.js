@@ -212,10 +212,12 @@ function getHistoryPicks(year) {
   return _history.picks.filter(p => p.year === year);
 }
 
-// Look up the salary a keeper is locked into THIS year. ESPN records every
-// pick (including keepers) in mDraftDetail with `keeper: true` and the
-// keeper's $cost as bidAmount. So the source of truth is the current year's
-// history. Manual overrides (keeper_price_exceptions) still win.
+// Look up the salary a keeper is locked into THIS year. Resolution order:
+//   1. Manual override in keeper_price_exceptions (most authoritative)
+//   2. Current year's ESPN keeper pick (mDraftDetail with keeper=true)
+//   3. Current year's ESPN draft pick (won at auction this year)
+//   4. Most recent prior year's appearance + $2/year escalator (best estimate)
+// Returns null only if we have no record of this player anywhere.
 function getCurrentKeeperSalary(playerName) {
   if (!playerName) return null;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
@@ -223,8 +225,33 @@ function getCurrentKeeperSalary(playerName) {
   const years = _history.meta.years || [];
   if (!years.length) return null;
   const latest = Math.max(...years);
-  const match = _history.picks.find(p => p.year === latest && p.keeper && p.player === playerName);
-  return match ? match.price : null;
+
+  // Direct current-year hit (keeper OR new draft pick)
+  const currentYearPick = _history.picks.find(p => p.year === latest && p.player === playerName);
+  if (currentYearPick) return currentYearPick.price;
+
+  // Fallback: most recent prior year's pick + $2/year escalator
+  const allOfPlayer = _history.picks.filter(p => p.player === playerName).sort((a, b) => b.year - a.year);
+  if (allOfPlayer.length) {
+    const mostRecent = allOfPlayer[0];
+    const yearsLater = latest - mostRecent.year;
+    return Math.max(1, mostRecent.price + 2 * yearsLater);
+  }
+  return null;
+}
+
+// True if a keeper salary was filled from a fallback (prior-year derivation)
+// rather than a direct match. Useful for surfacing data quality issues.
+function isKeeperSalaryEstimated(playerName) {
+  if (!playerName) return false;
+  const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
+  if (exc[playerName] != null) return false;
+  const years = _history.meta.years || [];
+  if (!years.length) return false;
+  const latest = Math.max(...years);
+  const direct = _history.picks.some(p => p.year === latest && p.player === playerName);
+  if (direct) return false;
+  return _history.picks.some(p => p.player === playerName);
 }
 
 // Compute behavior profile for one owner across all years. Applies owner

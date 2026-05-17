@@ -37,7 +37,10 @@ function renderKeepers() {
     let totalCost = 0, totalValue = 0, totalSurplus = 0;
     for (const p of players) {
       const isMinor = !!p.minorKeeper;
-      const cost = isMinor ? 0 : (getCurrentKeeperSalary(p.name) ?? 0);
+      const rawCost = isMinor ? 0 : getCurrentKeeperSalary(p.name);
+      const cost = rawCost ?? 0;
+      const isEstimated = !isMinor && isKeeperSalaryEstimated(p.name);
+      const isMissing = !isMinor && rawCost == null;
       const val = getPlayerValue(p.name);
       const projValue = val ? val.value : null;
       const surplus = projValue != null ? projValue - cost : null;
@@ -57,6 +60,8 @@ function renderKeepers() {
       if (p.rule5) flags.push('<span class="kbd" style="color: var(--warn);">R5</span>');
       if (p.tradeBlock) flags.push('<span class="kbd" style="color: var(--accent);">TB</span>');
       if (surplus != null && surplus < 0 && !isMinor) flags.push('<span class="kbd" style="color: var(--bad);">UNDERWATER</span>');
+      if (isEstimated) flags.push('<span class="kbd" style="color: var(--warn);" title="Salary estimated from prior years + $2/yr escalator">EST $</span>');
+      if (isMissing) flags.push('<span class="kbd" style="color: var(--bad);" title="No prior draft data for this player — add a manual salary in The League App">NO $</span>');
 
       html += '<tr class="' + (isMinor ? 'minor-kept' : 'kept') + '">';
       html += '<td>' + esc(p.name) + '</td>';
