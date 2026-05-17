@@ -7,21 +7,21 @@
 //   { multiplier, hitMultiplier, pitMultiplier, perPlayer: {name -> infl$} }
 
 // Returns the kept-player cost for a player (if marked keeper or minorKeeper).
-// Minor leaguers keep at $0; ML keepers keep at their salary (with exceptions).
+// Minor leaguers keep at $0; ML keepers keep at their salary (from ESPN
+// current-year keeper pick price, or manual override).
 function getKeptCost(playerName, teamId) {
   const sel = (getKeeperSelections()[teamId] || {})[playerName];
   if (!sel) return null;
   if (sel.minorKeeper) return { cost: 0, kind: "minor" };
   if (sel.keeper) {
-    // Use price exception if present; otherwise we need ESPN salary — for now
-    // fall back to 0 (will be filled in once we have the salary feed).
-    const price = getKeeperPriceExceptions()[playerName];
+    const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(playerName) : null;
     return { cost: typeof price === "number" ? price : 0, kind: "major" };
   }
   return null;
 }
 
-// Collects every kept player across the league with their cost/team.
+// Collects every kept player across the league with their cost/team. ML
+// salaries come from the current-year ESPN keeper pick price (or override).
 function collectKeepers() {
   const out = [];
   const selections = getKeeperSelections();
@@ -30,8 +30,8 @@ function collectKeepers() {
       if (flags.minorKeeper) {
         out.push({ name, teamId, cost: 0, kind: "minor" });
       } else if (flags.keeper) {
-        const price = getKeeperPriceExceptions()[name];
-        out.push({ name, teamId, cost: typeof price === "number" ? price : null, kind: "major" });
+        const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(name) : null;
+        out.push({ name, teamId, cost: typeof price === "number" ? price : 0, kind: "major" });
       }
     }
   }

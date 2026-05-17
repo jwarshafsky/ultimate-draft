@@ -92,7 +92,7 @@ function renderTradeSide(side) {
   for (let i = 0; i < gives.length; i++) {
     const g = gives[i];
     const val = getPlayerValue(g.name);
-    const sal = getKeeperPriceExceptions()[g.name] || 0;
+    const sal = getCurrentKeeperSalary(g.name) ?? 0;
     const v = val ? val.value : 0;
     const lt = val ? lifetimeSurplus({ playerValue: v, salary: sal, originalDraftPrice: sal }) : 0;
     totalSal += sal; totalVal += v; totalLifetime += lt;
@@ -205,7 +205,7 @@ function multiYearSurplus(players, years) {
   for (const p of players) {
     const val = getPlayerValue(p.name);
     if (!val) continue;
-    const sal = getKeeperPriceExceptions()[p.name] || 0;
+    const sal = getCurrentKeeperSalary(p.name) ?? 0;
     const traj = surplusTrajectory({ playerValue: val.value, salary: sal, originalDraftPrice: sal, yearsAhead: years });
     for (const y of traj) {
       if (y.keeperEligible && y.surplus > 0) total += y.surplus;
@@ -224,7 +224,7 @@ function renderTradeVerdict() {
   const yr1 = (list) => list.reduce((s, g) => {
     const val = getPlayerValue(g.name);
     const v = val ? val.value : 0;
-    const sal = getKeeperPriceExceptions()[g.name] || 0;
+    const sal = getCurrentKeeperSalary(g.name) ?? 0;
     return s + (v - sal);
   }, 0);
   const aYr1 = yr1(a);

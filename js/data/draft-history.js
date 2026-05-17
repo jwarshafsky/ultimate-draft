@@ -212,6 +212,21 @@ function getHistoryPicks(year) {
   return _history.picks.filter(p => p.year === year);
 }
 
+// Look up the salary a keeper is locked into THIS year. ESPN records every
+// pick (including keepers) in mDraftDetail with `keeper: true` and the
+// keeper's $cost as bidAmount. So the source of truth is the current year's
+// history. Manual overrides (keeper_price_exceptions) still win.
+function getCurrentKeeperSalary(playerName) {
+  if (!playerName) return null;
+  const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
+  if (exc[playerName] != null) return exc[playerName];
+  const years = _history.meta.years || [];
+  if (!years.length) return null;
+  const latest = Math.max(...years);
+  const match = _history.picks.find(p => p.year === latest && p.keeper && p.player === playerName);
+  return match ? match.price : null;
+}
+
 // Compute behavior profile for one owner across all years. Applies owner
 // aliases (GUID-first, name fallback) so historical team names roll up
 // under the current owner. Skips picks from excluded GUIDs (former owners).

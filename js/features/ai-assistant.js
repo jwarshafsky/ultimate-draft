@@ -38,7 +38,7 @@ function buildAiContext() {
       .reduce((s, p) => s + p.price, 0)
   ) - Object.entries(getKeeperSelections()[me.id] || {})
     .filter(([_, f]) => f.keeper)
-    .reduce((s, [n]) => s + (getKeeperPriceExceptions()[n] || 0), 0);
+    .reduce((s, [n]) => s + (getCurrentKeeperSalary(n) ?? 0), 0);
   const slotsFilled = myRoster.length;
   const slotsRemaining = LEAGUE.rosterSize - slotsFilled - (
     Object.values(getKeeperSelections()[me.id] || {}).filter(f => f.minorKeeper).length

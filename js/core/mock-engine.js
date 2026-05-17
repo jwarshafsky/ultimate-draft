@@ -46,7 +46,7 @@ function buildMockTeamStates(opts) {
     for (const [name, flags] of Object.entries(teamSel)) {
       if (flags.minorKeeper) continue;
       if (flags.keeper) {
-        const price = getKeeperPriceExceptions()[name] || 0;
+        const price = getCurrentKeeperSalary(name) ?? 0;
         kept.push({ name, price, pos: getPlayerValue(name)?.posKey || "UTIL" });
         keptCost += price;
       }

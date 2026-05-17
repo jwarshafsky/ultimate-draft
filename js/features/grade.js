@@ -18,7 +18,7 @@ function computeDraftGrade() {
   const picks = (_liveDraft.picks || []).filter(p => p.team === me.id);
   const keeperSel = getKeeperSelections()[me.id] || {};
   const kept = Object.entries(keeperSel).filter(([_, f]) => f.keeper).map(([n]) => n);
-  const keptCost = kept.reduce((s, n) => s + (getKeeperPriceExceptions()[n] || 0), 0);
+  const keptCost = kept.reduce((s, n) => s + (getCurrentKeeperSalary(n) ?? 0), 0);
   const draftedSpent = picks.reduce((s, p) => s + p.price, 0);
   const roster = [...kept, ...picks.map(p => p.player)];
 
@@ -29,7 +29,7 @@ function computeDraftGrade() {
   }, 0);
   const keeperSurplus = kept.reduce((s, n) => {
     const v = getPlayerValue(n);
-    const sal = getKeeperPriceExceptions()[n] || 0;
+    const sal = getCurrentKeeperSalary(n) ?? 0;
     return s + ((v?.value || 0) - sal);
   }, 0);
   const totalSurplus = draftedSurplus + keeperSurplus;
@@ -52,7 +52,7 @@ function computeDraftGrade() {
   let hSpent = 0, pSpent = 0;
   for (const name of kept) {
     const v = getPlayerValue(name);
-    const sal = getKeeperPriceExceptions()[name] || 0;
+    const sal = getCurrentKeeperSalary(name) ?? 0;
     if (v?.type === "P") pSpent += sal; else hSpent += sal;
   }
   for (const pk of picks) {

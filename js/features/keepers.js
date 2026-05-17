@@ -37,7 +37,7 @@ function renderKeepers() {
     let totalCost = 0, totalValue = 0, totalSurplus = 0;
     for (const p of players) {
       const isMinor = !!p.minorKeeper;
-      const cost = isMinor ? 0 : (getKeeperPriceExceptions()[p.name] || 0);
+      const cost = isMinor ? 0 : (getCurrentKeeperSalary(p.name) ?? 0);
       const val = getPlayerValue(p.name);
       const projValue = val ? val.value : null;
       const surplus = projValue != null ? projValue - cost : null;

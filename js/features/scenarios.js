@@ -35,7 +35,7 @@ function snapshotMyTeam(picks) {
     .map(([n]) => n);
   const roster = [...kept, ...(picks || []).map(p => p.player)];
   const cats = projectTeamCategories(roster);
-  const totalCost = (kept.reduce((s, n) => s + (getKeeperPriceExceptions()[n] || 0), 0) +
+  const totalCost = (kept.reduce((s, n) => s + (getCurrentKeeperSalary(n) ?? 0), 0) +
                      (picks || []).reduce((s, p) => s + p.price, 0));
   return {
     keeperCount: kept.length,
