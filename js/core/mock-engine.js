@@ -119,13 +119,14 @@ function computeMaxBid(state, p, inflation) {
   const need = positionNeed(state, p.posKey);
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
 
-  // FORCE-SPEND: when a team is sitting on extra cash, max out the bid.
-  // This is the realistic behavior — owners with money to burn drive prices.
-  if (dollarsPerSlot >= 12 && need > 0.15) {
+  // FORCE-SPEND: when a team is sitting on extra cash, max out the bid even
+  // for bench depth. Owners with money to burn drive prices on EVERY player
+  // late in the draft, regardless of whether position is full.
+  if (dollarsPerSlot >= 12) {
     return safetyCap;
   }
-  // Endgame: even tighter trigger when slots are almost gone.
-  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 6) {
+  // Endgame burn: tighter trigger when slots are almost gone.
+  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 5) {
     return safetyCap;
   }
 
