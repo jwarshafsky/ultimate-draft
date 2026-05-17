@@ -243,6 +243,21 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
     if (!anyBumped) break;
     activeIds = activeIds.filter(id => states[id].budget > currentBid);
   }
+  // Solo-buyer correction: if the winner has WAY more $/slot than league
+  // norm and nobody else challenged them seriously, real owners would have
+  // paid more to avoid stockpiling cash they can't use. Push the final price
+  // toward what equalizes their $/slot pace.
+  const winnerSlots = currentWinner.slotsRemaining;
+  const winnerDPerS = currentWinner.budget / Math.max(1, winnerSlots);
+  const targetDPerS = 10;  // league norm
+  if (winnerDPerS > targetDPerS * 1.4 && winnerSlots <= 12 && winnerSlots > 0) {
+    // What price would bring this winner closer to league $/slot pace?
+    const targetSpendThisPick = Math.max(currentBid, Math.floor(currentWinner.budget - (winnerSlots - 1) * targetDPerS));
+    const maxAllowed = computeMaxBid(currentWinner, player, inflation);
+    const newPrice = Math.min(targetSpendThisPick, maxAllowed);
+    if (newPrice > currentBid) currentBid = newPrice;
+  }
+
   if (currentWinner.budget < currentBid) {
     currentBid = Math.max(1, currentWinner.budget);
   }
