@@ -102,6 +102,11 @@ function positionNeed(state, posKey) {
 
 // What's the most this team would bid for player p in the current state?
 // Returns an integer (auction prices are whole dollars).
+//
+// Real-world calibration: owners spend ~95-99% of budgets every year. So we
+// want bidders to track inflated value closely, NOT discount aggressively.
+// We use a soft need adjustment (max 15% discount) and let $/slot pressure
+// PUSH bids UP when budget is flush relative to remaining slots.
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
   const baseValue = inflatedValue(p, inflation);
@@ -110,21 +115,30 @@ function computeMaxBid(state, p, inflation) {
   const noise = 1 + (Math.random() - 0.5) * state.profile.noise * 2;
   let perceived = baseValue * state.profile.aggression * posMult * noise;
 
-  // Need adjustment — discount if they don't really need this pos.
-  // When slots are tight, NEED any roster spot more (drives aggressive end-draft bidding).
+  // Soft need adjustment — bid 85% of value at full positions (still in play
+  // if cheap), full value at unfilled positions.
   const need = positionNeed(state, p.posKey);
-  const slotPressure = state.slotsRemaining <= 4 ? 1 : (state.slotsRemaining <= 8 ? 0.85 : 0.7);
-  perceived *= (0.4 + 0.6 * need) * slotPressure;
+  perceived *= 0.85 + 0.15 * need;
 
-  // Hard safety: budget - (slotsRemaining - 1). Always keep at least $1 per
-  // remaining future slot.
+  // Budget pressure: if $/slot is well above league avg ($10), the bidder
+  // SHOULD spend more aggressively to avoid leftover cash. League norm: ~$10/slot.
+  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+  let budgetPressureBoost = 1;
+  if (dollarsPerSlot > 18) budgetPressureBoost = 1.20;
+  else if (dollarsPerSlot > 14) budgetPressureBoost = 1.12;
+  else if (dollarsPerSlot > 11) budgetPressureBoost = 1.06;
+  else if (dollarsPerSlot < 4) budgetPressureBoost = 0.80;
+  perceived *= budgetPressureBoost;
+
+  // Hard safety: reserve $1 per future slot. Never bid past this.
   const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - state.profile.safetyMargin;
 
   return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
 }
 
 // Nomination logic — pick a player to nominate based on the owner's strategy
-// mix. For now, simple weighted draws.
+// mix. As the draft moves into the endgame, nominators favor higher-value
+// players so leftover budgets get drained.
 function chooseNomination(state, pool, inflation) {
   if (!pool.length) return null;
   const mix = state.profile.nomMix;
@@ -136,27 +150,29 @@ function chooseNomination(state, pool, inflation) {
     if (r < cum) { kind = k; break; }
   }
 
-  // Target: nominate someone valuable they actually want
+  // Endgame override: when $/slot is high league-wide, nominate big-money
+  // players to force spending.
+  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+  if (state.slotsRemaining <= 8 && dollarsPerSlot > 10) {
+    const splashy = pool.filter(p => p.value > 8);
+    if (splashy.length) return splashy[Math.floor(Math.random() * Math.min(5, splashy.length))];
+  }
+
   if (kind === "target") {
-    // Find a player above $10 in a position this team needs
     const candidates = pool.filter(p => p.value > 10 && positionNeed(state, p.posKey) > 0.4);
     if (candidates.length) return candidates[Math.floor(Math.random() * Math.min(8, candidates.length))];
   }
-  // Dump: nominate a buzzy player they don't want, hope to drain budgets
   if (kind === "dump") {
     const candidates = pool.filter(p => p.value > 25 && positionNeed(state, p.posKey) < 0.5);
     if (candidates.length) return candidates[Math.floor(Math.random() * candidates.length)];
   }
-  // Drain: nominate at scarce positions opponents still need
   if (kind === "drain") {
     const scarce = pool.filter(p => ["C", "SS", "RP"].includes(p.posKey) && p.value > 5);
     if (scarce.length) return scarce[Math.floor(Math.random() * scarce.length)];
   }
-  // Blocker: low-cost endgame
   const cheap = pool.filter(p => p.value > 1 && p.value < 8);
   if (cheap.length) return cheap[Math.floor(Math.random() * cheap.length)];
 
-  // Fallback: top of pool
   return pool[0];
 }
 
