@@ -120,20 +120,36 @@ function computeMaxBid(state, p, inflation) {
   const need = positionNeed(state, p.posKey);
   perceived *= 0.85 + 0.15 * need;
 
-  // Budget pressure: if $/slot is well above league avg ($10), the bidder
-  // SHOULD spend more aggressively to avoid leftover cash. League norm: ~$10/slot.
+  // Budget pressure: real owners spend 95-99% every year. The simulator must
+  // burn through cash. When $/slot exceeds the typical ~$10 norm, push bids
+  // up. In late draft with few slots left, push HARD — $96 leftover at end
+  // is unrealistic.
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
   let budgetPressureBoost = 1;
-  if (dollarsPerSlot > 18) budgetPressureBoost = 1.20;
-  else if (dollarsPerSlot > 14) budgetPressureBoost = 1.12;
-  else if (dollarsPerSlot > 11) budgetPressureBoost = 1.06;
-  else if (dollarsPerSlot < 4) budgetPressureBoost = 0.80;
+  if (state.slotsRemaining <= 3 && dollarsPerSlot > 6) {
+    // Endgame burn: must spend down
+    budgetPressureBoost = Math.min(2.2, dollarsPerSlot / 6);
+  } else if (state.slotsRemaining <= 6 && dollarsPerSlot > 10) {
+    budgetPressureBoost = Math.min(1.7, dollarsPerSlot / 10);
+  } else if (dollarsPerSlot > 18) budgetPressureBoost = 1.30;
+  else if (dollarsPerSlot > 14) budgetPressureBoost = 1.18;
+  else if (dollarsPerSlot > 11) budgetPressureBoost = 1.10;
+  else if (dollarsPerSlot < 3) budgetPressureBoost = 0.75;
   perceived *= budgetPressureBoost;
 
   // Hard safety: reserve $1 per future slot. Never bid past this.
   const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - state.profile.safetyMargin;
 
-  return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
+  // Endgame floor: when very few slots left, the bid floor IS the spend-down
+  // rate. If team has $30 with 3 slots remaining and we have a player they
+  // need, push their max bid toward $10+.
+  let endgameFloor = 0;
+  if (state.slotsRemaining > 0 && state.slotsRemaining <= 5 && need > 0.2) {
+    endgameFloor = Math.floor((state.budget - state.slotsRemaining + 1) / state.slotsRemaining);
+  }
+
+  const calculated = Math.max(endgameFloor, Math.floor(Math.min(perceived, safetyCap)));
+  return Math.max(0, Math.min(calculated, safetyCap));
 }
 
 // Nomination logic — pick a player to nominate based on the owner's strategy
