@@ -1,11 +1,13 @@
-// Mock draft view — run an AI-driven auction sim and see the results. Supports
-// single-run, Monte Carlo, and a "constrain my team" mode (TBD next).
+// Mock Draft view. Two modes:
+//   - Auto (instant): runs a full sim with all AI agents, shows results.
+//   - Interactive: you play as your team and bid against AI for every player.
 
 const _mockState = {
-  lastRun: null,        // { picks, states }
-  lastMonteCarlo: null, // [{ name, pos, mean, median, ... }]
+  mode: "auto",        // "auto" | "interactive"
+  lastRun: null,
+  lastMonteCarlo: null,
   running: false,
-  view: "single",       // "single" | "mc"
+  view: "single",
 };
 
 function renderMock() {
@@ -16,12 +18,29 @@ function renderMock() {
   }
 
   let html = '';
+  html += '<div class="card"><h2>Mock Draft Simulator</h2>';
+  html += '<p class="muted small">Auto: instant full-sim with AI bidders. Interactive: you bid against the AI for every player using each owner\'s history-derived tendencies.</p>';
+  html += '<div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">';
+  html += '<button class="btn ' + (_mockState.mode === "auto" ? "primary" : "") + '" id="mock-mode-auto" style="width:auto; padding:8px 14px;">Auto</button>';
+  html += '<button class="btn ' + (_mockState.mode === "interactive" ? "primary" : "") + '" id="mock-mode-interactive" style="width:auto; padding:8px 14px;">Interactive</button>';
+  html += '<span class="muted small" style="margin-left: 14px;">' + (_mockState.mode === "auto" ? "Click run to simulate." : "You bid live against the AI.") + '</span>';
+  html += '</div></div>';
 
-  // Controls
-  html += '<div class="card">';
-  html += '<h2>Mock Draft Simulator</h2>';
-  html += '<p class="muted small">Runs a full auction with AI bidders using current keepers and budgets. Results show every pick, surplus captured, and per-team summaries.</p>';
-  html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;">';
+  if (_mockState.mode === "auto") {
+    html += renderAutoMockControls();
+    if (_mockState.view === "mc" && _mockState.lastMonteCarlo) html += renderMockMonteCarlo();
+    else if (_mockState.lastRun) html += renderMockSingle();
+    else html += '<div class="empty"><p>Click "Run 1 Mock" to simulate the draft.</p></div>';
+  } else {
+    html += renderInteractiveMock();
+  }
+
+  root.innerHTML = html;
+  wireMockControls();
+}
+
+function renderAutoMockControls() {
+  let html = '<div class="card"><div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">';
   html += '<button class="btn primary" style="width:auto; padding: 8px 16px;" id="mock-run">Run 1 Mock</button>';
   html += '<button class="btn" id="mock-mc">Run 25 Mocks (Monte Carlo)</button>';
   html += '<button class="btn" id="mock-mc-100">Run 100 Mocks</button>';
@@ -30,21 +49,167 @@ function renderMock() {
     html += '<button class="btn ' + (_mockState.view === "single" ? "primary" : "") + '" id="mock-view-single" style="padding: 6px 12px; width: auto;">Last Run</button>';
     html += '<button class="btn ' + (_mockState.view === "mc" ? "primary" : "") + '" id="mock-view-mc" style="padding: 6px 12px; width: auto;">Monte Carlo</button>';
   }
-  html += '</div>';
-  if (_mockState.running) html += '<p class="small muted" style="margin-top: 10px;">Running…</p>';
-  html += '</div>';
+  if (_mockState.running) html += '<span class="small muted" style="margin-left: 10px;">Running…</span>';
+  html += '</div></div>';
+  return html;
+}
 
-  if (_mockState.view === "mc" && _mockState.lastMonteCarlo) {
-    html += renderMockMonteCarlo();
-  } else if (_mockState.lastRun) {
-    html += renderMockSingle();
-  } else {
-    html += '<div class="empty"><p>Click "Run 1 Mock" to simulate the draft.</p></div>';
+function renderInteractiveMock() {
+  const s = getInteractiveState();
+  let html = '';
+
+  if (!s.active) {
+    html += '<div class="card"><h3>Start a Live Mock</h3>';
+    html += '<p class="muted small">You\'ll nominate when it\'s your turn (random order). For other teams, the AI uses each owner\'s historical tendency profile to bid. Press start when ready.</p>';
+    html += '<button class="btn primary" id="interactive-start" style="width:auto; padding: 10px 22px;">Start Interactive Mock</button>';
+    html += '</div>';
+    return html;
   }
 
-  root.innerHTML = html;
+  // Active session
+  const me = getMyTeam();
+  const myState = s.states[me?.id];
+  const nominatorId = s.nominationOrder[s.currentNominator % s.nominationOrder.length];
+  const nominator = s.states[nominatorId];
 
-  // Wire buttons
+  // Status header
+  html += '<div class="card" style="border-color: rgba(79,142,247,.4);">';
+  html += '<div style="display: flex; justify-content: space-between; align-items: center;">';
+  html += '<h2 style="margin: 0;">Live Mock <span class="muted small">· ' + s.picks.length + ' picks done</span></h2>';
+  html += '<button class="btn ghost danger" id="interactive-stop">End Mock</button>';
+  html += '</div></div>';
+
+  // === Phase: nominating ===
+  if (s.phase === "nominating") {
+    if (nominatorId === me?.id) {
+      // User's turn to nominate
+      html += '<div class="card on-the-clock">';
+      html += '<div class="otc-label">Your turn to nominate</div>';
+      html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">';
+      html += '<input id="im-nominate-name" placeholder="Player name…" style="flex: 1; min-width: 240px; font-size: 16px;" list="im-pool-list">';
+      html += '<datalist id="im-pool-list">';
+      for (const p of s.pool.slice(0, 200)) {
+        html += '<option value="' + esc(p.name) + '">' + esc(p.posKey) + ' · $' + p.value.toFixed(0) + '</option>';
+      }
+      html += '</datalist>';
+      html += '<input id="im-nominate-open" type="number" placeholder="Opening $" value="1" style="width: 110px; font-size: 16px;">';
+      html += '<button class="btn primary" id="im-nominate" style="width:auto; padding: 10px 18px;">Nominate</button>';
+      html += '</div>';
+      const maxBid = myState.budget - Math.max(0, myState.slotsRemaining - 1);
+      html += '<div class="muted small" style="margin-top: 8px;">Your max bid right now: $' + maxBid + ' · ' + myState.slotsRemaining + ' slots left, $' + myState.budget + ' budget</div>';
+      html += '</div>';
+    } else {
+      html += '<div class="card"><p>' + esc(nominator.ownerName) + ' is nominating…</p></div>';
+    }
+  }
+
+  // === Phase: bidding ===
+  if (s.phase === "bidding" && s.current) {
+    const nfbc = (typeof getNfbc === "function") ? getNfbc(s.current.name) : null;
+    const sc = (typeof getStatcast === "function") ? getStatcast(s.current.name) : null;
+    const inflV = inflatedValue(s.current, s.inflation);
+    const isMyBid = s.currentWinner === me?.id;
+    const iHavePassed = s.passedTeams && s.passedTeams.has(me?.id);
+    const winnerTeam = s.states[s.currentWinner];
+
+    html += '<div class="card on-the-clock">';
+    html += '<div class="otc-grid">';
+    html += '<div class="otc-main">';
+    html += '<div class="otc-label">On the Clock · nominated by ' + esc(nominator.ownerName) + '</div>';
+    html += '<div class="otc-player">' + esc(s.current.name) + '</div>';
+    html += '<div class="otc-meta">';
+    html += '<span class="kbd">' + esc(s.current.posKey) + '</span>';
+    if (s.current.team) html += ' <span class="muted">' + esc(s.current.team) + '</span>';
+    html += ' · <span class="muted">value</span> $' + s.current.value.toFixed(0);
+    html += ' · <span class="muted">inflated</span> $' + inflV.toFixed(0);
+    if (nfbc?.avg) html += ' · <span class="muted">NFBC</span> $' + nfbc.avg.toFixed(0);
+    if (sc?.xwOBA) html += ' · <span class="muted">xwOBA</span> ' + sc.xwOBA.toFixed(3);
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="otc-bid">';
+    html += '<div class="otc-bid-label">Current bid · ' + esc(winnerTeam.ownerName) + (isMyBid ? ' (you)' : '') + '</div>';
+    html += '<div class="otc-bid-amt">$' + s.currentBid + '</div>';
+    if (!isMyBid && !iHavePassed) {
+      html += '<div class="otc-bid-controls" style="margin-top: 6px;">';
+      const next = s.currentBid + 1;
+      for (const inc of [1, 2, 5]) {
+        const targetBid = s.currentBid + inc;
+        html += '<button class="btn primary im-bid" data-bid="' + targetBid + '" style="width:auto; padding: 6px 12px;">$' + targetBid + '</button>';
+      }
+      html += '<input id="im-custom-bid" type="number" placeholder="$" style="width: 70px;">';
+      html += '<button class="btn im-bid-custom" style="width:auto; padding: 6px 10px;">Bid</button>';
+      html += '</div>';
+      html += '<div style="margin-top: 6px;"><button class="btn ghost" id="im-pass">Pass</button></div>';
+    } else if (isMyBid) {
+      html += '<p class="small good" style="margin-top: 8px;">Highest bidder. AI is responding…</p>';
+    } else {
+      html += '<p class="small muted" style="margin-top: 8px;">You passed on this auction.</p>';
+    }
+    html += '</div></div>';
+    html += '</div>';
+  }
+
+  // === Phase: sold (transient) ===
+  if (s.phase === "sold" && s.picks.length) {
+    const last = s.picks[s.picks.length - 1];
+    html += '<div class="card"><p>SOLD: <strong>' + esc(last.player) + '</strong> to <strong>' + esc(last.winnerOwner) + '</strong> for <strong>$' + last.price + '</strong></p></div>';
+  }
+
+  // Team strip (compact)
+  html += '<div class="card" style="padding: 8px;">';
+  html += '<h3 style="margin: 0 0 6px;">Teams</h3>';
+  html += '<div class="team-strip">';
+  for (const teamId of Object.keys(s.states)) {
+    const ts = s.states[teamId];
+    const perSlot = ts.slotsRemaining > 0 ? (ts.budget / ts.slotsRemaining).toFixed(1) : "—";
+    const maxBid = Math.max(0, ts.budget - Math.max(0, ts.slotsRemaining - 1));
+    html += '<div class="team-strip-card' + (ts.isMe ? " me" : "") + (ts.slotsRemaining === 0 ? " done" : "") + '">';
+    html += '<div class="ts-name">' + esc(ts.ownerName) + '</div>';
+    html += '<div class="ts-row"><span class="ts-label">$</span><span class="ts-val">' + ts.budget + '</span></div>';
+    html += '<div class="ts-row"><span class="ts-label">slots</span><span class="ts-val">' + ts.slotsRemaining + '</span></div>';
+    html += '<div class="ts-row"><span class="ts-label">max</span><span class="ts-val">' + maxBid + '</span></div>';
+    html += '<div class="ts-row"><span class="ts-label">$/sl</span><span class="ts-val">' + perSlot + '</span></div>';
+    html += '</div>';
+  }
+  html += '</div></div>';
+
+  // Recent picks
+  if (s.picks.length) {
+    html += '<div class="card"><h3>Recent picks</h3>';
+    html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Pos</th><th>Winner</th><th class="num">Val</th><th class="num">Price</th><th class="num">Surplus</th></tr></thead><tbody>';
+    const myId = me?.id;
+    const recent = s.picks.slice(-15).reverse();
+    for (const p of recent) {
+      const isMine = p.winnerTeamId === myId;
+      html += '<tr' + (isMine ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
+      html += '<td class="num dim">' + p.idx + '</td>';
+      html += '<td>' + esc(p.player) + '</td>';
+      html += '<td>' + esc(p.pos) + '</td>';
+      html += '<td>' + esc(p.winnerOwner) + (isMine ? ' <span class="kbd">you</span>' : '') + '</td>';
+      html += '<td class="num">$' + p.baseValue.toFixed(0) + '</td>';
+      html += '<td class="num">$' + p.price + '</td>';
+      html += '<td class="num ' + (p.surplus > 0 ? 'good' : 'bad') + '">' + (p.surplus > 0 ? "+" : "") + '$' + p.surplus.toFixed(0) + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+
+  if (s.phase === "done") {
+    html += '<div class="card"><h2>Mock Complete</h2><p>All rosters filled. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
+  }
+
+  return html;
+}
+
+function wireMockControls() {
+  document.getElementById("mock-mode-auto")?.addEventListener("click", () => {
+    _mockState.mode = "auto"; renderMock();
+  });
+  document.getElementById("mock-mode-interactive")?.addEventListener("click", () => {
+    _mockState.mode = "interactive"; renderMock();
+  });
+
+  // Auto controls
   document.getElementById("mock-run")?.addEventListener("click", () => {
     _mockState.running = true; renderMock();
     setTimeout(() => {
@@ -58,11 +223,42 @@ function renderMock() {
   document.getElementById("mock-mc-100")?.addEventListener("click", () => runMC(100));
   document.getElementById("mock-view-single")?.addEventListener("click", () => { _mockState.view = "single"; renderMock(); });
   document.getElementById("mock-view-mc")?.addEventListener("click", () => { _mockState.view = "mc"; renderMock(); });
+
+  // Interactive controls
+  document.getElementById("interactive-start")?.addEventListener("click", () => {
+    startInteractiveMock();
+    renderMock();
+  });
+  document.getElementById("interactive-stop")?.addEventListener("click", () => {
+    stopInteractiveMock();
+    renderMock();
+  });
+  document.getElementById("im-nominate")?.addEventListener("click", () => {
+    const name = document.getElementById("im-nominate-name").value.trim();
+    const open = parseInt(document.getElementById("im-nominate-open").value, 10) || 1;
+    const r = userNominate(name, open);
+    if (!r.ok) alert(r.error);
+  });
+  document.getElementById("im-nominate-name")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("im-nominate")?.click();
+  });
+  document.querySelectorAll(".im-bid").forEach(b => {
+    b.addEventListener("click", () => {
+      const r = userBid(parseInt(b.dataset.bid, 10));
+      if (!r.ok) alert(r.error);
+    });
+  });
+  document.querySelector(".im-bid-custom")?.addEventListener("click", () => {
+    const v = parseInt(document.getElementById("im-custom-bid").value, 10);
+    if (!v) return;
+    const r = userBid(v);
+    if (!r.ok) alert(r.error);
+  });
+  document.getElementById("im-pass")?.addEventListener("click", () => userPass());
 }
 
 function runMC(n) {
   _mockState.running = true; renderMock();
-  // Let UI paint the "running" state before blocking
   setTimeout(() => {
     _mockState.lastMonteCarlo = runMockDraftMonteCarlo(n);
     _mockState.view = "mc";
@@ -71,14 +267,20 @@ function runMC(n) {
   }, 30);
 }
 
+// Wire interactive state changes to re-render
+if (typeof onInteractiveChange === "function") {
+  onInteractiveChange(() => {
+    if (currentView === "mock" && _mockState.mode === "interactive") renderMock();
+  });
+}
+
+// === Auto-mode results (single & monte carlo) ===
+
 function renderMockSingle() {
   const { picks, states } = _mockState.lastRun;
   const myId = getMyTeam()?.id;
   const me = myId ? states[myId] : null;
-
   let html = '';
-
-  // Per-team summaries
   html += '<div class="card"><h2>Team Results</h2><table><thead><tr>';
   html += '<th>Team</th><th>Owner</th><th class="num">Spent</th><th class="num">Leftover</th><th class="num">Players</th><th class="num">Avg Surplus</th></tr></thead><tbody>';
   const teamRows = Object.values(states).map(s => {
@@ -87,7 +289,6 @@ function renderMockSingle() {
     const leftover = s.budget;
     return { ...s, spent, surplus, leftover };
   });
-  // Sort: me first, then by surplus desc
   teamRows.sort((a, b) => {
     if (a.isMe !== b.isMe) return a.isMe ? -1 : 1;
     return b.surplus - a.surplus;
@@ -103,13 +304,10 @@ function renderMockSingle() {
     html += '</tr>';
   }
   html += '</tbody></table></div>';
-
-  // My team detail (if exists)
   if (me) {
-    html += '<div class="card"><h2>Hold the Mayo — Detail</h2>';
-    if (me.drafted.length === 0) {
-      html += '<p class="muted">No picks made.</p>';
-    } else {
+    html += '<div class="card"><h2>' + esc(me.teamName) + ' — Detail</h2>';
+    if (me.drafted.length === 0) html += '<p class="muted">No picks made.</p>';
+    else {
       html += '<table><thead><tr><th>Player</th><th>Pos</th><th class="num">Value</th><th class="num">Price</th><th class="num">Surplus</th></tr></thead><tbody>';
       for (const d of me.drafted) {
         html += '<tr><td>' + esc(d.name) + '</td>';
@@ -122,8 +320,6 @@ function renderMockSingle() {
       html += '</tbody></table></div>';
     }
   }
-
-  // All picks
   html += '<div class="card"><h2>All Picks (' + picks.length + ')</h2>';
   html += '<table><thead><tr><th class="num">#</th><th>Player</th><th>Pos</th><th>Winner</th><th class="num">Value</th><th class="num">Price</th><th class="num">Surplus</th></tr></thead><tbody>';
   for (const p of picks) {
@@ -139,14 +335,13 @@ function renderMockSingle() {
     html += '</tr>';
   }
   html += '</tbody></table></div>';
-
   return html;
 }
 
 function renderMockMonteCarlo() {
   const data = _mockState.lastMonteCarlo;
   let html = '<div class="card"><h2>Monte Carlo Price Distribution</h2>';
-  html += '<p class="muted small">Across ' + (data[0]?.n || 0) + ' simulated drafts. p10/p90 = 10th and 90th percentile prices, showing the range of plausible auction outcomes.</p>';
+  html += '<p class="muted small">Across ' + (data[0]?.n || 0) + ' simulated drafts. p10/p90 = 10th and 90th percentile prices.</p>';
   html += '<table><thead><tr><th>Player</th><th>Pos</th><th class="num">Proj Value</th><th class="num">Mean $</th><th class="num">Median</th><th class="num">p10</th><th class="num">p90</th><th>Most Likely Owner</th></tr></thead><tbody>';
   for (const r of data.slice(0, 200)) {
     const meanDelta = r.mean - r.value;
