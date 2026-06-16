@@ -10,7 +10,8 @@ function renderHistory() {
   let html = '';
 
   // ESPN sync section (collapsible — collapsed by default if data already loaded)
-  const seasons = "2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026";
+  const seasonList = defaultHistorySeasons();
+  const seasons = seasonList.join(", ");
   const syncSummary = picks.length
     ? picks.length + " picks loaded · " + (_history.meta.years || []).length + " seasons"
     : "No data yet";
@@ -21,7 +22,7 @@ function renderHistory() {
   html += '<span class="collapsible-toggle">▾</span>';
   html += '</div>';
   html += '<div class="collapsible-body">';
-  html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons 2017-2026 (excluding 2020). Requires proxy URL configured in Settings tab.</p>';
+  html += '<p class="muted small">Pulls draft results directly from ESPN for league 1200, seasons ' + seasonList[0] + '-' + seasonList[seasonList.length - 1] + ' (excluding 2020). Requires proxy URL configured in Settings tab.</p>';
   html += '<div style="display: flex; gap: 8px; align-items: center;">';
   html += '<input id="hist-espn-years" placeholder="' + seasons + '" value="' + seasons + '" style="flex: 1;">';
   html += '<button class="btn primary" id="hist-espn-sync" style="width: auto; padding: 8px 14px;"' + (ESPN.proxyUrl ? '' : ' disabled') + '>Sync from ESPN</button>';

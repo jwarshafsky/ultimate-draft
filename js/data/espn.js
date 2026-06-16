@@ -13,15 +13,38 @@
 // The proxy URL is configurable so it can be deployed wherever. Defaults to
 // the existing Cloud Run proxy if user has set up the endpoints there.
 
+// Season defaults to the current calendar year (MLB fantasy seasons are a
+// single calendar year), so the tool doesn't silently keep pulling last year's
+// league once the year rolls over. Pinnable via localStorage for the offseason
+// edge case (e.g. prepping next year's draft early).
+function _defaultSeason() {
+  return Number(localStorage.getItem("ud_season")) || new Date().getFullYear();
+}
+
 const ESPN = {
   proxyUrl: localStorage.getItem("ud_proxy_url") || "",
   leagueId: 1200,
-  season: 2026,
+  season: _defaultSeason(),
   polling: false,
   pollTimer: null,
   pollInterval: 5000,
   listeners: [],
 };
+
+function setSeason(year) {
+  const n = Number(year);
+  if (!Number.isFinite(n) || n < 2000) return;
+  ESPN.season = n;
+  localStorage.setItem("ud_season", String(n));
+}
+
+// Seasons 2017..current, excluding the COVID-shortened 2020 (Jeff's call).
+// Generated so the range extends automatically each year.
+function defaultHistorySeasons() {
+  const out = [];
+  for (let y = 2017; y <= new Date().getFullYear(); y++) if (y !== 2020) out.push(y);
+  return out;
+}
 
 function setProxyUrl(url) {
   ESPN.proxyUrl = (url || "").trim();
@@ -33,7 +56,9 @@ function getProxyUrl() { return ESPN.proxyUrl; }
 async function fetchEspnDraft() {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/draft?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
-  const r = await fetch(url);
+  // no-store: live draft state must never come from the HTTP cache, or a poll
+  // could miss picks and mis-compute remaining budget / inflation.
+  const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
   return r.json();
 }
@@ -41,7 +66,7 @@ async function fetchEspnDraft() {
 async function fetchEspnPlayers() {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/players?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
-  const r = await fetch(url);
+  const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
   return r.json();
 }
@@ -50,7 +75,7 @@ async function fetchEspnPlayers() {
 async function fetchEspnHistory(season) {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/history?leagueId=" + ESPN.leagueId + "&season=" + season;
-  const r = await fetch(url);
+  const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error("ESPN history " + season + " responded " + r.status);
   return r.json();
 }
@@ -60,7 +85,7 @@ async function fetchEspnHistory(season) {
 // returns a summary.
 async function syncAllEspnHistory(opts) {
   opts = opts || {};
-  const years = opts.years || [2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025, 2026];
+  const years = opts.years || defaultHistorySeasons();
   const onProgress = opts.onProgress || (() => {});
   const result = { seasons: [], failed: [], totalPicks: 0, teamMapsBySeason: {} };
   for (const year of years) {
