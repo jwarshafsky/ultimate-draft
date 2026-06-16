@@ -91,6 +91,28 @@ function normalizePos(posStr) {
   return tokens[0] || "UTIL";
 }
 
+// All roster slots a player can legally fill, including derived flex slots
+// (MI = 2B/SS, CI = 1B/3B, UTIL = any hitter). Parsed from the raw projection
+// position string so multi-eligible players (e.g. 2B/SS/OF) count toward every
+// slot they qualify for — the mock engine uses this for need + assignment.
+function eligibleSlots(posStr, type, posKey) {
+  if (type === "P") return [posKey];  // SP or RP
+  const tokens = String(posStr || "").toUpperCase().split(/[,/\s]+/).filter(Boolean);
+  const set = new Set();
+  for (const t of tokens) {
+    if (["C", "1B", "2B", "3B", "SS"].includes(t)) set.add(t);
+    else if (t === "OF" || t === "LF" || t === "CF" || t === "RF") set.add("OF");
+    else if (t === "DH" || t === "UT" || t === "UTIL") set.add("UTIL");
+  }
+  // Single-position exports: fall back to the normalized primary.
+  if (posKey && posKey !== "UTIL") set.add(posKey);
+  // Derived flex slots.
+  if (set.has("2B") || set.has("SS")) set.add("MI");
+  if (set.has("1B") || set.has("3B")) set.add("CI");
+  set.add("UTIL");  // any hitter can fill UTIL
+  return Array.from(set);
+}
+
 // Best-effort SP/RP classification using IP and (W vs SV+HLD).
 function classifyPitcher(p) {
   // If listed pos says it, trust it.
@@ -209,6 +231,15 @@ function computeValues() {
     existing.posSecondary = pl.posKey;
   }
   const dedup = Array.from(byName.values());
+
+  // Attach roster-slot eligibility (incl. flex) for the mock engine. Two-way
+  // players get the union of both roles' slots.
+  for (const pl of dedup) {
+    pl.elig = eligibleSlots(pl.proj?.pos, pl.type, pl.posKey);
+    if (pl.isTwoWay && pl.posSecondary && !pl.elig.includes(pl.posSecondary)) {
+      pl.elig = pl.elig.concat(pl.posSecondary);
+    }
+  }
 
   // FG dollar mode: use FG-supplied values directly.
   if (fgMode) {

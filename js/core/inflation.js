@@ -209,11 +209,18 @@ function computeTieredInflation() {
 // Apply inflation to a player's base value.
 function inflatedValue(player, inflation) {
   if (!inflation || !player) return player ? player.value : 0;
+  let v;
   if (inflation.mode === "tiered") {
     const t = tierForValue(player.value);
-    return player.value * inflation.tierMult[t];
+    v = player.value * inflation.tierMult[t];
+  } else {
+    // Flat
+    const mult = player.type === "P" ? inflation.pitMultiplier : inflation.hitMultiplier;
+    v = player.value * mult;
   }
-  // Flat
-  const mult = player.type === "P" ? inflation.pitMultiplier : inflation.hitMultiplier;
-  return player.value * mult;
+  // Per-position scarcity tilt (mock engine only; absent for live inflation).
+  if (inflation.posScarcity && player.posKey && inflation.posScarcity[player.posKey]) {
+    v *= inflation.posScarcity[player.posKey];
+  }
+  return v;
 }

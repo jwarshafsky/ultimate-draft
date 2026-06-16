@@ -664,7 +664,14 @@ function profileToMockOverlay(profile) {
   }
   // High top3 share = stars+scrubs appetite
   const topTierAppetite = 1 + Math.max(0, Math.min(0.6, (profile.top3Share - 0.4) * 1.5));
-  return { aggression, posBias, topTierAppetite };
+  // Loyalty: owners who draft the same player year after year overpay to keep
+  // "their guy". Map repeat targets → a bid premium scaled by how many years.
+  const targets = {};
+  for (const t of (profile.repeatTargets || [])) {
+    if (!t || t.count < 2) continue;
+    targets[t.name] = t.count >= 4 ? 1.20 : t.count >= 3 ? 1.14 : 1.08;
+  }
+  return { aggression, posBias, topTierAppetite, targets };
 }
 
 loadHistoryFromStorage();

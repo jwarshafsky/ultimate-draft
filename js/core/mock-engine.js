@@ -47,7 +47,8 @@ function buildMockTeamStates(opts) {
       if (flags.minorKeeper) continue;
       if (flags.keeper) {
         const price = getCurrentKeeperSalary(name) ?? 0;
-        kept.push({ name, price, pos: getPlayerValue(name)?.posKey || "UTIL" });
+        const pv = getPlayerValue(name);
+        kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
         keptCost += price;
       }
     }
@@ -64,6 +65,9 @@ function buildMockTeamStates(opts) {
     // Floor budget at slotsToFill ($1 per remaining slot minimum) so a team
     // with very expensive keepers can still afford $1 picks the rest of the way.
     const safeBudget = Math.max(slotsToFill, startingBudget);
+    // Seed the flex slot model with kept players assigned to their best slot.
+    const openSlots = initOpenSlots();
+    for (const k of kept) assignToSlot(openSlots, k.elig);
     states[t.id] = {
       teamId: t.id,
       teamName: t.name,
@@ -74,6 +78,7 @@ function buildMockTeamStates(opts) {
       kept,
       drafted: [],
       slotsByPos: countSlotsByPos(kept),
+      openSlots,
       slotsRemaining: slotsToFill,
     };
   }
@@ -88,21 +93,94 @@ function countSlotsByPos(roster) {
   return counts;
 }
 
-// Roster slot targets per team (matching constitution). Used to decide whether
-// a team still has appetite for a position. UTIL/BENCH absorb overflow.
+// Roster slot targets per team (matching constitution). Kept for endgame.js.
 const POS_TARGETS = { C: 1, "1B": 1, "2B": 1, "SS": 1, "3B": 1, MI: 1, CI: 1, OF: 5, UTIL: 1, SP: 6, RP: 3 };
 
-// Returns the "need score" for this position on this team. Higher = wants more.
-function positionNeed(state, posKey) {
-  const have = state.slotsByPos[posKey] || 0;
-  const target = POS_TARGETS[posKey] || 1;
-  // Special handling: 1B/3B can fill CI, 2B/SS can fill MI, any hitter fills UTIL,
-  // any pitcher fills overflow P slots, anyone fills bench.
-  if (have >= target) {
-    // Past primary slot — still some need for flex/bench but lower.
-    return Math.max(0, 0.5 - (have - target) * 0.2);
+// --- Flex-aware roster slot model ---------------------------------------
+// Per-team slot capacities (matches the FanGraphs valuation slot config). The
+// engine tracks remaining capacity per slot so multi-eligible players count
+// toward whatever slot they actually fill (e.g. a 2B/SS with 2B taken fills MI).
+const ROSTER_SLOT_CAP = { C: 1, "1B": 1, "2B": 1, "3B": 1, SS: 1, MI: 1, CI: 1, OF: 5, UTIL: 1, SP: 6, RP: 4 };
+// "Hard" slots a legal roster MUST fill — these drive late forced-fill bidding.
+// Flex/bench (MI, CI, UTIL, BENCH) are soft (substitutable).
+const HARD_SLOTS = new Set(["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"]);
+// How badly a team wants a player whose best open slot is this. Catcher is the
+// scarcest single slot; flex slots are worth less than a dedicated need.
+const SLOT_NEED_WEIGHT = { C: 1.0, "1B": 0.9, "2B": 0.9, "3B": 0.9, SS: 0.9, OF: 0.85, SP: 0.9, RP: 0.8, MI: 0.62, CI: 0.62, UTIL: 0.5, BENCH: 0.3 };
+// Assignment priority: fill the player's specific position first, then middle/
+// corner flex, then UTIL, then bench — mirrors how a real lineup is filled.
+const SLOT_FILL_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP", "MI", "CI", "UTIL", "BENCH"];
+
+function initOpenSlots() {
+  const o = {};
+  for (const [k, v] of Object.entries(ROSTER_SLOT_CAP)) o[k] = v;
+  // Bench absorbs whatever roster spots remain beyond the starter slots.
+  const starters = Object.values(ROSTER_SLOT_CAP).reduce((s, n) => s + n, 0);
+  o.BENCH = Math.max(0, LEAGUE.rosterSize - starters);
+  return o;
+}
+
+// Assign a player (by eligibility list) to the best open slot, mutating
+// openSlots. Returns the slot used. Falls back to BENCH, then null if full.
+function assignToSlot(openSlots, elig) {
+  const set = new Set(elig && elig.length ? elig : ["UTIL"]);
+  for (const slot of SLOT_FILL_ORDER) {
+    if (slot === "BENCH") continue;
+    if (set.has(slot) && (openSlots[slot] || 0) > 0) { openSlots[slot]--; return slot; }
   }
-  return 1.0 - have / target;
+  if ((openSlots.BENCH || 0) > 0) { openSlots.BENCH--; return "BENCH"; }
+  return null;
+}
+
+// Need score in [0..1] for a player with these eligible slots: the weight of
+// the best slot they could still fill. 0 if the team is completely full.
+function positionNeedFor(state, elig) {
+  const slots = elig && elig.length ? elig : ["UTIL"];
+  let best = 0;
+  for (const slot of slots) {
+    if ((state.openSlots[slot] || 0) > 0) best = Math.max(best, SLOT_NEED_WEIGHT[slot] || 0.5);
+  }
+  if (best === 0 && (state.openSlots.BENCH || 0) > 0) best = SLOT_NEED_WEIGHT.BENCH;
+  return best;
+}
+
+// Backward-compatible shim: need by a single position key (used by nomination
+// helpers and any caller that only has a posKey).
+function positionNeed(state, posKey) {
+  if (state.openSlots) return positionNeedFor(state, [posKey]);
+  return 0.5;
+}
+
+// Count of still-open HARD (must-fill) slots a player with this eligibility
+// could satisfy. Used to detect "I have to buy a catcher now" pressure.
+function openHardSlotsFor(state, elig) {
+  let n = 0;
+  for (const slot of (elig || [])) {
+    if (HARD_SLOTS.has(slot)) n += Math.max(0, state.openSlots[slot] || 0);
+  }
+  return n;
+}
+
+// Total open hard slots across the whole roster.
+function totalOpenHardSlots(state) {
+  let n = 0;
+  for (const slot of HARD_SLOTS) n += Math.max(0, state.openSlots[slot] || 0);
+  return n;
+}
+
+// Forced-fill multiplier: when a team is running out of flexibility and this
+// player fills an otherwise-open required slot, real owners pay up rather than
+// be left unable to field a legal roster. Catcher (no substitute) hits hardest.
+function mustFillBoost(state, elig) {
+  const hardOpenForPlayer = openHardSlotsFor(state, elig);
+  if (hardOpenForPlayer <= 0) return 1;
+  const totalHard = totalOpenHardSlots(state);
+  const slack = state.slotsRemaining - totalHard;   // spare picks beyond requirements
+  if (slack > 3) return 1;                            // plenty of room, no pressure
+  let boost = slack <= 0 ? 1.45 : slack === 1 ? 1.28 : slack === 2 ? 1.15 : 1.07;
+  // Catcher with no open catcher elsewhere is the canonical squeeze.
+  if ((state.openSlots.C || 0) > 0 && (elig || []).includes("C")) boost *= 1.12;
+  return boost;
 }
 
 // What's the most this team would bid for player p in the current state?
@@ -125,12 +203,9 @@ function computeMaxBid(state, p, inflation) {
   if (safetyCap <= 0) return 0;
 
   const profile = state.profile;
-  const need = positionNeed(state, p.posKey);
+  const elig = p.elig && p.elig.length ? p.elig : [p.posKey];
+  const need = positionNeedFor(state, elig);
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
-
-  // Endgame force-spend: when budget overhangs slots, bid full cap.
-  if (state.slotsRemaining <= 4 && dollarsPerSlot >= 5) return safetyCap;
-  if (dollarsPerSlot >= 13) return safetyCap;
 
   // Tier classification
   const tier = baseValue >= 35 ? "T1" : baseValue >= 20 ? "T2" : baseValue >= 10 ? "T3" : baseValue >= 5 ? "T4" : "T5";
@@ -154,12 +229,18 @@ function computeMaxBid(state, p, inflation) {
   // Position bias from history (e.g., closer hoarder, SP-heavy)
   const posMult = profile.posBias[p.posKey] || 1;
 
-  // Need factor: full position → 40% of bid; partial → 75%; full need → 100%.
+  // Need factor scaled to the slot-weight range (0.3 bench … 1.0 catcher).
+  // need === 0 means the player fits NO open slot (not even bench) — don't bid,
+  // so a team can never buy a player it can't actually roster.
   let needFactor;
-  if (need <= 0) needFactor = 0.40;
-  else if (need < 0.3) needFactor = 0.75;
-  else if (need < 0.6) needFactor = 0.92;
-  else needFactor = 1.00;
+  if (need <= 0) return 0;
+  else if (need <= 0.35) needFactor = 0.55;   // bench-only fit
+  else if (need < 0.65) needFactor = 0.82;    // flex (MI/CI/UTIL)
+  else if (need < 0.85) needFactor = 0.95;    // OF / RP open
+  else needFactor = 1.00;                      // dedicated infield/C/SP open
+
+  // Forced-fill pressure: pay up to avoid an unfillable required slot.
+  const fillBoost = mustFillBoost(state, elig);
 
   // Auction natural inflation — even neutral bidders pay slightly above raw value.
   const auctionInflation = 1.03;
@@ -167,11 +248,28 @@ function computeMaxBid(state, p, inflation) {
   // Random per-pick noise (5-15% swing)
   const noise = 1 + (Math.random() - 0.5) * profile.noise * 2;
 
-  let perceived = baseValue * tierAgg * posMult * needFactor * auctionInflation * noise;
+  // Owner loyalty: pay a premium for "their guys" (repeat draft targets).
+  const targetMult = (profile.targets && profile.targets[p.name]) || 1;
 
-  // Moderate $/slot pressure for mid-range
-  if (dollarsPerSlot > 11) perceived *= 1.08;
-  else if (dollarsPerSlot < 4) perceived *= 0.80;
+  let perceived = baseValue * tierAgg * posMult * needFactor * fillBoost * targetMult * auctionInflation * noise;
+
+  // Graduated $/slot pressure: teams sitting on excess cash bid above value to
+  // avoid stranding money (owners spend 95-99% of budget every year), teams
+  // that are tight pull back. Scales with how hot their $/slot is.
+  let dpsPressure = 1;
+  if (dollarsPerSlot > 18) dpsPressure = 1.42;
+  else if (dollarsPerSlot > 13) dpsPressure = 1.28;
+  else if (dollarsPerSlot > 9) dpsPressure = 1.12;
+  else if (dollarsPerSlot < 4) dpsPressure = 0.82;
+  perceived *= dpsPressure;
+
+  // Spread, don't dump: in the endgame, cap a single buy so a cash-rich team
+  // can't sink its whole wad into one player — real owners spread leftover
+  // money across several. (Doesn't bind early, where value/safetyCap govern.)
+  if (state.slotsRemaining <= 8) {
+    const spreadCap = Math.floor(dollarsPerSlot * (state.slotsRemaining <= 3 ? 4 : 2.6)) + 6;
+    perceived = Math.min(perceived, Math.max(baseValue * 1.3, spreadCap));
+  }
 
   return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
 }
@@ -184,6 +282,13 @@ function chooseNomination(state, pool, inflation) {
   const profile = state.profile;
   const tta = profile.topTierAppetite || 1;
   const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+
+  // Loyalty: with budget to spend, owners often nominate a repeat target early
+  // to lock in "their guy".
+  if (profile.targets && state.budget > 30) {
+    const mine = pool.filter(p => profile.targets[p.name] && positionNeedFor(state, p.elig || [p.posKey]) > 0.3);
+    if (mine.length && Math.random() < 0.45) return mine[Math.floor(Math.random() * Math.min(3, mine.length))];
+  }
 
   // ENDGAME (slots low + budget hot): nominate biggest remaining to burn cash
   if (state.slotsRemaining <= 8 && dollarsPerSlot > 9) {
@@ -200,17 +305,17 @@ function chooseNomination(state, pool, inflation) {
     }
     // Standard target: a player in a position I need, in my tier preference
     const targetTier = tta >= 1.2 ? 25 : tta < 1.05 ? 10 : 15;
-    const targets = pool.filter(p => p.value >= targetTier && positionNeed(state, p.posKey) > 0.4);
+    const targets = pool.filter(p => p.value >= targetTier && positionNeedFor(state, p.elig || [p.posKey]) > 0.4);
     if (targets.length) return targets[Math.floor(Math.random() * Math.min(8, targets.length))];
   }
 
   // MID: position-need targets, with some random dumps
   if (Math.random() < 0.6) {
-    const need = pool.filter(p => positionNeed(state, p.posKey) > 0.4 && p.value > 5);
+    const need = pool.filter(p => positionNeedFor(state, p.elig || [p.posKey]) > 0.4 && p.value > 5);
     if (need.length) return need[Math.floor(Math.random() * Math.min(8, need.length))];
   }
   // Dump: nominate a buzzy player at a position I'm full on
-  const dumpCandidates = pool.filter(p => p.value > 20 && positionNeed(state, p.posKey) <= 0.2);
+  const dumpCandidates = pool.filter(p => p.value > 20 && positionNeedFor(state, p.elig || [p.posKey]) <= 0.45);
   if (dumpCandidates.length) return dumpCandidates[Math.floor(Math.random() * Math.min(4, dumpCandidates.length))];
 
   // Default: cheap value play
@@ -230,6 +335,9 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
   while (activeIds.length && rounds < 80) {
     rounds++;
     let anyBumped = false;
+    // Shuffle each round so no team is structurally first-to-bid (the headless
+    // engine previously iterated in fixed object-key order).
+    shuffleInPlace(activeIds);
     for (const id of activeIds) {
       if (id === currentWinner.teamId) continue;
       const s = states[id];
@@ -281,23 +389,61 @@ function inflationForMockState(states) {
   const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams;
   const totalKeptCost = Object.values(states).reduce((s, t) => s + (LEAGUE.draftBudget - t.budget - t.drafted.reduce((x, d) => x + d.price, 0)), 0);
   const remaining = Math.max(0, totalBudget - totalKeptCost - spent);
-  let remainingValue = 0;
-  for (const p of values) {
-    if (p.value <= 0) continue;
-    if (keptNames.has(p.name) || draftedNames.has(p.name)) continue;
-    remainingValue += p.value;
-  }
+
+  // Only the players who will actually be rostered carry the remaining money —
+  // i.e. the top (open-slots) remaining by value. Counting the long $1 tail
+  // would dilute the multiplier and make the AI chronically underbid.
+  const openSlots = Object.values(states).reduce((n, s) => n + Math.max(0, s.slotsRemaining), 0);
+  const avail = values
+    .filter(p => p.value > 0 && !keptNames.has(p.name) && !draftedNames.has(p.name))
+    .sort((a, b) => b.value - a.value);
+  const rosterable = avail.slice(0, Math.max(1, openSlots));
+  const remainingValue = rosterable.reduce((s, p) => s + p.value, 0);
+
   let mult = remainingValue > 0 ? remaining / remainingValue : 1;
   if (!isFinite(mult) || mult < 0) mult = 1;
   // Clamp to a sane range so noise doesn't explode at end-of-draft
   mult = Math.max(0.3, Math.min(3.0, mult));
+
   return {
     mode: "tiered",
     multiplier: mult,
     hitMultiplier: mult,
     pitMultiplier: mult,
     tierMult: { T1: mult * 1.15, T2: mult * 1.08, T3: mult, T4: mult * 0.9, T5: mult * 0.7 },
+    posScarcity: computePosScarcity(states, rosterable),
   };
+}
+
+// Per-position scarcity tilt. Compares remaining league-wide demand (open hard
+// slots at each position) against remaining rosterable supply at that position.
+// Scarce positions tilt up, deep positions tilt down. Normalized to mean ~1 so
+// it only REDISTRIBUTES money (the global multiplier still sets the level) —
+// this is what produces realistic positional "runs".
+function computePosScarcity(states, rosterable) {
+  const HARD = ["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"];
+  const demand = {}, supply = {};
+  for (const pos of HARD) { demand[pos] = 0; supply[pos] = 0; }
+  for (const s of Object.values(states)) {
+    for (const pos of HARD) demand[pos] += Math.max(0, s.openSlots?.[pos] || 0);
+  }
+  for (const p of rosterable) {
+    if (supply[p.posKey] != null) supply[p.posKey] += 1;
+  }
+  // Raw scarcity = demand/supply, dampened by sqrt; clamp per-position.
+  const raw = {};
+  let wSum = 0, wN = 0;
+  for (const pos of HARD) {
+    const ratio = demand[pos] / Math.max(1, supply[pos]);
+    raw[pos] = Math.max(0.80, Math.min(1.35, Math.sqrt(ratio || 1)));
+    // weight the normalization by supply so thin positions don't skew the mean
+    wSum += raw[pos] * Math.max(1, supply[pos]);
+    wN += Math.max(1, supply[pos]);
+  }
+  const mean = wN > 0 ? wSum / wN : 1;
+  const out = {};
+  for (const pos of HARD) out[pos] = mean > 0 ? raw[pos] / mean : 1;
+  return out;
 }
 
 // Runs the full simulation. Returns { picks, finalStates }.
@@ -314,28 +460,27 @@ function runMockDraft(opts) {
   const order = Object.values(states).map(s => s.teamId);
   shuffleInPlace(order);
 
-  let pickIdx = 0;
+  let nomPointer = 0;     // stable rotation pointer through `order`
   let safety = 0;
   while (pool.length && safety < 400) {
     safety++;
-    // Skip teams with no slots
-    const activeOrder = order.filter(id => states[id].slotsRemaining > 0);
-    if (!activeOrder.length) break;
-    const nominatorId = activeOrder[pickIdx % activeOrder.length];
+    // Advance to the next team (in fixed order) that still has open slots.
+    let nominatorId = null;
+    for (let i = 0; i < order.length; i++) {
+      const cand = order[(nomPointer + i) % order.length];
+      if (states[cand].slotsRemaining > 0) { nominatorId = cand; nomPointer = (nomPointer + i + 1) % order.length; break; }
+    }
+    if (!nominatorId) break;
 
     const inflation = inflationForMockState(states);
     const nominee = chooseNomination(states[nominatorId], pool, inflation);
     if (!nominee) break;
-    const opening = Math.max(1, Math.round(nominee.value * 0.4));
 
-    // Higher opening (50% of value) so the auction starts closer to fair.
-    // Cap opening at nominator's affordable budget so they don't get assigned
-    // as winner at a price they can't pay.
-    let opening2 = Math.max(1, Math.round(nominee.value * 0.5));
-    const nominator = states[nominatorId];
-    const nomMaxAffordable = Math.max(1, nominator.budget - Math.max(0, nominator.slotsRemaining - 1));
-    opening2 = Math.min(opening2, nomMaxAffordable);
-    const { winner, price: rawPrice } = runBiddingRound(states, nominee, nominatorId, opening2, inflation);
+    // Open at $1 like a real auction: the nominator is only the provisional
+    // winner at the floor, so a "drain" nomination of a player they don't want
+    // doesn't stick them with it — contenders bid it up to fair value, and an
+    // uncontested nomination is won cheap (also realistic).
+    const { winner, price: rawPrice } = runBiddingRound(states, nominee, nominatorId, 1, inflation);
 
     // Hard guard: actual price can never exceed winner's available budget.
     // Reserve $1 per future remaining slot.
@@ -343,9 +488,15 @@ function runMockDraft(opts) {
     const winnerMaxPrice = Math.max(1, winner.budget - winnerReserve);
     const price = Math.min(rawPrice, winnerMaxPrice);
 
+    // If the winner has no slot for this player (only happens for an
+    // uncontested $1 nomination of an unrosterable player), let them go
+    // undrafted rather than corrupt the winner's roster accounting.
+    const filledSlot = assignToSlot(winner.openSlots, nominee.elig || [nominee.posKey]);
+    if (!filledSlot) { pool = pool.filter(p => p.name !== nominee.name); continue; }
+
     winner.budget = Math.max(0, winner.budget - price);
-    winner.drafted.push({ name: nominee.name, pos: nominee.posKey, price, value: nominee.value, type: nominee.type });
-    winner.slotsByPos[nominee.posKey] = (winner.slotsByPos[nominee.posKey] || 0) + 1;
+    winner.drafted.push({ name: nominee.name, pos: nominee.posKey, slot: filledSlot, price, value: nominee.value, type: nominee.type });
+    winner.slotsByPos[filledSlot || nominee.posKey] = (winner.slotsByPos[filledSlot || nominee.posKey] || 0) + 1;
     winner.slotsRemaining -= 1;
 
     picks.push({
@@ -364,7 +515,6 @@ function runMockDraft(opts) {
 
     // Remove from pool
     pool = pool.filter(p => p.name !== nominee.name);
-    pickIdx++;
   }
 
   return { picks, states };
@@ -406,4 +556,85 @@ function runMockDraftMonteCarlo(n, opts) {
   }
   out.sort((a, b) => b.mean - a.mean);
   return out;
+}
+
+// --- Backtest / calibration harness -------------------------------------
+// Runs the sim N times and scores each owner's SIMULATED behavior against the
+// behavioral profile derived from their real draft history. This is how we tell
+// whether profiles actually shape the AI — and gives a target to tune against.
+// Metrics per owner:
+//   top3Share      — share of spend on their 3 priciest buys (stars vs spread)
+//   bigBidsPerYear — count of buys ≥ $25
+//   avgMaxBid      — their single biggest buy
+//   posSpendPct    — share of spend by position
+function _ownerMetricsFromPicks(picks) {
+  const byOwner = {};
+  for (const p of picks) {
+    const o = p.winnerOwner;
+    if (!byOwner[o]) byOwner[o] = { spend: 0, buys: [], posSpend: {} };
+    byOwner[o].spend += p.price;
+    byOwner[o].buys.push(p.price);
+    byOwner[o].posSpend[p.pos] = (byOwner[o].posSpend[p.pos] || 0) + p.price;
+  }
+  const out = {};
+  for (const [o, d] of Object.entries(byOwner)) {
+    const sorted = d.buys.slice().sort((a, b) => b - a);
+    const top3 = sorted.slice(0, 3).reduce((s, x) => s + x, 0);
+    const posSpendPct = {};
+    for (const [pos, amt] of Object.entries(d.posSpend)) posSpendPct[pos] = d.spend > 0 ? amt / d.spend : 0;
+    out[o] = {
+      top3Share: d.spend > 0 ? top3 / d.spend : 0,
+      bigBids: sorted.filter(x => x >= 25).length,
+      maxBid: sorted[0] || 0,
+      posSpendPct,
+    };
+  }
+  return out;
+}
+
+function runMockBacktest(n, opts) {
+  n = n || 40;
+  if (typeof computeAllOwnerProfiles !== "function") return { error: "History module unavailable." };
+  const hist = computeAllOwnerProfiles();
+  if (!hist || !Object.keys(hist).length) return { error: "No draft history imported — sync from ESPN on the History tab first." };
+
+  // Accumulate simulated metrics per owner across N drafts.
+  const acc = {};
+  for (let i = 0; i < n; i++) {
+    const { picks } = runMockDraft(opts || {});
+    const m = _ownerMetricsFromPicks(picks);
+    for (const [o, mm] of Object.entries(m)) {
+      if (!acc[o]) acc[o] = { top3Share: [], bigBids: [], maxBid: [], posSpendPct: {} };
+      acc[o].top3Share.push(mm.top3Share);
+      acc[o].bigBids.push(mm.bigBids);
+      acc[o].maxBid.push(mm.maxBid);
+      for (const [pos, pct] of Object.entries(mm.posSpendPct)) {
+        (acc[o].posSpendPct[pos] = acc[o].posSpendPct[pos] || []).push(pct);
+      }
+    }
+  }
+  const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+
+  const rows = [];
+  const errs = { top3Share: [], bigBids: [], maxBid: [] };
+  for (const [owner, h] of Object.entries(hist)) {
+    const s = acc[owner];
+    if (!s) continue;
+    const simTop3 = avg(s.top3Share), simBig = avg(s.bigBids), simMax = avg(s.maxBid);
+    if (h.top3Share != null) errs.top3Share.push(Math.abs(simTop3 - h.top3Share));
+    if (h.bigBidsPerYear != null) errs.bigBids.push(Math.abs(simBig - h.bigBidsPerYear));
+    if (h.avgMaxBidPerYear != null) errs.maxBid.push(Math.abs(simMax - h.avgMaxBidPerYear));
+    rows.push({
+      owner,
+      sim: { top3Share: simTop3, bigBids: simBig, maxBid: simMax },
+      hist: { top3Share: h.top3Share, bigBids: h.bigBidsPerYear, maxBid: h.avgMaxBidPerYear },
+    });
+  }
+  rows.sort((a, b) => (b.hist.top3Share || 0) - (a.hist.top3Share || 0));
+  const mae = {
+    top3Share: avg(errs.top3Share),
+    bigBids: avg(errs.bigBids),
+    maxBid: avg(errs.maxBid),
+  };
+  return { n, rows, mae };
 }

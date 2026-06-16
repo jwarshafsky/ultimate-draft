@@ -8,6 +8,7 @@ const _mockState = {
   lastMonteCarlo: null,
   running: false,
   view: "single",
+  lastBacktest: null,
 };
 
 function renderMock() {
@@ -28,7 +29,8 @@ function renderMock() {
 
   if (_mockState.mode === "auto") {
     html += renderAutoMockControls();
-    if (_mockState.view === "mc" && _mockState.lastMonteCarlo) html += renderMockMonteCarlo();
+    if (_mockState.view === "backtest" && _mockState.lastBacktest) html += renderMockBacktest();
+    else if (_mockState.view === "mc" && _mockState.lastMonteCarlo) html += renderMockMonteCarlo();
     else if (_mockState.lastRun) html += renderMockSingle();
     else html += '<div class="empty"><p>Click "Run 1 Mock" to simulate the draft.</p></div>';
   } else {
@@ -44,13 +46,48 @@ function renderAutoMockControls() {
   html += '<button class="btn primary" style="width:auto; padding: 8px 16px;" id="mock-run">Run 1 Mock</button>';
   html += '<button class="btn" id="mock-mc">Run 25 Mocks (Monte Carlo)</button>';
   html += '<button class="btn" id="mock-mc-100">Run 100 Mocks</button>';
+  html += '<button class="btn" id="mock-backtest" title="Score the AI\'s simulated behavior against each owner\'s real draft history">Validate vs History</button>';
   if (_mockState.lastRun || _mockState.lastMonteCarlo) {
     html += '<span class="muted small" style="margin-left: 12px;">View:</span>';
     html += '<button class="btn ' + (_mockState.view === "single" ? "primary" : "") + '" id="mock-view-single" style="padding: 6px 12px; width: auto;">Last Run</button>';
     html += '<button class="btn ' + (_mockState.view === "mc" ? "primary" : "") + '" id="mock-view-mc" style="padding: 6px 12px; width: auto;">Monte Carlo</button>';
+    if (_mockState.lastBacktest) html += '<button class="btn ' + (_mockState.view === "backtest" ? "primary" : "") + '" id="mock-view-backtest" style="padding: 6px 12px; width: auto;">Validation</button>';
   }
   if (_mockState.running) html += '<span class="small muted" style="margin-left: 10px;">Running…</span>';
   html += '</div></div>';
+  return html;
+}
+
+// Backtest report: how closely the AI's simulated behavior matches each
+// owner's real draft-history profile. Lower error = the profiles are shaping
+// the sim. Owners are sorted by historical stars+scrubs tendency.
+function renderMockBacktest() {
+  const bt = _mockState.lastBacktest;
+  if (!bt) return '';
+  if (bt.error) return '<div class="card"><h3>Validation vs History</h3><p class="muted small">' + esc(bt.error) + '</p></div>';
+  const pct = x => (x * 100).toFixed(0) + '%';
+  const d1 = x => (x == null ? '—' : x.toFixed(1));
+  let html = '<div class="card"><h3>Validation vs History <span class="muted small">' + bt.n + ' sims</span></h3>';
+  html += '<p class="muted small">Simulated owner behavior vs their real draft-history profile. Close columns mean the AI is drafting like the actual owner. Big gaps flag where to tune. (Current keepers/projections differ from past years, so expect some spread — watch the <em>ordering</em> and systematic bias.)</p>';
+  html += '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' +
+    '<th>Owner</th>' +
+    '<th>Top-3 $ share<br><span class="muted small">sim / real</span></th>' +
+    '<th>Big bids ≥$25<br><span class="muted small">sim / real</span></th>' +
+    '<th>Max bid<br><span class="muted small">sim / real</span></th>' +
+    '</tr></thead><tbody>';
+  for (const r of bt.rows) {
+    html += '<tr>' +
+      '<td>' + esc(r.owner) + '</td>' +
+      '<td>' + pct(r.sim.top3Share) + ' / ' + (r.hist.top3Share != null ? pct(r.hist.top3Share) : '—') + '</td>' +
+      '<td>' + d1(r.sim.bigBids) + ' / ' + d1(r.hist.bigBids) + '</td>' +
+      '<td>$' + d1(r.sim.maxBid) + ' / $' + d1(r.hist.maxBid) + '</td>' +
+      '</tr>';
+  }
+  html += '</tbody></table></div>';
+  html += '<div class="muted small" style="margin-top:10px">Mean abs. error — top-3 share: ' + pct(bt.mae.top3Share) +
+    ' · big bids: ' + bt.mae.bigBids.toFixed(2) + ' · max bid: $' + bt.mae.maxBid.toFixed(1) +
+    '. Lower is better; re-run after tuning to see it drop.</div>';
+  html += '</div>';
   return html;
 }
 
@@ -221,8 +258,18 @@ function wireMockControls() {
   });
   document.getElementById("mock-mc")?.addEventListener("click", () => runMC(25));
   document.getElementById("mock-mc-100")?.addEventListener("click", () => runMC(100));
+  document.getElementById("mock-backtest")?.addEventListener("click", () => {
+    _mockState.running = true; renderMock();
+    setTimeout(() => {
+      _mockState.lastBacktest = runMockBacktest(40);
+      _mockState.view = "backtest";
+      _mockState.running = false;
+      renderMock();
+    }, 30);
+  });
   document.getElementById("mock-view-single")?.addEventListener("click", () => { _mockState.view = "single"; renderMock(); });
   document.getElementById("mock-view-mc")?.addEventListener("click", () => { _mockState.view = "mc"; renderMock(); });
+  document.getElementById("mock-view-backtest")?.addEventListener("click", () => { _mockState.view = "backtest"; renderMock(); });
 
   // Interactive controls
   document.getElementById("interactive-start")?.addEventListener("click", () => {

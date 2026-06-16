@@ -51,7 +51,7 @@ function startInteractiveMock() {
   _interactive.currentBid = 0;
   _interactive.currentWinner = null;
   _interactive.passedTeams = new Set();
-  _interactive.inflation = _computeInteractiveInflation();
+  _interactive.inflation = inflationForMockState(_interactive.states);
   _advanceToNominatingTeam();
 }
 
@@ -100,11 +100,8 @@ function _aiAutoNominate(teamId) {
     _fireChange();
     return;
   }
-  const opening = Math.max(1, Math.min(
-    Math.round(player.value * 0.5),
-    state.budget - Math.max(0, state.slotsRemaining - 1)
-  ));
-  _startAuction(player, teamId, opening);
+  // Open at the $1 floor like the headless engine — contenders bid it up.
+  _startAuction(player, teamId, 1);
 }
 
 // Called by UI when the user nominates a player.
@@ -243,8 +240,9 @@ function _completeSale() {
   const player = _interactive.current;
 
   winner.budget = Math.max(0, winner.budget - price);
-  winner.drafted.push({ name: player.name, pos: player.posKey, price, value: player.value, type: player.type });
-  winner.slotsByPos[player.posKey] = (winner.slotsByPos[player.posKey] || 0) + 1;
+  const filledSlot = assignToSlot(winner.openSlots, player.elig || [player.posKey]);
+  winner.drafted.push({ name: player.name, pos: player.posKey, slot: filledSlot, price, value: player.value, type: player.type });
+  winner.slotsByPos[filledSlot || player.posKey] = (winner.slotsByPos[filledSlot || player.posKey] || 0) + 1;
   winner.slotsRemaining -= 1;
 
   _interactive.picks.push({
@@ -268,38 +266,13 @@ function _completeSale() {
   _interactive.currentWinner = null;
   _interactive.passedTeams = new Set();
   _interactive.phase = "sold";
-  _interactive.inflation = _computeInteractiveInflation();
+  _interactive.inflation = inflationForMockState(_interactive.states);
   _fireChange();
   // Advance to next nominator
   _interactive.currentNominator++;
   setTimeout(() => _advanceToNominatingTeam(), 700);
 }
 
-function _computeInteractiveInflation() {
-  const draftedNames = new Set();
-  let spent = 0;
-  for (const s of Object.values(_interactive.states)) {
-    for (const d of s.drafted) { draftedNames.add(d.name); spent += d.price; }
-  }
-  const keptNames = new Set(collectKeepers().map(k => k.name));
-  const values = getValues();
-  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams;
-  const totalKeptCost = Object.values(_interactive.states).reduce((s, t) => s + (LEAGUE.draftBudget - t.budget - t.drafted.reduce((x, d) => x + d.price, 0)), 0);
-  const remaining = Math.max(0, totalBudget - totalKeptCost - spent);
-  let remainingValue = 0;
-  for (const p of values) {
-    if (p.value <= 0) continue;
-    if (keptNames.has(p.name) || draftedNames.has(p.name)) continue;
-    remainingValue += p.value;
-  }
-  let mult = remainingValue > 0 ? remaining / remainingValue : 1;
-  if (!isFinite(mult) || mult < 0) mult = 1;
-  mult = Math.max(0.3, Math.min(3.0, mult));
-  return {
-    mode: "tiered",
-    multiplier: mult,
-    hitMultiplier: mult,
-    pitMultiplier: mult,
-    tierMult: { T1: mult * 1.15, T2: mult * 1.08, T3: mult, T4: mult * 0.9, T5: mult * 0.7 },
-  };
-}
+// Interactive inflation now uses the shared inflationForMockState() so the
+// player-vs-AI sim matches the headless engine exactly (tail-trim + per-position
+// scarcity included).
