@@ -4,6 +4,7 @@ let currentView = "overview";
 
 const VIEWS = {
   overview:  { render: () => renderOverview() },
+  standings: { render: () => renderStandings() },
   keepers:   { render: () => renderKeepers() },
   values:    { render: () => renderValues() },
   board:     { render: () => renderBoard() },

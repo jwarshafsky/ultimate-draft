@@ -71,6 +71,136 @@ async function fetchEspnPlayers() {
   return r.json();
 }
 
+// --- In-season rosters + stats (Standings analyzer) ---------------------
+//
+// ESPN baseball stat IDs (reverse-engineered; from the cwendt94/espn-api map).
+// These are the keys inside each stat entry's `stats` object.
+const ESPN_STAT_ID = {
+  // hitting
+  AB: 0, H: 1, HR: 5, BB: 10, HBP: 12, SF: 13, PA: 16, OBP: 17, R: 20, RBI: 21, SB: 23,
+  // pitching
+  IP_OUTS: 34, P_H: 37, P_BB: 39, WHIP: 41, ER: 45, ERA: 47, K: 48, W: 53, SV: 57, HLD: 60, QS: 63,
+};
+
+// Pull a number out of an ESPN stat map by id (returns null if absent).
+function _statById(map, id) {
+  if (!map) return null;
+  const v = map[id] != null ? map[id] : map[String(id)];
+  return (typeof v === "number" && isFinite(v)) ? v : null;
+}
+
+// Pick the right stat entry for a player given source (0=actual, 1=projected)
+// and the target season. Prefer the season-total split (statSplitTypeId 0).
+function _pickStatEntry(player, season, sourceId) {
+  const arr = player?.stats || [];
+  const matches = arr.filter(s => s.statSourceId === sourceId && Number(s.seasonId) === Number(season));
+  if (!matches.length) return null;
+  return matches.find(s => s.statSplitTypeId === 0) || matches[0];
+}
+
+// Normalize one ESPN roster entry into the shape standings.js consumes.
+// `sourceId`: 0 = season-to-date actuals, 1 = full-season projection.
+function _normalizeEspnPlayer(entry, season, sourceId) {
+  const player = entry?.playerPoolEntry?.player || entry?.player;
+  if (!player) return null;
+  const slots = player.eligibleSlots || [];
+  // Pitcher if eligible only for pitching slots (13 SP / 14 RP) and not a hitter slot.
+  const isPitcher = (player.defaultPositionId === 1) ||
+    (slots.includes(13) || slots.includes(14)) && !slots.some(s => s >= 0 && s <= 12 && s !== 1);
+  const se = _pickStatEntry(player, season, sourceId);
+  const m = se?.stats || {};
+  const name = player.fullName || ("Player " + player.id);
+
+  if (isPitcher) {
+    const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
+    return {
+      name, espnId: player.id, type: "P",
+      lineupSlotId: entry.lineupSlotId,
+      K: _statById(m, ESPN_STAT_ID.K) || 0,
+      QS: _statById(m, ESPN_STAT_ID.QS) || 0,
+      SV: _statById(m, ESPN_STAT_ID.SV) || 0,
+      HLD: _statById(m, ESPN_STAT_ID.HLD) || 0,
+      W: _statById(m, ESPN_STAT_ID.W) || 0,
+      IP: ipOuts != null ? ipOuts / 3 : 0,
+      ER: _statById(m, ESPN_STAT_ID.ER),
+      HA: _statById(m, ESPN_STAT_ID.P_H),
+      BBA: _statById(m, ESPN_STAT_ID.P_BB),
+      ERA: _statById(m, ESPN_STAT_ID.ERA),
+      WHIP: _statById(m, ESPN_STAT_ID.WHIP),
+    };
+  }
+  return {
+    name, espnId: player.id, type: "H",
+    lineupSlotId: entry.lineupSlotId,
+    R: _statById(m, ESPN_STAT_ID.R) || 0,
+    HR: _statById(m, ESPN_STAT_ID.HR) || 0,
+    RBI: _statById(m, ESPN_STAT_ID.RBI) || 0,
+    SB: _statById(m, ESPN_STAT_ID.SB) || 0,
+    H: _statById(m, ESPN_STAT_ID.H),
+    BB: _statById(m, ESPN_STAT_ID.BB),
+    HBP: _statById(m, ESPN_STAT_ID.HBP),
+    SF: _statById(m, ESPN_STAT_ID.SF),
+    AB: _statById(m, ESPN_STAT_ID.AB),
+    PA: _statById(m, ESPN_STAT_ID.PA) || 0,
+    OBP: _statById(m, ESPN_STAT_ID.OBP),
+  };
+}
+
+// Fetch live rosters for all teams. Returns:
+//   { rosters: { ourTeamId: [normalizedPlayer] }, teamMeta: { ourTeamId: {name,...} }, season }
+// `sourceId`: 0 = current YTD stats, 1 = ESPN full-season projection.
+async function fetchEspnRosters(sourceId) {
+  if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
+  sourceId = sourceId === 1 ? 1 : 0;
+  const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/teams?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
+  const data = await r.json();
+  return parseEspnRosters(data, sourceId);
+}
+
+// Parse a raw mTeam+mRoster response into normalized rosters keyed by OUR
+// internal team ids. Exported so the test harness / cached samples reuse it.
+function parseEspnRosters(data, sourceId) {
+  sourceId = sourceId === 1 ? 1 : 0;
+  const season = ESPN.season;
+  const rosters = {};
+  const teamMeta = {};
+  for (const t of (data.teams || [])) {
+    const ourId = espnTeamIdToOwnerId(t.id);
+    if (!ourId) continue;
+    const entries = t.roster?.entries || [];
+    rosters[ourId] = entries
+      .map(e => _normalizeEspnPlayer(e, season, sourceId))
+      .filter(Boolean);
+    teamMeta[ourId] = {
+      espnId: t.id,
+      name: ((t.location || "") + " " + (t.nickname || "")).trim() || ("Team " + t.id),
+      abbrev: t.abbrev,
+      playerCount: rosters[ourId].length,
+    };
+  }
+  return { rosters, teamMeta, season, sourceId };
+}
+
+// Fetch the available-player pool (kona_player_info) for what-if "add" moves,
+// normalized to the same shape as rosters. Returns players not on any team.
+async function fetchEspnFreeAgents(sourceId) {
+  if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
+  sourceId = sourceId === 1 ? 1 : 0;
+  const data = await fetchEspnPlayers();
+  const list = data.players || data.playerPool || [];
+  const out = [];
+  for (const entry of list) {
+    // Free agents / waivers have onTeamId 0 (or missing). Skip rostered players.
+    const onTeam = entry.onTeamId != null ? entry.onTeamId : entry.player?.onTeamId;
+    if (onTeam && onTeam > 0) continue;
+    const p = _normalizeEspnPlayer(entry, ESPN.season, sourceId);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
 // Fetch one season's draft history (uses leagueHistory endpoint server-side).
 async function fetchEspnHistory(season) {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");

@@ -1,5 +1,7 @@
 // Data tab — manages projection, Statcast, and NFBC market price imports.
 
+let _dataRosSel = null; // currently-selected ROS source in the Data tab
+
 function renderData() {
   const root = document.getElementById("view-root");
   const meta = getProjectionMeta();
@@ -35,6 +37,38 @@ function renderData() {
   html += '<div class="small muted" style="margin-top: 4px;">Or: <input type="file" id="pit-file" accept=".csv,text/csv"></div>';
   html += '</div>';
   html += '</div></div>';
+
+  // === Rest-of-Season Projections (Standings analyzer) ===
+  const rosSel = (typeof _dataRosSel !== "undefined" && _dataRosSel) || (firstLoadedRosSource() || ROS_SOURCES[0].id);
+  _dataRosSel = rosSel;
+  html += '<div class="card"><h2>Rest-of-Season Projections</h2>';
+  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s “Projected” mode (YTD + ROS). Import a FanGraphs CSV per source — switch the source below, then import its hitters and pitchers. <a href="https://www.fangraphs.com/projections?type=steamerr&stats=bat&pos=all" target="_blank" rel="noopener" style="color: var(--accent);">FanGraphs ROS projections</a>.</p>';
+  html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Source ' +
+    '<select id="ros-src-sel">';
+  for (const s of ROS_SOURCES) {
+    const c = getRosCounts(s.id);
+    html += '<option value="' + s.id + '"' + (s.id === rosSel ? ' selected' : '') + '>' +
+      esc(s.label) + ' (' + c.hitters + ' hit / ' + c.pitchers + ' pit)</option>';
+  }
+  html += '</select></label>';
+  html += '<div class="grid cols-2" style="margin-top:8px;">';
+  html += '<div><h3>Hitters</h3>';
+  html += '<textarea id="ros-hit-csv" rows="4" style="width:100%; font-family:var(--mono); font-size:12px;" placeholder="Name,Team,PA,AB,H,R,HR,RBI,SB,BB,OBP"></textarea>';
+  html += '<div style="display:flex; gap:6px; margin-top:6px;"><button class="btn primary" id="ros-hit-import" style="width:auto;">Import hitters</button></div>';
+  html += '<div class="small muted" style="margin-top:4px;">Or: <input type="file" id="ros-hit-file" accept=".csv,text/csv"></div></div>';
+  html += '<div><h3>Pitchers</h3>';
+  html += '<textarea id="ros-pit-csv" rows="4" style="width:100%; font-family:var(--mono); font-size:12px;" placeholder="Name,Team,IP,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
+  html += '<div style="display:flex; gap:6px; margin-top:6px;"><button class="btn primary" id="ros-pit-import" style="width:auto;">Import pitchers</button></div>';
+  html += '<div class="small muted" style="margin-top:4px;">Or: <input type="file" id="ros-pit-file" accept=".csv,text/csv"></div></div>';
+  html += '</div>';
+  if (rosHasData(rosSel)) {
+    const c = getRosCounts(rosSel);
+    html += '<div class="small muted" style="margin-top:8px;">' + esc(getRosSourceLabel(rosSel)) + ': ' +
+      c.hitters + ' hitters / ' + c.pitchers + ' pitchers' +
+      (c.importedAt ? ' · imported ' + new Date(c.importedAt).toLocaleString() : '') +
+      ' <button class="btn danger" id="ros-clear" style="width:auto; padding:2px 8px; margin-left:8px;">Clear this source</button></div>';
+  }
+  html += '</div>';
 
   // === NFBC market prices ===
   html += '<div class="card"><h2>NFBC Market Prices</h2>';
@@ -101,6 +135,38 @@ function renderData() {
   wireImport("nfbc-csv", "nfbc-file", "nfbc-source", importNfbcCSV, "NFBC prices");
   wireImport("savant-hit-csv", "savant-hit-file", null, importStatcastHittersCSV, "Statcast hitters");
   wireImport("savant-pit-csv", "savant-pit-file", null, importStatcastPitchersCSV, "Statcast pitchers");
+
+  // ROS projections wiring (per-source import).
+  document.getElementById("ros-src-sel")?.addEventListener("change", (e) => {
+    _dataRosSel = e.target.value;
+    renderData();
+  });
+  function wireRosImport(textareaId, fileId, fn, label) {
+    const btnId = textareaId.replace("-csv", "-import");
+    document.getElementById(btnId)?.addEventListener("click", () => {
+      const text = document.getElementById(textareaId).value;
+      if (!text.trim()) { alert("Paste CSV data first."); return; }
+      const count = fn(_dataRosSel, text);
+      alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ".");
+      renderData();
+    });
+    document.getElementById(fileId)?.addEventListener("change", (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const count = fn(_dataRosSel, reader.result);
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+        renderData();
+      };
+      reader.readAsText(file);
+    });
+  }
+  wireRosImport("ros-hit-csv", "ros-hit-file", importRosHitters, "ROS hitters");
+  wireRosImport("ros-pit-csv", "ros-pit-file", importRosPitchers, "ROS pitchers");
+  document.getElementById("ros-clear")?.addEventListener("click", () => {
+    if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " ROS projections?")) { clearRosSource(_dataRosSel); renderData(); }
+  });
 
   document.getElementById("clear-proj")?.addEventListener("click", () => {
     if (confirm("Clear all projections?")) clearProjections();
