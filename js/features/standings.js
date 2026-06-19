@@ -188,7 +188,9 @@ function renderStandings() {
   // Coverage / source hints
   if (_modeNeedsRos(_standings.mode)) {
     if (!firstLoadedRosSource()) {
-      html += '<p class="small bad" style="margin-top:8px;">No projections imported yet. Import Steamer / THE BAT X / ATC ROS on the <b>Data</b> tab to enable this mode.</p>';
+      html += '<p class="small bad" style="margin-top:8px;">No projections loaded yet. ' +
+        '<button class="btn primary" id="std-load-hosted" style="padding:3px 10px;">⬇ Load latest projections</button> ' +
+        ' or import a CSV on the <b>Data</b> tab.</p>';
     } else if (_standings.coverage) {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
@@ -580,6 +582,14 @@ function wireStandings() {
   });
   const refresh = document.getElementById("std-refresh");
   if (refresh) refresh.addEventListener("click", loadStandingsData);
+  const loadHosted = document.getElementById("std-load-hosted");
+  if (loadHosted) loadHosted.addEventListener("click", async () => {
+    loadHosted.textContent = "Loading…"; loadHosted.disabled = true;
+    await loadAllHostedRos();
+    if (!_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
+    if (_standings.ytd) recomputeStandings();
+    renderStandings();
+  });
 
   const drop = document.getElementById("wi-drop");
   if (drop) drop.addEventListener("change", () => { _standings.whatIf.dropName = drop.value || null; renderStandings(); });

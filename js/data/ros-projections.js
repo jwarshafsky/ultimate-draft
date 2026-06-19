@@ -157,4 +157,47 @@ function firstLoadedRosSource() {
   return s ? s.id : null;
 }
 
+// --- Hosted projections (one-click load) --------------------------------
+// The repo ships CSVs under projections/ that a scheduled job refreshes from
+// FanGraphs. Loading them is a same-origin fetch — no CORS, no FanGraphs
+// account, no manual download.
+const ROS_HOSTED_PATH = "projections/";
+
+async function _fetchCsv(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(url + " → " + r.status);
+  return r.text();
+}
+
+// Load one hosted source (bat + pit) into its ROS store. Returns {hitters,pitchers}.
+async function fetchHostedRos(sourceId) {
+  const base = ROS_HOSTED_PATH + sourceId;
+  const [bat, pit] = await Promise.all([
+    _fetchCsv(base + "_bat.csv"),
+    _fetchCsv(base + "_pit.csv"),
+  ]);
+  const h = importRosHitters(sourceId, bat);
+  const p = importRosPitchers(sourceId, pit);
+  return { hitters: h, pitchers: p };
+}
+
+// Load every hosted source that exists. Returns a per-source result map.
+async function loadAllHostedRos() {
+  const out = {};
+  for (const s of ROS_SOURCES) {
+    try { out[s.id] = await fetchHostedRos(s.id); }
+    catch (e) { out[s.id] = { error: e.message || String(e) }; }
+  }
+  return out;
+}
+
+// Read the hosted manifest (labels / counts / last-updated date) if present.
+async function fetchRosManifest() {
+  try {
+    const r = await fetch(ROS_HOSTED_PATH + "manifest.json", { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
 loadRosFromStorage();

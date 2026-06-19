@@ -42,7 +42,13 @@ function renderData() {
   const rosSel = (typeof _dataRosSel !== "undefined" && _dataRosSel) || (firstLoadedRosSource() || ROS_SOURCES[0].id);
   _dataRosSel = rosSel;
   html += '<div class="card"><h2>Rest-of-Season Projections</h2>';
-  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s “Projected” mode (YTD + ROS). Import a FanGraphs CSV per source — switch the source below, then import its hitters and pitchers. <a href="https://www.fangraphs.com/projections?type=steamerr&stats=bat&pos=all" target="_blank" rel="noopener" style="color: var(--accent);">FanGraphs ROS projections</a>.</p>';
+  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s Rest-of-Season / Full-Season modes (YTD + ROS).</p>';
+  // One-click hosted load (auto-refreshed from FanGraphs by a scheduled job).
+  html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0 10px;">';
+  html += '<button class="btn primary" id="ros-load-hosted">⬇ Load latest projections</button>';
+  html += '<span class="small muted" id="ros-hosted-status">Steamer ROS · THE BAT X ROS · ATC ROS — one click, no download needed.</span>';
+  html += '</div>';
+  html += '<p class="muted small">Or import a FanGraphs CSV manually per source below. <a href="https://www.fangraphs.com/projections?type=steamerr&stats=bat&pos=all" target="_blank" rel="noopener" style="color: var(--accent);">FanGraphs ROS</a>.</p>';
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Source ' +
     '<select id="ros-src-sel">';
   for (const s of ROS_SOURCES) {
@@ -137,6 +143,21 @@ function renderData() {
   wireImport("savant-pit-csv", "savant-pit-file", null, importStatcastPitchersCSV, "Statcast pitchers");
 
   // ROS projections wiring (per-source import).
+  document.getElementById("ros-load-hosted")?.addEventListener("click", async () => {
+    const btn = document.getElementById("ros-load-hosted");
+    const status = document.getElementById("ros-hosted-status");
+    btn.disabled = true; btn.textContent = "Loading…";
+    const res = await loadAllHostedRos();
+    const parts = [];
+    for (const s of ROS_SOURCES) {
+      const r = res[s.id];
+      parts.push(r && !r.error ? (s.label + ": " + (r.hitters + r.pitchers)) : (s.label + ": —"));
+    }
+    const any = ROS_SOURCES.some(s => res[s.id] && !res[s.id].error);
+    if (status) status.textContent = (any ? "Loaded — " : "No hosted files found yet — ") + parts.join(" · ");
+    btn.disabled = false; btn.textContent = "⬇ Load latest projections";
+    renderData();
+  });
   document.getElementById("ros-src-sel")?.addEventListener("change", (e) => {
     _dataRosSel = e.target.value;
     renderData();
