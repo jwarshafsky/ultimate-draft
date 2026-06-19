@@ -77,22 +77,31 @@ function recomputeStandings() {
 }
 
 function buildEngineRosters() {
-  const ytd = _standings.ytd?.rosters || {};
-  if (_standings.mode === "current") return { rosters: ytd, coverage: null };
+  const ytdTeam = _standings.ytd?.ytdTeam || {};   // ESPN's actual accumulated totals
+  const rosters = _standings.ytd?.rosters || {};   // current roster players (for ROS + what-if)
+  const teamIds = Object.keys(ytdTeam).length ? Object.keys(ytdTeam) : Object.keys(rosters);
+
+  // Current = ESPN's official season-to-date totals (matches their standings).
+  if (_standings.mode === "current") {
+    const out = {};
+    for (const tid of teamIds) out[tid] = (ytdTeam[tid] || []).slice();
+    return { rosters: out, coverage: null };
+  }
+
   const includeYtd = _standings.mode === "full";   // full = YTD + ROS; ros = ROS only
   const src = _standings.rosSource;
   const out = {};
   let matched = 0, total = 0;
-  for (const [tid, players] of Object.entries(ytd)) {
+  for (const tid of teamIds) {
     const arr = [];
-    for (const p of players) {
+    if (includeYtd) for (const l of (ytdTeam[tid] || [])) arr.push(l); // ESPN actual YTD
+    for (const p of (rosters[tid] || [])) {
       total++;
       const ros = src ? getRosLine(src, p.name, p.type) : null;
-      if (includeYtd) arr.push(p);   // YTD actuals (locked in) — full mode only
       if (ros) {
-        // Tag as ROS only in full mode, where the YTD/ROS split drives the
-        // title-odds "fraction remaining". In ROS-only mode every line is a
-        // projection, so leave untagged and let the sim use the calendar frac.
+        // Tag ROS only in full mode, where the YTD/ROS split drives the
+        // title-odds "fraction remaining". In ROS-only mode there's no YTD, so
+        // leave untagged and let the sim use the calendar estimate.
         if (includeYtd) ros._ros = true; else delete ros._ros;
         arr.push(ros);
         matched++;
@@ -200,10 +209,13 @@ function renderStandings() {
   html += '</div>';
 
   if (_standings.computed) {
-    html += renderTitleOddsCard(_standings.computed, _standings.odds, me?.id);
+    // Title odds & what-if are about the FINISH — only meaningful once a
+    // projection is layered on (Rest of Season / Full Season). Current mode is
+    // a snapshot of what's already banked.
+    if (_standings.mode !== "current") html += renderTitleOddsCard(_standings.computed, _standings.odds, me?.id);
     html += renderStandingsTable(_standings.computed, me?.id);
     if (me) html += renderGapCard(_standings.computed, me.id);
-    if (me) html += renderWhatIfCard(me.id);
+    if (me && _standings.mode !== "current") html += renderWhatIfCard(me.id);
   }
 
   root.innerHTML = html;

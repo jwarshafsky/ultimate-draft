@@ -174,13 +174,45 @@ async function fetchEspnRosters(sourceId) {
   return parseEspnRosters(data, sourceId);
 }
 
-// Parse a raw mTeam+mRoster response into normalized rosters keyed by OUR
-// internal team ids. Exported so the test harness / cached samples reuse it.
+// Build a team's actual season-to-date totals from ESPN's own accumulated
+// `valuesByStat` (the numbers that drive ESPN's real standings) — NOT by
+// re-summing rostered players (which would wrongly count bench/IL players and
+// pre-trade stats). Returns two synthetic stat lines (hitting + pitching) in the
+// shape standings.js consumes, so YTD combines cleanly with ROS projections.
+function _buildYtdTeamLines(valuesByStat) {
+  if (!valuesByStat) return null;
+  const v = id => {
+    const x = valuesByStat[id] != null ? valuesByStat[id] : valuesByStat[String(id)];
+    return (typeof x === "number" && isFinite(x)) ? x : 0;
+  };
+  const S = ESPN_STAT_ID;
+  const ab = v(S.AB), bb = v(S.BB), hbp = v(S.HBP), sf = v(S.SF);
+  const ipOuts = v(S.IP_OUTS);
+  const hit = {
+    name: "__ytd_hit__", type: "H", _ytd: true,
+    R: v(S.R), HR: v(S.HR), RBI: v(S.RBI), SB: v(S.SB),
+    AB: ab, H: v(S.H), BB: bb, HBP: hbp, SF: sf, PA: ab + bb + hbp + sf,
+  };
+  const pit = {
+    name: "__ytd_pit__", type: "P", _ytd: true,
+    K: v(S.K), QS: v(S.QS), SV: v(S.SV), HLD: v(S.HLD),
+    IP: ipOuts / 3, ER: v(S.ER), HA: v(S.P_H), BBA: v(S.P_BB),
+  };
+  return [hit, pit];
+}
+
+// Parse a raw mTeam+mRoster response into normalized data keyed by OUR internal
+// team ids. Exported so the test harness / cached samples reuse it. Returns:
+//   rosters     — current roster players (names + per-player stats) per team
+//   ytdTeam     — { teamId: [hitLine, pitLine] } from ESPN's valuesByStat
+//   espnPoints  — { teamId: ESPN's official total roto points } (sanity ref)
 function parseEspnRosters(data, sourceId) {
   sourceId = sourceId === 1 ? 1 : 0;
   const season = ESPN.season;
   const rosters = {};
   const teamMeta = {};
+  const ytdTeam = {};
+  const espnPoints = {};
   for (const t of (data.teams || [])) {
     const ourId = espnTeamIdToOwnerId(t.id);
     if (!ourId) continue;
@@ -188,6 +220,9 @@ function parseEspnRosters(data, sourceId) {
     rosters[ourId] = entries
       .map(e => _normalizeEspnPlayer(e, season, sourceId))
       .filter(Boolean);
+    const ytdLines = _buildYtdTeamLines(t.valuesByStat);
+    if (ytdLines) ytdTeam[ourId] = ytdLines;
+    if (typeof t.points === "number") espnPoints[ourId] = t.points;
     teamMeta[ourId] = {
       espnId: t.id,
       name: ((t.location || "") + " " + (t.nickname || "")).trim() || ("Team " + t.id),
@@ -195,7 +230,7 @@ function parseEspnRosters(data, sourceId) {
       playerCount: rosters[ourId].length,
     };
   }
-  return { rosters, teamMeta, season, sourceId };
+  return { rosters, teamMeta, ytdTeam, espnPoints, season, sourceId };
 }
 
 // Fetch the available-player pool (kona_player_info) for what-if "add" moves,
