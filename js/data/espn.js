@@ -89,13 +89,28 @@ function _statById(map, id) {
   return (typeof v === "number" && isFinite(v)) ? v : null;
 }
 
+// Rough sample size of a stat entry (PA-ish for hitters, outs for pitchers) so
+// we can prefer the SEASON cumulative line over short last-7/15/30 splits when
+// the explicit season split isn't tagged.
+function _entrySample(s) {
+  const m = s?.stats || {};
+  const ab = _statById(m, ESPN_STAT_ID.AB) || 0;
+  const bb = _statById(m, ESPN_STAT_ID.BB) || 0;
+  const outs = _statById(m, ESPN_STAT_ID.IP_OUTS) || 0;
+  return ab + bb + outs;
+}
+
 // Pick the right stat entry for a player given source (0=actual, 1=projected)
-// and the target season. Prefer the season-total split (statSplitTypeId 0).
+// and the target season. Prefer the season-total split (statSplitTypeId 0);
+// otherwise fall back to the largest-sample matching entry (the cumulative
+// season line, not a recent-days split).
 function _pickStatEntry(player, season, sourceId) {
   const arr = player?.stats || [];
   const matches = arr.filter(s => s.statSourceId === sourceId && Number(s.seasonId) === Number(season));
   if (!matches.length) return null;
-  return matches.find(s => s.statSplitTypeId === 0) || matches[0];
+  const seasonSplit = matches.find(s => s.statSplitTypeId === 0);
+  if (seasonSplit) return seasonSplit;
+  return matches.reduce((best, s) => (_entrySample(s) > _entrySample(best) ? s : best), matches[0]);
 }
 
 // Normalize one ESPN roster entry into the shape standings.js consumes.

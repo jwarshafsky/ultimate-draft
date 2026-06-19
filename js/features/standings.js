@@ -1,23 +1,29 @@
 // Standings analyzer (in-season). Pulls live ESPN rosters (season-to-date
-// actuals) for all 12 teams and projects the rotisserie standings:
-//   - "Current" = YTD stats only
-//   - "Projected" = YTD + a chosen rest-of-season source (Steamer / BATX / ATC)
-// Plus per-category ranks/points, a gap analysis for your team, Monte-Carlo
-// title odds (P finish 1st), and an add/drop what-if that re-runs the league.
+// actuals) for all 12 teams and projects the rotisserie standings in three
+// modes:
+//   - "current" = YTD stats only (what's banked so far)
+//   - "ros"     = rest-of-season projection only (each team going forward)
+//   - "full"    = YTD + ROS (projected FINAL totals — the real season forecast)
+// ROS comes from an imported source (Steamer / THE BAT X / ATC). Plus per-cat
+// ranks/points, a gap analysis for your team, Monte-Carlo title odds, and an
+// add/drop what-if that re-runs the league.
 
 const _standings = {
   ytd: null,         // { rosters, teamMeta, season } — ESPN YTD actuals (mode-independent)
   computed: null,    // computeStandings() on the built rosters
   odds: null,        // simulateTitleOdds() result
-  coverage: null,    // { matched, total } ROS match rate (projected mode)
+  coverage: null,    // { matched, total } ROS match rate (ros/full modes)
   built: null,       // the engine rosters currently displayed
-  mode: "current",   // "current" | "projected"
+  mode: "current",   // "current" | "ros" | "full"
   rosSource: null,   // selected ROS source id
   loading: false,
   error: null,
   faPool: null,      // normalized free-agent list (YTD lines) for what-if "add"
   whatIf: { add: null, dropName: null },
 };
+
+// Modes that require a ROS projection source.
+function _modeNeedsRos(m) { return m === "ros" || m === "full"; }
 
 const STANDINGS_CAT_LABELS = {
   R: "R", HR: "HR", RBI: "RBI", SB: "SB", OBP: "OBP",
@@ -47,6 +53,7 @@ async function loadStandingsData() {
     _standings.ytd = await fetchEspnRosters(0);
     _standings.faPool = null;
     _standings.whatIf = { add: null, dropName: null };
+    if (!_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
     recomputeStandings();
   } catch (e) {
     _standings.error = e.message || String(e);
@@ -69,30 +76,39 @@ function recomputeStandings() {
 
 function buildEngineRosters() {
   const ytd = _standings.ytd?.rosters || {};
-  if (_standings.mode !== "projected") return { rosters: ytd, coverage: null };
+  if (_standings.mode === "current") return { rosters: ytd, coverage: null };
+  const includeYtd = _standings.mode === "full";   // full = YTD + ROS; ros = ROS only
   const src = _standings.rosSource;
   const out = {};
   let matched = 0, total = 0;
   for (const [tid, players] of Object.entries(ytd)) {
     const arr = [];
     for (const p of players) {
-      arr.push(p);          // YTD actuals (locked in)
       total++;
       const ros = src ? getRosLine(src, p.name, p.type) : null;
-      if (ros) { ros._ros = true; arr.push(ros); matched++; }   // + rest-of-season (tagged)
+      if (includeYtd) arr.push(p);   // YTD actuals (locked in) — full mode only
+      if (ros) {
+        // Tag as ROS only in full mode, where the YTD/ROS split drives the
+        // title-odds "fraction remaining". In ROS-only mode every line is a
+        // projection, so leave untagged and let the sim use the calendar frac.
+        if (includeYtd) ros._ros = true; else delete ros._ros;
+        arr.push(ros);
+        matched++;
+      }
     }
     out[tid] = arr;
   }
   return { rosters: out, coverage: { matched, total } };
 }
 
-// Combine a free agent's YTD line with its ROS line (projected mode) into the
-// set of stat lines to add for a what-if.
+// Stat lines to add for a what-if, per mode:
+//   current → the FA's YTD line; ros → its ROS line only; full → YTD + ROS.
 function _whatIfAddLines(fa) {
   if (!fa) return null;
-  if (_standings.mode !== "projected") return [fa];
   const ros = _standings.rosSource ? getRosLine(_standings.rosSource, fa.name, fa.type) : null;
-  if (ros) ros._ros = true;
+  if (_standings.mode === "current") return [fa];
+  if (_standings.mode === "ros") { if (ros) delete ros._ros; return ros ? [ros] : []; }
+  if (ros) ros._ros = true;   // full
   return ros ? [fa, ros] : [fa];
 }
 
@@ -119,24 +135,28 @@ function renderStandings() {
   const root = document.getElementById("view-root");
   if (!root) return;
   const me = getMyTeam();
+  // Make sure a ROS source is selected whenever any are imported.
+  if (!_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
 
   let html = '<div class="card"><h2>Standings Analyzer</h2>';
-  html += '<p class="muted small">Live ESPN rosters → projected rotisserie standings for all 12 teams. ' +
-    '“Current” uses season-to-date stats; “Projected” adds a rest-of-season projection on top of YTD.</p>';
+  html += '<p class="muted small">Live ESPN rosters → rotisserie standings for all 12 teams. ' +
+    '<b>Current</b> = stats banked so far · <b>Rest of Season</b> = projection going forward only · ' +
+    '<b>Full Season</b> = YTD + rest-of-season (the projected final standings).</p>';
 
   // Mode + ROS source + refresh
   html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;">';
   html += '<div class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden;">';
-  for (const [val, lbl] of [["current", "Current (YTD)"], ["projected", "Projected"]]) {
+  for (const [val, lbl] of [["current", "Current (YTD)"], ["ros", "Rest of Season"], ["full", "Full Season"]]) {
     const active = _standings.mode === val;
     html += '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-mode="' + val +
       '" style="border:0; border-radius:0; padding:6px 12px;">' + lbl + '</button>';
   }
   html += '</div>';
 
-  // ROS source dropdown (active in projected mode)
-  html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">ROS source ' +
-    '<select id="std-ros-src"' + (_standings.mode === "projected" ? "" : " disabled") + '>';
+  // ROS source dropdown (active in rest-of-season / full modes)
+  const srcEnabled = _modeNeedsRos(_standings.mode);
+  html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Projection ' +
+    '<select id="std-ros-src"' + (srcEnabled ? "" : " disabled") + '>';
   for (const s of ROS_SOURCES) {
     const has = rosHasData(s.id);
     const c = getRosCounts(s.id);
@@ -155,15 +175,16 @@ function renderStandings() {
   html += '</div>';
 
   // Coverage / source hints
-  if (_standings.mode === "projected") {
+  if (_modeNeedsRos(_standings.mode)) {
     if (!firstLoadedRosSource()) {
-      html += '<p class="small bad" style="margin-top:8px;">No ROS projections imported yet. Import Steamer / BATX / ATC ROS on the <b>Data</b> tab to enable projected standings.</p>';
+      html += '<p class="small bad" style="margin-top:8px;">No projections imported yet. Import Steamer / THE BAT X / ATC ROS on the <b>Data</b> tab to enable this mode.</p>';
     } else if (_standings.coverage) {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
+      const tail = _standings.mode === "full" ? "Unmatched players count YTD only." : "Unmatched players contribute nothing (no projection).";
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'ROS source: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · matched ' +
-        cv.matched + '/' + cv.total + ' rostered players (' + pctMatched + '%). Unmatched players count YTD only.</p>';
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · matched ' +
+        cv.matched + '/' + cv.total + ' rostered players (' + pctMatched + '%). ' + tail + '</p>';
     }
   }
 
@@ -199,7 +220,7 @@ function renderTitleOddsCard(computed, odds, myId) {
   let html = '<div class="card" style="border-color: rgba(79,142,247,.4);"><h3>Title Odds</h3>';
   html += '<p class="muted small">Probability of finishing 1st, from ' + odds.sims.toLocaleString() +
     ' simulated seasons. Uncertainty scales with the rest-of-season still to play (≈' + fracTxt +
-    '% left' + (_standings.mode === 'projected' ? ', measured from each team’s ROS share' : ', calendar estimate') +
+    '% left' + (_standings.mode === 'full' ? ', measured from each team’s ROS share' : ', calendar estimate') +
     ') and categories move together (offense and pitching swing as a unit), so odds tighten as the year progresses.</p>';
   html += '<div style="overflow-x:auto;"><table><thead><tr>' +
     '<th>Team</th><th class="num">Proj roto</th><th class="num">P(1st)</th><th>&nbsp;</th>' +
@@ -223,7 +244,9 @@ function renderTitleOddsCard(computed, odds, myId) {
 }
 
 function renderStandingsTable(computed, myId) {
-  let html = '<div class="card"><h3>Projected Roto Standings</h3>';
+  const heading = _standings.mode === "current" ? "Current Roto Standings (YTD)" :
+    _standings.mode === "ros" ? "Rest-of-Season Roto Standings" : "Full-Season Projected Standings";
+  let html = '<div class="card"><h3>' + heading + '</h3>';
   html += '<div style="overflow-x:auto;"><table><thead><tr>';
   html += '<th>#</th><th>Team</th>';
   for (const cat of STANDINGS_CATS) html += '<th class="num">' + STANDINGS_CAT_LABELS[cat] + '</th>';
@@ -400,7 +423,7 @@ function wireStandings() {
       const m = b.dataset.mode;
       if (m === _standings.mode) return;
       _standings.mode = m;
-      if (m === "projected" && !_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
+      if (_modeNeedsRos(m) && !_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
       _standings.whatIf = { add: null, dropName: null };
       if (_standings.ytd) recomputeStandings();
       renderStandings();
