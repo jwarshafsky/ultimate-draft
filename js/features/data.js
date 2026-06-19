@@ -63,7 +63,7 @@ function renderData() {
   html += '<textarea id="ros-pit-json" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="2) paste the JSON here"></textarea>';
   html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-pit-json-import" style="width:auto;">Import pitchers</button></div></div>';
   html += '</div>';
-  html += '<p class="small muted" style="margin-top:6px;">Note: ATC ROS’s link is a best guess — if it shows an error page, use FanGraphs’ Projections page (pick ATC + Rest of Season) and paste that JSON; the importer reads any FanGraphs projection.</p>';
+  html += '<p class="small muted" style="margin-top:6px;">Tip: in your browser the JSON page should start with <code>[{"Team"…</code> — select all, copy, paste. (ATC’s in-season feed is FanGraphs’ “ATC DC (RoS)”.)</p>';
 
   if (rosHasData(rosSel)) {
     const c = getRosCounts(rosSel);

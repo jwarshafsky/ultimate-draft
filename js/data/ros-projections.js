@@ -107,7 +107,8 @@ function importRosPitchers(sourceId, text) {
 // FanGraphs API "type" slug per source, for the browser-paste workflow. The
 // user opens these in their own browser (residential, no ban risk — FanGraphs
 // blocks automated/datacenter fetching), copies the JSON, and pastes it in.
-const FG_API_SLUG = { steamer_ros: "steamerr", batx_ros: "rthebatx", atc_ros: "atcr" };
+// In-season ATC is published as "ATC DC (RoS)" → slug ratcdc (verified).
+const FG_API_SLUG = { steamer_ros: "steamerr", batx_ros: "rthebatx", atc_ros: "ratcdc" };
 
 function fangraphsApiUrl(sourceId, stats) {
   const slug = FG_API_SLUG[sourceId] || "steamerr";
