@@ -88,6 +88,7 @@ def main():
             bat = fetch(slug, "bat")
             if not bat:
                 continue
+            time.sleep(6)   # be gentle between requests (avoid rate limits)
             pit = fetch(slug, "pit")
             if not pit:
                 continue
@@ -103,7 +104,7 @@ def main():
                          "hitters": len(bat), "pitchers": len(pit),
                          "updated": time.strftime("%Y-%m-%d")}
         sys.stderr.write("  wrote %s: %d hit / %d pit\n" % (label, len(bat), len(pit)))
-        time.sleep(3)
+        time.sleep(15)  # space sources apart
     with open(os.path.join(OUT_DIR, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
     print(json.dumps(manifest, indent=2))
