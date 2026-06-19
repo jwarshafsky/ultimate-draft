@@ -20,6 +20,8 @@ const _standings = {
   error: null,
   faPool: null,      // normalized free-agent list (YTD lines) for what-if "add"
   whatIf: { add: null, dropName: null },
+  whatIfTab: "addrop",                       // "addrop" | "trade"
+  trade: { partner: null, send: [], recv: [] },
 };
 
 // Modes that require a ROS projection source.
@@ -313,9 +315,35 @@ function _fmtGap(cat, v) {
   return Math.round(v).toString();
 }
 
+// Unique player names on a team (from the canonical YTD roster).
+function _teamPlayerNames(teamId) {
+  const r = _standings.ytd?.rosters[teamId] || [];
+  return [...new Set(r.map(p => p.name))].sort((a, b) => a < b ? -1 : 1);
+}
+
+// Title odds for a roster set (cheaper sim used by what-ifs).
+function _oddsFor(rosters) {
+  return simulateTitleOdds(rosters, { sims: 1500, fracRemaining: seasonFractionRemaining() });
+}
+
 function renderWhatIfCard(myId) {
+  let html = '<div class="card"><h3>What-If</h3>';
+  // Sub-tab: Add/Drop vs Trade
+  html += '<div class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:10px;">';
+  for (const [val, lbl] of [["addrop", "Add / Drop"], ["trade", "Trade"]]) {
+    const active = _standings.whatIfTab === val;
+    html += '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-witab="' + val +
+      '" style="border:0; border-radius:0; padding:5px 12px;">' + lbl + '</button>';
+  }
+  html += '</div>';
+  html += (_standings.whatIfTab === "trade") ? renderTradePanel(myId) : renderAddDropPanel(myId);
+  html += '</div>';
+  return html;
+}
+
+function renderAddDropPanel(myId) {
   const roster = (_standings.ytd?.rosters[myId]) || [];
-  let html = '<div class="card"><h3>What-If: Add / Drop</h3>';
+  let html = '';
   html += '<p class="muted small">See how a roster move reshuffles the league and your title odds. Drop one of your players and/or add a free agent.</p>';
   html += '<div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">';
 
@@ -393,8 +421,111 @@ function renderWhatIfCard(myId) {
     }
     html += '</div>';
   }
-  html += '</div>';
   return html;
+}
+
+// --- Trade what-if -------------------------------------------------------
+function renderTradePanel(myId) {
+  const teams = LEAGUE.teams.filter(t => t.id !== myId);
+  if (!_standings.trade.partner) _standings.trade.partner = teams[0].id;
+  const partner = _standings.trade.partner;
+  const myNames = _teamPlayerNames(myId);
+  const theirNames = _teamPlayerNames(partner);
+
+  let html = '<p class="muted small">Propose a trade and see how it reshuffles the whole league — both teams’ roto points, standing, and title odds. Hold ⌘/Ctrl to pick multiple players.</p>';
+  html += '<div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">';
+
+  // Partner
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">Trade with' +
+    '<select id="tr-partner" style="min-width:170px;">';
+  for (const t of teams) {
+    html += '<option value="' + t.id + '"' + (t.id === partner ? ' selected' : '') + '>' + esc(t.owner) + ' — ' + esc(t.name) + '</option>';
+  }
+  html += '</select></label>';
+
+  // You send
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">You send (' + esc(_teamLabel(myId)) + ')' +
+    '<select id="tr-send" multiple size="7" style="min-width:200px;">';
+  for (const nm of myNames) {
+    html += '<option value="' + esc(nm) + '"' + (_standings.trade.send.includes(nm) ? ' selected' : '') + '>' + esc(nm) + '</option>';
+  }
+  html += '</select></label>';
+
+  // You receive
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">You receive (' + esc(_teamLabel(partner)) + ')' +
+    '<select id="tr-recv" multiple size="7" style="min-width:200px;">';
+  for (const nm of theirNames) {
+    html += '<option value="' + esc(nm) + '"' + (_standings.trade.recv.includes(nm) ? ' selected' : '') + '>' + esc(nm) + '</option>';
+  }
+  html += '</select></label>';
+
+  html += '<div style="display:flex;flex-direction:column;gap:6px;">' +
+    '<button class="btn primary" id="tr-apply">Apply trade</button>' +
+    '<button class="btn ghost" id="tr-clear">Clear</button></div>';
+  html += '</div>';
+
+  // Result
+  const send = _standings.trade.send, recv = _standings.trade.recv;
+  if (send.length || recv.length) {
+    const base = _standings.built;
+    const after = _afterTradeRosters(base, myId, partner, send, recv);
+    const before = computeStandings(base), aft = computeStandings(after);
+    const oddsB = _oddsFor(base), oddsA = _oddsFor(after);
+
+    html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
+    html += '<p class="small">' + esc(_teamLabel(myId)) + ' sends <b>' + (send.map(esc).join(", ") || "—") +
+      '</b> · receives <b>' + (recv.map(esc).join(", ") || "—") + '</b></p>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">Roto</th><th class="num">Standing</th><th class="num">Title odds</th></tr></thead><tbody>';
+    for (const tid of [myId, partner]) {
+      const bT = before.teams.find(t => t.teamId === tid), aT = aft.teams.find(t => t.teamId === tid);
+      const dR = aT.rotoPoints - bT.rotoPoints, dPlace = bT.place - aT.place;
+      const pB = oddsB.byTeam[tid]?.pFirst || 0, pA = oddsA.byTeam[tid]?.pFirst || 0;
+      const col = d => d > 0.05 ? 'good' : d < -0.05 ? 'bad' : 'muted';
+      html += '<tr' + (tid === myId ? ' style="font-weight:600;"' : '') + '>';
+      html += '<td>' + esc(_teamLabel(tid)) + (tid === myId ? ' ◄' : '') + '</td>';
+      html += '<td class="num">' + (Math.round(bT.rotoPoints * 10) / 10) + ' → ' + (Math.round(aT.rotoPoints * 10) / 10) +
+        ' <span class="' + col(dR) + '">(' + (dR > 0 ? '+' : '') + (Math.round(dR * 10) / 10) + ')</span></td>';
+      html += '<td class="num">' + ordinal(bT.place) + ' → ' + ordinal(aT.place) +
+        ' <span class="' + col(dPlace) + '">(' + (dPlace > 0 ? '+' : '') + dPlace + ')</span></td>';
+      html += '<td class="num">' + _pct(pB) + ' → ' + _pct(pA) +
+        ' <span class="' + col((pA - pB) * 100) + '">(' + ((pA - pB) > 0 ? '+' : '') + Math.round((pA - pB) * 100) + 'pp)</span></td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+
+    // My per-category point swing
+    const bMe = before.teams.find(t => t.teamId === myId), aMe = aft.teams.find(t => t.teamId === myId);
+    const rows = [];
+    for (const cat of STANDINGS_CATS) {
+      const b = bMe.byCat[cat].points, a = aMe.byCat[cat].points;
+      if (Math.abs(a - b) > 0.001) rows.push([cat, b, a]);
+    }
+    if (rows.length) {
+      html += '<p class="muted small" style="margin-top:8px;">Your category points</p>';
+      html += '<table style="font-size:12px;"><thead><tr><th>Cat</th><th class="num">Before</th><th class="num">After</th><th class="num">Δ</th></tr></thead><tbody>';
+      for (const [cat, b, a] of rows) {
+        const dd = a - b;
+        html += '<tr><td>' + STANDINGS_CAT_LABELS[cat] + '</td><td class="num">' + (Math.round(b * 10) / 10) +
+          '</td><td class="num">' + (Math.round(a * 10) / 10) + '</td><td class="num ' +
+          (dd > 0 ? 'good' : 'bad') + '">' + (dd > 0 ? '+' : '') + (Math.round(dd * 10) / 10) + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  }
+  return html;
+}
+
+// Move traded players (all their stat lines, matched by name) between two teams.
+function _afterTradeRosters(base, aId, bId, sendNames, recvNames) {
+  const next = {};
+  for (const [id, players] of Object.entries(base)) next[id] = players.slice();
+  const sendSet = new Set(sendNames), recvSet = new Set(recvNames);
+  const aSend = (next[aId] || []).filter(l => sendSet.has(l.name));
+  const bRecv = (next[bId] || []).filter(l => recvSet.has(l.name));
+  next[aId] = (next[aId] || []).filter(l => !sendSet.has(l.name)).concat(bRecv);
+  next[bId] = (next[bId] || []).filter(l => !recvSet.has(l.name)).concat(aSend);
+  return next;
 }
 
 function _afterRosters(baseRosters, teamId, addLines, dropName) {
@@ -457,4 +588,30 @@ function wireStandings() {
   if (run) run.addEventListener("click", renderStandings);
   const clear = document.getElementById("wi-clear");
   if (clear) clear.addEventListener("click", () => { _standings.whatIf = { add: null, dropName: null }; renderStandings(); });
+
+  // What-if sub-tab (Add/Drop ↔ Trade)
+  document.querySelectorAll("[data-witab]").forEach(b => {
+    b.addEventListener("click", () => {
+      if (_standings.whatIfTab === b.dataset.witab) return;
+      _standings.whatIfTab = b.dataset.witab;
+      renderStandings();
+    });
+  });
+  // Trade controls
+  const partner = document.getElementById("tr-partner");
+  if (partner) partner.addEventListener("change", () => {
+    _standings.trade.partner = partner.value;
+    _standings.trade.recv = [];   // partner changed — clear the receive list
+    renderStandings();
+  });
+  const apply = document.getElementById("tr-apply");
+  if (apply) apply.addEventListener("click", () => {
+    const sendSel = document.getElementById("tr-send");
+    const recvSel = document.getElementById("tr-recv");
+    _standings.trade.send = sendSel ? [...sendSel.selectedOptions].map(o => o.value) : [];
+    _standings.trade.recv = recvSel ? [...recvSel.selectedOptions].map(o => o.value) : [];
+    renderStandings();
+  });
+  const trClear = document.getElementById("tr-clear");
+  if (trClear) trClear.addEventListener("click", () => { _standings.trade.send = []; _standings.trade.recv = []; renderStandings(); });
 }
