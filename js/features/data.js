@@ -42,13 +42,7 @@ function renderData() {
   const rosSel = (typeof _dataRosSel !== "undefined" && _dataRosSel) || (firstLoadedRosSource() || ROS_SOURCES[0].id);
   _dataRosSel = rosSel;
   html += '<div class="card"><h2>Rest-of-Season Projections</h2>';
-  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s Rest-of-Season / Full-Season modes (YTD + ROS).</p>';
-  // One-click hosted load (auto-refreshed from FanGraphs by a scheduled job).
-  html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0 10px;">';
-  html += '<button class="btn primary" id="ros-load-hosted">⬇ Load latest projections</button>';
-  html += '<span class="small muted" id="ros-hosted-status">Steamer ROS · THE BAT X ROS · ATC ROS — one click, no download needed.</span>';
-  html += '</div>';
-  html += '<p class="muted small">Or import a FanGraphs CSV manually per source below. <a href="https://www.fangraphs.com/projections?type=steamerr&stats=bat&pos=all" target="_blank" rel="noopener" style="color: var(--accent);">FanGraphs ROS</a>.</p>';
+  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s Rest-of-Season / Full-Season modes. FanGraphs blocks automated downloads, so paste it from your own browser (zero risk) — pick a source, open each link, copy the page, paste below. Updating every week or two is plenty.</p>';
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Source ' +
     '<select id="ros-src-sel">';
   for (const s of ROS_SOURCES) {
@@ -57,23 +51,36 @@ function renderData() {
       esc(s.label) + ' (' + c.hitters + ' hit / ' + c.pitchers + ' pit)</option>';
   }
   html += '</select></label>';
+
+  // --- Paste FanGraphs JSON (primary) ---
   html += '<div class="grid cols-2" style="margin-top:8px;">';
   html += '<div><h3>Hitters</h3>';
-  html += '<textarea id="ros-hit-csv" rows="4" style="width:100%; font-family:var(--mono); font-size:12px;" placeholder="Name,Team,PA,AB,H,R,HR,RBI,SB,BB,OBP"></textarea>';
-  html += '<div style="display:flex; gap:6px; margin-top:6px;"><button class="btn primary" id="ros-hit-import" style="width:auto;">Import hitters</button></div>';
-  html += '<div class="small muted" style="margin-top:4px;">Or: <input type="file" id="ros-hit-file" accept=".csv,text/csv"></div></div>';
+  html += '<div class="small" style="margin-bottom:4px;"><a href="' + esc(fangraphsApiUrl(rosSel, "bat")) + '" target="_blank" rel="noopener" style="color:var(--accent);">1) Open hitters JSON ↗</a> → select all, copy</div>';
+  html += '<textarea id="ros-hit-json" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="2) paste the JSON here"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-hit-json-import" style="width:auto;">Import hitters</button></div></div>';
   html += '<div><h3>Pitchers</h3>';
-  html += '<textarea id="ros-pit-csv" rows="4" style="width:100%; font-family:var(--mono); font-size:12px;" placeholder="Name,Team,IP,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
-  html += '<div style="display:flex; gap:6px; margin-top:6px;"><button class="btn primary" id="ros-pit-import" style="width:auto;">Import pitchers</button></div>';
-  html += '<div class="small muted" style="margin-top:4px;">Or: <input type="file" id="ros-pit-file" accept=".csv,text/csv"></div></div>';
+  html += '<div class="small" style="margin-bottom:4px;"><a href="' + esc(fangraphsApiUrl(rosSel, "pit")) + '" target="_blank" rel="noopener" style="color:var(--accent);">1) Open pitchers JSON ↗</a> → select all, copy</div>';
+  html += '<textarea id="ros-pit-json" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="2) paste the JSON here"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-pit-json-import" style="width:auto;">Import pitchers</button></div></div>';
   html += '</div>';
+  html += '<p class="small muted" style="margin-top:6px;">Note: ATC ROS’s link is a best guess — if it shows an error page, use FanGraphs’ Projections page (pick ATC + Rest of Season) and paste that JSON; the importer reads any FanGraphs projection.</p>';
+
   if (rosHasData(rosSel)) {
     const c = getRosCounts(rosSel);
-    html += '<div class="small muted" style="margin-top:8px;">' + esc(getRosSourceLabel(rosSel)) + ': ' +
+    html += '<div class="small muted" style="margin-top:6px;">' + esc(getRosSourceLabel(rosSel)) + ': ' +
       c.hitters + ' hitters / ' + c.pitchers + ' pitchers' +
-      (c.importedAt ? ' · imported ' + new Date(c.importedAt).toLocaleString() : '') +
+      (c.importedAt ? ' · updated ' + new Date(c.importedAt).toLocaleDateString() : '') +
       ' <button class="btn danger" id="ros-clear" style="width:auto; padding:2px 8px; margin-left:8px;">Clear this source</button></div>';
   }
+
+  // --- CSV import (fallback, collapsed) ---
+  html += '<details style="margin-top:10px;"><summary class="small muted" style="cursor:pointer;">Advanced: import a CSV instead</summary>';
+  html += '<div class="grid cols-2" style="margin-top:8px;">';
+  html += '<div><textarea id="ros-hit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Hitters CSV: Name,PA,AB,H,R,HR,RBI,SB,BB,OBP"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn" id="ros-hit-import" style="width:auto;">Import hitters CSV</button> <input type="file" id="ros-hit-file" accept=".csv,text/csv"></div></div>';
+  html += '<div><textarea id="ros-pit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Pitchers CSV: Name,IP,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn" id="ros-pit-import" style="width:auto;">Import pitchers CSV</button> <input type="file" id="ros-pit-file" accept=".csv,text/csv"></div></div>';
+  html += '</div></details>';
   html += '</div>';
 
   // === NFBC market prices ===
@@ -142,26 +149,27 @@ function renderData() {
   wireImport("savant-hit-csv", "savant-hit-file", null, importStatcastHittersCSV, "Statcast hitters");
   wireImport("savant-pit-csv", "savant-pit-file", null, importStatcastPitchersCSV, "Statcast pitchers");
 
-  // ROS projections wiring (per-source import).
-  document.getElementById("ros-load-hosted")?.addEventListener("click", async () => {
-    const btn = document.getElementById("ros-load-hosted");
-    const status = document.getElementById("ros-hosted-status");
-    btn.disabled = true; btn.textContent = "Loading…";
-    const res = await loadAllHostedRos();
-    const parts = [];
-    for (const s of ROS_SOURCES) {
-      const r = res[s.id];
-      parts.push(r && !r.error ? (s.label + ": " + (r.hitters + r.pitchers)) : (s.label + ": —"));
-    }
-    const any = ROS_SOURCES.some(s => res[s.id] && !res[s.id].error);
-    if (status) status.textContent = (any ? "Loaded — " : "No hosted files found yet — ") + parts.join(" · ");
-    btn.disabled = false; btn.textContent = "⬇ Load latest projections";
-    renderData();
-  });
+  // ROS projections wiring.
   document.getElementById("ros-src-sel")?.addEventListener("change", (e) => {
     _dataRosSel = e.target.value;
     renderData();
   });
+  // Paste-FanGraphs-JSON import (primary path).
+  function wireJsonImport(id, kind, label) {
+    document.getElementById(id)?.addEventListener("click", () => {
+      const ta = document.getElementById(id.replace("-import", ""));
+      const text = (ta?.value || "").trim();
+      if (!text) { alert("Open the link, copy the page, and paste it first."); return; }
+      try {
+        const count = importRosJSON(_dataRosSel, kind, text);
+        if (ta) ta.value = "";
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ".");
+        renderData();
+      } catch (e) { alert(e.message || String(e)); }
+    });
+  }
+  wireJsonImport("ros-hit-json-import", "bat", "hitters");
+  wireJsonImport("ros-pit-json-import", "pit", "pitchers");
   function wireRosImport(textareaId, fileId, fn, label) {
     const btnId = textareaId.replace("-csv", "-import");
     document.getElementById(btnId)?.addEventListener("click", () => {

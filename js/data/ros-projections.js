@@ -104,6 +104,46 @@ function importRosPitchers(sourceId, text) {
   return out.length;
 }
 
+// FanGraphs API "type" slug per source, for the browser-paste workflow. The
+// user opens these in their own browser (residential, no ban risk — FanGraphs
+// blocks automated/datacenter fetching), copies the JSON, and pastes it in.
+const FG_API_SLUG = { steamer_ros: "steamerr", batx_ros: "rthebatx", atc_ros: "atcr" };
+
+function fangraphsApiUrl(sourceId, stats) {
+  const slug = FG_API_SLUG[sourceId] || "steamerr";
+  return "https://www.fangraphs.com/api/projections?type=" + slug +
+    "&stats=" + (stats === "pit" ? "pit" : "bat") + "&pos=all&team=0&players=0&lg=all";
+}
+
+// Import projections pasted as raw FanGraphs API JSON (an array of player rows).
+// kind = "bat" | "pit". Returns the row count.
+function importRosJSON(sourceId, kind, text) {
+  let arr;
+  try { arr = JSON.parse(text); }
+  catch (e) { throw new Error("That isn't valid JSON. Open the link, select all (⌘A), copy, and paste the whole page."); }
+  if (!Array.isArray(arr)) arr = Array.isArray(arr?.data) ? arr.data : null;
+  if (!arr) throw new Error("Expected a JSON list of players from the FanGraphs API link.");
+  const n = (o, k) => { const v = o[k]; return (typeof v === "number" && isFinite(v)) ? v : 0; };
+  const nm = o => o.PlayerName || o.Name;
+  const d = _ensureSource(sourceId);
+  if (kind === "pit") {
+    d.pitchers = arr.filter(nm).map(o => ({
+      name: nm(o), K: n(o, "SO"), QS: n(o, "QS"), SV: n(o, "SV"), HLD: n(o, "HLD"),
+      IP: n(o, "IP"), ERA: n(o, "ERA"), WHIP: n(o, "WHIP"), ER: n(o, "ER"), HA: n(o, "H"), BBA: n(o, "BB"),
+    }));
+  } else {
+    d.hitters = arr.filter(nm).map(o => ({
+      name: nm(o), R: n(o, "R"), HR: n(o, "HR"), RBI: n(o, "RBI"), SB: n(o, "SB"), OBP: n(o, "OBP"),
+      PA: n(o, "PA"), AB: n(o, "AB"), H: n(o, "H"), BB: n(o, "BB"), HBP: n(o, "HBP"), SF: n(o, "SF"),
+    }));
+  }
+  d.importedAt = new Date().toISOString();
+  d.updated = new Date().toISOString().slice(0, 10);
+  _saveRos(sourceId);
+  fireData && fireData();
+  return kind === "pit" ? d.pitchers.length : d.hitters.length;
+}
+
 function clearRosSource(sourceId) {
   delete _ros.data[sourceId];
   delete _ros.index[sourceId];
