@@ -168,7 +168,8 @@ function renderData() {
       const text = document.getElementById(textareaId).value;
       if (!text.trim()) { alert("Paste CSV data first."); return; }
       const count = fn(_dataRosSel, text);
-      alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ".");
+      setRosManual(_dataRosSel, true);   // your upload overrides the live default
+      alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ". This source will no longer auto-update (your manual override). Use “Load latest projections” to switch back to live.");
       renderData();
     });
     document.getElementById(fileId)?.addEventListener("change", (ev) => {
@@ -177,7 +178,8 @@ function renderData() {
       const reader = new FileReader();
       reader.onload = () => {
         const count = fn(_dataRosSel, reader.result);
-        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+        setRosManual(_dataRosSel, true);
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ". Manual override set; use “Load latest projections” to switch back to live.");
         renderData();
       };
       reader.readAsText(file);

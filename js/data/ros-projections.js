@@ -169,8 +169,19 @@ async function _fetchCsv(url) {
   return r.text();
 }
 
-// Load one hosted source (bat + pit) into its ROS store. Returns {hitters,pitchers}.
-async function fetchHostedRos(sourceId) {
+// Manual-override flag: when the user uploads their own CSV for a source, we
+// stop auto-overwriting it with the hosted/live data.
+function setRosManual(sourceId, isManual) {
+  const d = _ensureSource(sourceId);
+  d.manual = !!isManual;
+  _saveRos(sourceId);
+}
+function rosIsManual(sourceId) { return !!_ros.data[sourceId]?.manual; }
+function getRosUpdated(sourceId) { return _ros.data[sourceId]?.updated || null; }
+
+// Load one hosted source (bat + pit) into its ROS store. Marks it as live
+// (not a manual override) and stamps the manifest's updated date.
+async function fetchHostedRos(sourceId, updated) {
   const base = ROS_HOSTED_PATH + sourceId;
   const [bat, pit] = await Promise.all([
     _fetchCsv(base + "_bat.csv"),
@@ -178,17 +189,40 @@ async function fetchHostedRos(sourceId) {
   ]);
   const h = importRosHitters(sourceId, bat);
   const p = importRosPitchers(sourceId, pit);
+  const d = _ensureSource(sourceId);
+  d.manual = false;
+  if (updated) d.updated = updated;
+  _saveRos(sourceId);
   return { hitters: h, pitchers: p };
 }
 
-// Load every hosted source that exists. Returns a per-source result map.
+// Load every hosted source (explicit "Load latest" — re-enables auto for all).
 async function loadAllHostedRos() {
+  const manifest = await fetchRosManifest();
   const out = {};
   for (const s of ROS_SOURCES) {
-    try { out[s.id] = await fetchHostedRos(s.id); }
+    try { out[s.id] = await fetchHostedRos(s.id, manifest?.[s.id]?.updated); }
     catch (e) { out[s.id] = { error: e.message || String(e) }; }
   }
   return out;
+}
+
+// Auto-populate hosted projections as the default — but never clobber a source
+// the user manually uploaded, and skip sources already at the latest date.
+// Returns true if anything was (re)loaded. Safe to call on every startup.
+async function autoloadHostedRos() {
+  const manifest = await fetchRosManifest();
+  if (!manifest) return false;
+  let changed = false;
+  for (const s of ROS_SOURCES) {
+    const m = manifest[s.id];
+    if (!m) continue;
+    if (rosIsManual(s.id)) continue;                       // user override wins
+    if (rosHasData(s.id) && getRosUpdated(s.id) === m.updated) continue; // current
+    try { await fetchHostedRos(s.id, m.updated); changed = true; }
+    catch (e) { /* file missing / offline — keep whatever we have */ }
+  }
+  return changed;
 }
 
 // Read the hosted manifest (labels / counts / last-updated date) if present.

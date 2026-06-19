@@ -20,8 +20,9 @@ const _standings = {
   error: null,
   faPool: null,      // normalized free-agent list (YTD lines) for what-if "add"
   whatIf: { add: null, dropName: null },
-  whatIfTab: "addrop",                       // "addrop" | "trade"
+  whatIfTab: "addrop",                       // "addrop" | "trade" | "pickups"
   trade: { partner: null, send: [], recv: [] },
+  pickups: null,                             // cached best-pickups result
 };
 
 // Modes that require a ROS projection source.
@@ -74,6 +75,7 @@ function recomputeStandings() {
   _standings.coverage = built.coverage;
   _standings.computed = computeStandings(built.rosters);
   _standings.odds = simulateTitleOdds(built.rosters, { sims: 3000, fracRemaining: seasonFractionRemaining() });
+  _standings.pickups = null;   // base changed — best-pickups must be recomputed
 }
 
 function buildEngineRosters() {
@@ -112,15 +114,17 @@ function buildEngineRosters() {
   return { rosters: out, coverage: { matched, total } };
 }
 
-// Stat lines to add for a what-if, per mode:
-//   current → the FA's YTD line; ros → its ROS line only; full → YTD + ROS.
+// Stat lines to add when picking up a free agent. You only get their
+// REST-OF-SEASON production (their YTD was earned elsewhere), so a pickup adds
+// the ROS line only — never the FA's banked YTD. Nothing to add in Current mode
+// (banked totals can't change). In Full mode the ROS line is tagged so the
+// title-odds "fraction remaining" stays correct.
 function _whatIfAddLines(fa) {
-  if (!fa) return null;
+  if (!fa || _standings.mode === "current") return [];
   const ros = _standings.rosSource ? getRosLine(_standings.rosSource, fa.name, fa.type) : null;
-  if (_standings.mode === "current") return [fa];
-  if (_standings.mode === "ros") { if (ros) delete ros._ros; return ros ? [ros] : []; }
-  if (ros) ros._ros = true;   // full
-  return ros ? [fa, ros] : [fa];
+  if (!ros) return [];
+  if (_standings.mode === "full") ros._ros = true; else delete ros._ros;
+  return [ros];
 }
 
 function _teamLabel(teamId) {
@@ -344,13 +348,15 @@ function renderWhatIfCard(myId) {
   let html = '<div class="card"><h3>What-If</h3>';
   // Sub-tab: Add/Drop vs Trade
   html += '<div class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:10px;">';
-  for (const [val, lbl] of [["addrop", "Add / Drop"], ["trade", "Trade"]]) {
+  for (const [val, lbl] of [["addrop", "Add / Drop"], ["trade", "Trade"], ["pickups", "Best Pickups"]]) {
     const active = _standings.whatIfTab === val;
     html += '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-witab="' + val +
       '" style="border:0; border-radius:0; padding:5px 12px;">' + lbl + '</button>';
   }
   html += '</div>';
-  html += (_standings.whatIfTab === "trade") ? renderTradePanel(myId) : renderAddDropPanel(myId);
+  html += _standings.whatIfTab === "trade" ? renderTradePanel(myId)
+        : _standings.whatIfTab === "pickups" ? renderPickupsPanel(myId)
+        : renderAddDropPanel(myId);
   html += '</div>';
   return html;
 }
@@ -530,6 +536,76 @@ function renderTradePanel(myId) {
   return html;
 }
 
+// --- Best free-agent pickups (by title-odds gain) ------------------------
+// Two-stage for speed: screen every candidate FA by the (cheap) deterministic
+// roto-point gain from adding them, then run the Monte-Carlo title odds only on
+// the top few to report the actual championship-% lift.
+function computeBestPickups(myId) {
+  const pool = _standings.faPool || [];
+  const base = _standings.built;
+  const baseRoto = computeStandings(base).teams.find(t => t.teamId === myId).rotoPoints;
+  const cands = [];
+  let scanned = 0;
+  for (const fa of pool) {
+    if (scanned >= 90) break;
+    const addLines = _whatIfAddLines(fa);
+    if (!addLines.length) continue;          // no projection in this source → skip
+    scanned++;
+    const after = _afterRosters(base, myId, addLines, null);
+    const dRoto = computeStandings(after).teams.find(t => t.teamId === myId).rotoPoints - baseRoto;
+    cands.push({ fa, dRoto });
+  }
+  cands.sort((a, b) => b.dRoto - a.dRoto);
+  const top = cands.slice(0, 8);
+  const frac = seasonFractionRemaining();
+  const baseP = simulateTitleOdds(base, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+  for (const c of top) {
+    const after = _afterRosters(base, myId, _whatIfAddLines(c.fa), null);
+    c.pAfter = simulateTitleOdds(after, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+    c.dPct = c.pAfter - baseP;
+  }
+  top.sort((a, b) => b.dPct - a.dPct || b.dRoto - a.dRoto);
+  return { baseP, rows: top, scanned };
+}
+
+function renderPickupsPanel(myId) {
+  let html = '<p class="muted small">Free agents ranked by how much they’d raise your championship odds (adds rest-of-season only; assumes an open roster spot). Uses the ' +
+    esc(getRosSourceLabel(_standings.rosSource) || "selected") + ' projection.</p>';
+
+  if (_standings.mode === "current") {
+    return html + '<p class="small warn">Switch to <b>Rest of Season</b> or <b>Full Season</b> — pickups affect the projected finish, not banked stats.</p>';
+  }
+  if (!_standings.faPool) {
+    return html + '<button class="btn primary" id="pk-load">Load free agents & rank</button>';
+  }
+  if (!_standings.pickups) {
+    return html + '<button class="btn primary" id="pk-run">Rank best pickups</button>' +
+      ' <span class="muted small">' + _standings.faPool.length + ' free agents loaded.</span>';
+  }
+
+  const pk = _standings.pickups;
+  html += '<div style="margin-bottom:8px;"><button class="btn ghost" id="pk-run">↻ Re-rank</button>' +
+    ' <span class="muted small">Your current title odds: ' + _pct(pk.baseP) + ' · scanned ' + pk.scanned + ' FAs</span></div>';
+  if (!pk.rows.length) return html + '<p class="small muted">No free agents with a projection in this source.</p>';
+  html += '<div style="overflow-x:auto;"><table><thead><tr>' +
+    '<th>#</th><th>Free agent</th><th>Pos</th><th class="num">Title odds after</th><th class="num">Δ odds</th><th class="num">Δ roto</th><th></th></tr></thead><tbody>';
+  pk.rows.forEach((c, i) => {
+    html += '<tr>';
+    html += '<td class="num">' + (i + 1) + '</td>';
+    html += '<td>' + esc(c.fa.name) + '</td>';
+    html += '<td>' + (c.fa.type === "P" ? "P" : "H") + '</td>';
+    html += '<td class="num">' + _pct(c.pAfter) + '</td>';
+    html += '<td class="num ' + (c.dPct > 0.0005 ? 'good' : c.dPct < -0.0005 ? 'bad' : '') + '">' +
+      (c.dPct > 0 ? '+' : '') + Math.round(c.dPct * 100) + 'pp</td>';
+    html += '<td class="num ' + (c.dRoto > 0 ? 'good' : c.dRoto < 0 ? 'bad' : '') + '">' +
+      (c.dRoto > 0 ? '+' : '') + (Math.round(c.dRoto * 10) / 10) + '</td>';
+    html += '<td><button class="btn ghost" data-pk-add="' + esc(c.fa.name) + '" style="padding:2px 8px;">Try in Add/Drop</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
 // Move traded players (all their stat lines, matched by name) between two teams.
 function _afterTradeRosters(base, aId, bId, sendNames, recvNames) {
   const next = {};
@@ -636,4 +712,27 @@ function wireStandings() {
   });
   const trClear = document.getElementById("tr-clear");
   if (trClear) trClear.addEventListener("click", () => { _standings.trade.send = []; _standings.trade.recv = []; renderStandings(); });
+
+  // Best Pickups
+  const pkLoad = document.getElementById("pk-load");
+  if (pkLoad) pkLoad.addEventListener("click", async () => {
+    pkLoad.textContent = "Loading…"; pkLoad.disabled = true;
+    try { _standings.faPool = await fetchEspnFreeAgents(0); _standings.pickups = computeBestPickups(getMyTeam().id); }
+    catch (e) { _standings.error = e.message || String(e); }
+    renderStandings();
+  });
+  const pkRun = document.getElementById("pk-run");
+  if (pkRun) pkRun.addEventListener("click", () => {
+    pkRun.textContent = "Ranking…"; pkRun.disabled = true;
+    // let the button repaint before the (brief) compute blocks
+    setTimeout(() => { _standings.pickups = computeBestPickups(getMyTeam().id); renderStandings(); }, 20);
+  });
+  document.querySelectorAll("[data-pk-add]").forEach(b => {
+    b.addEventListener("click", () => {
+      const name = b.dataset.pkAdd;
+      _standings.whatIf = { add: (_standings.faPool || []).find(p => p.name === name) || null, dropName: null };
+      _standings.whatIfTab = "addrop";
+      renderStandings();
+    });
+  });
 }

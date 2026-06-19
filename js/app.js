@@ -81,6 +81,12 @@ function initApp() {
   if (typeof onProjectionsChange === "function") {
     onProjectionsChange(() => rerender());
   }
+
+  // Auto-populate live ROS projections (hosted, auto-refreshed) as the default,
+  // unless the user has manually overridden a source. Same-origin, no auth.
+  if (typeof autoloadHostedRos === "function") {
+    autoloadHostedRos().then((changed) => { if (changed) rerender(); }).catch(() => {});
+  }
 }
 
 document.addEventListener("DOMContentLoaded", initApp);
