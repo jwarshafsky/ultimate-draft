@@ -7,6 +7,7 @@ const VIEWS = {
   standings: { render: () => renderStandings() },
   keepers:   { render: () => renderKeepers() },
   values:    { render: () => renderValues() },
+  hotfa:     { render: () => renderHotFa() },
   board:     { render: () => renderBoard() },
   compare:   { render: () => renderCompare() },
   trade:     { render: () => renderTrade() },

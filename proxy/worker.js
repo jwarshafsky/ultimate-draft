@@ -42,6 +42,8 @@ export default {
         body = await proxyEspnPlayers(url, env);
       } else if (url.pathname === "/espn/history") {
         body = await proxyEspnHistory(url, env);
+      } else if (url.pathname === "/fangraphs/xwoba") {
+        body = await proxyFangraphsXwoba(url);
       } else if (url.pathname === "/claude" && request.method === "POST") {
         body = await proxyClaude(request, env);
       } else {
@@ -230,6 +232,60 @@ async function proxyEspnPlayers(url, env) {
     },
   };
   return espnFetch(target, env, { "x-fantasy-filter": JSON.stringify(filter) });
+}
+
+// --- FanGraphs route ---
+
+// Proxy the FanGraphs leaders JSON API for hitter xwOBA over a date window.
+// FanGraphs' page/CSV download is bot-protected, but this JSON API endpoint
+// responds to plain requests. month=1000 + startdate/enddate = custom range;
+// month=0 (no dates) = full season.
+async function proxyFangraphsXwoba(url) {
+  const season = url.searchParams.get("season") || String(new Date().getFullYear());
+  const start = url.searchParams.get("startdate") || "";
+  const end = url.searchParams.get("enddate") || "";
+  // Default wide: free agents rarely sit near the top of the xwOBA board, so a
+  // shallow pull would clip them out before the FA join even runs.
+  const pageitems = url.searchParams.get("pageitems") || "600";
+  const month = (start && end) ? "1000" : "0";
+
+  const params = new URLSearchParams({
+    pos: "all", stats: "bat", lg: "all", qual: "0", type: "8",
+    season, season1: season, month, ind: "0",
+    pageitems, sortdir: "desc", sortstat: "xwOBA",
+  });
+  if (start && end) { params.set("startdate", start); params.set("enddate", end); }
+
+  const target = "https://www.fangraphs.com/api/leaders/major-league/data?" + params.toString();
+  const r = await fetch(target, {
+    headers: {
+      "accept": "application/json",
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    },
+  });
+  if (!r.ok) throw new Error("FanGraphs " + r.status + ": " + (await r.text()).slice(0, 200));
+  const data = await r.json();
+
+  // Slim the payload: strip FanGraphs' HTML-wrapped Name/Team to plain text and
+  // keep only the fields the view needs. Saves ~90% of the bytes over the wire.
+  const rows = (data.data || []).map(d => ({
+    name: stripTags(d.Name),
+    team: stripTags(d.Team),
+    xwOBA: numOrNull(d.xwOBA),
+    wOBA: numOrNull(d.wOBA),
+    PA: numOrNull(d.PA),
+  })).filter(x => x.name && x.xwOBA != null);
+
+  return { season: Number(season), start, end, count: rows.length, rows };
+}
+
+function stripTags(s) {
+  if (s == null) return "";
+  return String(s).replace(/<[^>]*>/g, "").trim();
+}
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 // --- Claude route ---

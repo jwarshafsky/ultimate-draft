@@ -115,6 +115,13 @@ function _pickStatEntry(player, season, sourceId) {
 
 // Normalize one ESPN roster entry into the shape standings.js consumes.
 // `sourceId`: 0 = season-to-date actuals, 1 = full-season projection.
+// Hitter position label from ESPN defaultPositionId (+ eligibleSlots for OF/UTIL).
+const _ESPN_POS_BY_ID = { 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "OF", 8: "OF", 9: "OF", 10: "DH" };
+function _espnPosLabel(dpid, slots) {
+  if (dpid === 1) return (slots || []).includes(14) ? "RP" : "SP";
+  return _ESPN_POS_BY_ID[dpid] || "UT";
+}
+
 function _normalizeEspnPlayer(entry, season, sourceId) {
   const player = entry?.playerPoolEntry?.player || entry?.player;
   if (!player) return null;
@@ -125,11 +132,13 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   const se = _pickStatEntry(player, season, sourceId);
   const m = se?.stats || {};
   const name = player.fullName || ("Player " + player.id);
+  const pctOwned = player.ownership?.percentOwned != null ? player.ownership.percentOwned : null;
+  const pos = _espnPosLabel(player.defaultPositionId, slots);
 
   if (isPitcher) {
     const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
     return {
-      name, espnId: player.id, type: "P",
+      name, espnId: player.id, type: "P", pctOwned, pos,
       lineupSlotId: entry.lineupSlotId,
       K: _statById(m, ESPN_STAT_ID.K) || 0,
       QS: _statById(m, ESPN_STAT_ID.QS) || 0,
@@ -145,7 +154,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
     };
   }
   return {
-    name, espnId: player.id, type: "H",
+    name, espnId: player.id, type: "H", pctOwned, pos,
     lineupSlotId: entry.lineupSlotId,
     R: _statById(m, ESPN_STAT_ID.R) || 0,
     HR: _statById(m, ESPN_STAT_ID.HR) || 0,
