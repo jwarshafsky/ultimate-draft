@@ -122,6 +122,19 @@ function _espnPosLabel(dpid, slots) {
   return _ESPN_POS_BY_ID[dpid] || "UT";
 }
 
+// All hitter positions a player qualifies at, from eligibleSlots. Hitter
+// lineup-slot IDs (0-11) are stable across ESPN flb variants. Composite/utility
+// slots (6 MI, 7 CI, 12 UTIL) and bench/IL are intentionally omitted.
+const _ESPN_SLOT_POS = { 0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 8: "OF", 9: "OF", 10: "OF", 11: "DH" };
+function _espnEligiblePos(slots) {
+  const out = [];
+  for (const s of (slots || [])) {
+    const p = _ESPN_SLOT_POS[s];
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
 function _normalizeEspnPlayer(entry, season, sourceId) {
   const player = entry?.playerPoolEntry?.player || entry?.player;
   if (!player) return null;
@@ -134,6 +147,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   const name = player.fullName || ("Player " + player.id);
   const pctOwned = player.ownership?.percentOwned != null ? player.ownership.percentOwned : null;
   const pos = _espnPosLabel(player.defaultPositionId, slots);
+  const eligiblePos = _espnEligiblePos(slots);
 
   if (isPitcher) {
     const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
@@ -154,7 +168,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
     };
   }
   return {
-    name, espnId: player.id, type: "H", pctOwned, pos,
+    name, espnId: player.id, type: "H", pctOwned, pos, eligiblePos,
     lineupSlotId: entry.lineupSlotId,
     R: _statById(m, ESPN_STAT_ID.R) || 0,
     HR: _statById(m, ESPN_STAT_ID.HR) || 0,

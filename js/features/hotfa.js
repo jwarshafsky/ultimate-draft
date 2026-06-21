@@ -10,7 +10,36 @@ const _hotfa = {
   loading: false,
   progress: {},      // winId → status string
   loadedFa: false,
+  sortKey: "xwOBA",  // column sort
+  sortDir: -1,       // -1 desc, 1 asc
 };
+
+// Premium-position-first order for sorting the Pos column.
+const _HOTFA_POS_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "UT"];
+function _hotfaPosRank(eligiblePos) {
+  let best = 99;
+  const list = (eligiblePos && eligiblePos.length) ? eligiblePos : [""];
+  for (const p of list) {
+    const i = _HOTFA_POS_ORDER.indexOf(p);
+    if (i >= 0 && i < best) best = i;
+  }
+  return best;
+}
+
+// fgKeys of every player stashed on a team's minor-league roster in our league.
+// ESPN lists these as free agents (onTeamId 0), so they must be filtered out.
+function _hotfaMinorLeagueKeys() {
+  const set = new Set();
+  if (typeof getKeeperSelections !== "function") return set;
+  const sel = getKeeperSelections() || {};
+  for (const teamId in sel) {
+    const players = sel[teamId] || {};
+    for (const name in players) {
+      if (players[name] && players[name].minorKeeper) set.add(fgKey(name));
+    }
+  }
+  return set;
+}
 
 async function _hotfaLoadFaPool() {
   if (_hotfa.faPool) return _hotfa.faPool;
@@ -84,7 +113,7 @@ function renderHotFa() {
   if (_hotfa.progress.error) {
     html += '<div class="small" style="color:var(--bad); margin-top:4px;">' + esc(_hotfa.progress.error) + '</div>';
   }
-  html += '<p class="small muted" style="margin-top:6px;">Free agents only (ESPN onTeamId 0). Short windows are small-sample — watch the PA column. <b>Gap</b> = xwOBA − wOBA (positive = under-performing, heating up).</p>';
+  html += '<p class="small muted" style="margin-top:6px;">True free agents only — excludes players on a team’s minor-league roster. Click any column header to sort (incl. <b>Pos</b> by qualified position). Short windows are small-sample — watch PA. <b>Gap</b> = xwOBA − wOBA (positive = under-performing, heating up).</p>';
   html += '</div>';
 
   if (!winData) {
@@ -96,17 +125,22 @@ function renderHotFa() {
     return;
   }
 
-  // Join leaders ∩ free agents.
+  // Join leaders ∩ free agents, dropping league minor-league stashes.
   const fa = _hotfa.faPool || {};
+  const minorKeys = _hotfaMinorLeagueKeys();
   const rows = [];
+  let minorHidden = 0;
   for (const lead of fgxLeaders(win.id)) {
     const key = fgKey(lead.name);
     const faMatch = fa[key];
     if (!faMatch) continue; // rostered or not in ESPN pool → skip
     if (lead.PA != null && lead.PA < _hotfa.minPA) continue;
+    if (minorKeys.has(key)) { minorHidden++; continue; } // on a team's MiL roster
+    const eligiblePos = (faMatch.eligiblePos && faMatch.eligiblePos.length) ? faMatch.eligiblePos : (faMatch.pos ? [faMatch.pos] : []);
     rows.push({
       name: lead.name,
-      pos: faMatch.pos || "",
+      eligiblePos,
+      posStr: eligiblePos.join("/") || (faMatch.pos || ""),
       team: lead.team || "",
       xwOBA: lead.xwOBA,
       wOBA: lead.wOBA,
@@ -115,18 +149,37 @@ function renderHotFa() {
       gap: (lead.xwOBA != null && lead.wOBA != null) ? (lead.xwOBA - lead.wOBA) : null,
     });
   }
-  rows.sort((a, b) => (b.xwOBA || 0) - (a.xwOBA || 0));
+
+  // Sort by the active column.
+  const k = _hotfa.sortKey, dir = _hotfa.sortDir;
+  const cmp = (a, b) => {
+    let av, bv;
+    if (k === "pos") { av = _hotfaPosRank(a.eligiblePos); bv = _hotfaPosRank(b.eligiblePos); }
+    else if (k === "name") { return dir * String(a.name).localeCompare(String(b.name)); }
+    else { av = a[k]; bv = b[k]; }
+    if (av == null) av = -Infinity;
+    if (bv == null) bv = -Infinity;
+    return dir * (av < bv ? -1 : av > bv ? 1 : 0);
+  };
+  rows.sort(cmp);
 
   const stamp = winData.fetchedAt ? new Date(winData.fetchedAt).toLocaleString() : "";
   const range = winData.start ? (winData.start + " → " + winData.end) : "full season";
 
+  // Sortable header cell: shows the active sort arrow.
+  const arrow = (key) => _hotfa.sortKey === key ? (_hotfa.sortDir === -1 ? ' ↓' : ' ↑') : '';
+  const th = (key, label, right) => '<th data-sort="' + key + '" style="cursor:pointer;' +
+    (right ? ' text-align:right;' : '') + '">' + esc(label) + arrow(key) + '</th>';
+
   html += '<div class="card">';
   html += '<div class="small muted" style="margin-bottom:6px;">' + esc(win.label) + ' (' + esc(range) + ') · ' +
-    rows.length + ' free agents · updated ' + esc(stamp) + (_hotfa.loadedFa ? '' : ' · FA pool not loaded') + '</div>';
+    rows.length + ' free agents · updated ' + esc(stamp) +
+    (minorHidden ? ' · ' + minorHidden + ' minor-league stash' + (minorHidden === 1 ? '' : 'es') + ' hidden' : '') +
+    (_hotfa.loadedFa ? '' : ' · FA pool not loaded') + '</div>';
   html += '<table><thead><tr>' +
-    '<th>#</th><th>Player</th><th>Pos</th><th>Tm</th>' +
-    '<th style="text-align:right;">xwOBA</th><th style="text-align:right;">wOBA</th>' +
-    '<th style="text-align:right;">Gap</th><th style="text-align:right;">PA</th><th style="text-align:right;">%Own</th>' +
+    '<th>#</th>' + th("name", "Player") + th("pos", "Pos") + '<th>Tm</th>' +
+    th("xwOBA", "xwOBA", true) + th("wOBA", "wOBA", true) +
+    th("gap", "Gap", true) + th("PA", "PA", true) + th("pctOwned", "%Own", true) +
     '</tr></thead><tbody>';
   rows.slice(0, 200).forEach((r, i) => {
     const gapStr = r.gap == null ? '' : (r.gap > 0 ? '+' : '') + r.gap.toFixed(3);
@@ -134,7 +187,7 @@ function renderHotFa() {
     html += '<tr>' +
       '<td class="muted">' + (i + 1) + '</td>' +
       '<td>' + esc(r.name) + '</td>' +
-      '<td class="muted">' + esc(r.pos) + '</td>' +
+      '<td class="muted">' + esc(r.posStr) + '</td>' +
       '<td class="muted">' + esc(r.team) + '</td>' +
       '<td style="text-align:right; font-family:var(--mono);">' + (r.xwOBA != null ? r.xwOBA.toFixed(3) : '') + '</td>' +
       '<td style="text-align:right; font-family:var(--mono); color:var(--text-3);">' + (r.wOBA != null ? r.wOBA.toFixed(3) : '') + '</td>' +
@@ -163,5 +216,18 @@ function _wireHotfa() {
   if (minpa) minpa.addEventListener("change", (e) => {
     _hotfa.minPA = Math.max(0, Number(e.target.value) || 0);
     renderHotFa();
+  });
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (_hotfa.sortKey === key) {
+        _hotfa.sortDir = -_hotfa.sortDir;
+      } else {
+        _hotfa.sortKey = key;
+        // Text columns default A→Z; numeric columns default high→low.
+        _hotfa.sortDir = (key === "name" || key === "pos") ? 1 : -1;
+      }
+      renderHotFa();
+    });
   });
 }
