@@ -187,9 +187,23 @@ function buildLineup(poolPlayers, gsRemaining, overrides) {
   const detail = { hitters: [], benchedHitters: [], relievers: [], starters: [], sat, noProj,
     gsRemaining, spGsProjected: 0, spGsCounted: 0 };
 
-  // Hitters → forced-start first, then by value; placed greedily into slots.
-  const hitters = valid.filter(p => p.type === "H")
-    .sort((a, b) => (forced(b) - forced(a)) || (_hitValue(b.ros) - _hitValue(a.ros)));
+  // A full-time lineup slot's ROS plate appearances — the avg of the team's
+  // highest-PA hitters (its everyday regulars), robust to a few injured ones.
+  const hPool = valid.filter(p => p.type === "H");
+  const paDesc = hPool.map(p => p.ros.PA || 0).sort((a, b) => b - a);
+  const nFull = Math.min(13, paDesc.length);
+  const fullSlotPA = nFull ? paDesc.slice(0, nFull).reduce((s, x) => s + x, 0) / nFull : 0;
+  // Replacement-level per-PA value, for scoring slots that get supplemented.
+  const _perPA = p => _hitValue(p.ros) / Math.max(1, p.ros.PA || 0);
+  const avgPerPA = hPool.length ? hPool.reduce((s, p) => s + _perPA(p), 0) / hPool.length : 0;
+  const replPerPA = 0.6 * avgPerPA;
+  // Slot value = the player's own value PLUS the replacement value of the PA a
+  // fill-in covers for him. Keeps a good-but-hurt regular (low PA, high rate) in
+  // the lineup — supplemented — rather than benched for a healthy scrub.
+  const slotScore = p => _hitValue(p.ros) + replPerPA * Math.max(0, fullSlotPA - (p.ros.PA || 0));
+
+  // Hitters → forced-start first, then by slot value; placed greedily.
+  const hitters = hPool.sort((a, b) => (forced(b) - forced(a)) || (slotScore(b) - slotScore(a)));
   const open = {};
   for (const s of LINEUP_HIT_SLOTS) open[s.id] = s.cap;
   for (const p of hitters) {
@@ -203,18 +217,27 @@ function buildLineup(poolPlayers, gsRemaining, overrides) {
     else detail.benchedHitters.push(e);
   }
 
-  // Best bench hitter rotates in for 50% of the starters' average PA.
-  if (detail.benchedHitters.length && detail.hitters.length) {
-    const bh = detail.benchedHitters[0];
-    const avgPA = detail.hitters.reduce((s, h) => s + (h.ros.PA || 0), 0) / detail.hitters.length;
-    const benchPA = BENCH_PA_FRAC * avgPA;
-    const bhPA = bh.ros.PA || 0;
-    const f = bhPA > 0 ? benchPA / bhPA : 0;
-    if (f > 0) {
-      lines.push(_scaleHitter(bh.ros, f));
-      detail.benchHitter = { ...bh, benchPA, f };
-      detail.benchedHitters = detail.benchedHitters.slice(1);
+  // Bench fill-ins: every lineup slot is played all season, so a hurt/low-PA
+  // starter's missing plate appearances are covered by a healthy replacement.
+  // Fill the PA deficit (full-time target − each starter's projection) plus the
+  // usual off-day rotation share, from the best bench bats. Capped per slot and
+  // by the deficit so total PA isn't overestimated.
+  if (detail.hitters.length) {
+    let budget = BENCH_PA_FRAC * fullSlotPA;                  // off-day rotation
+    for (const h of detail.hitters) budget += Math.max(0, fullSlotPA - (h.ros.PA || 0)); // injury deficits
+    detail.benchFill = { fullSlotPA, players: [] };
+    const used = new Set();
+    for (const bh of detail.benchedHitters) {
+      if (budget < 1) break;
+      const bhPA = bh.ros.PA || 0;
+      if (bhPA <= 0) continue;
+      const fillPA = Math.min(budget, fullSlotPA);   // a replacement plays at most a full slot
+      lines.push(_scaleHitter(bh.ros, fillPA / bhPA));
+      detail.benchFill.players.push({ ...bh, fillPA, f: fillPA / bhPA });
+      used.add(bh);
+      budget -= fillPA;
     }
+    detail.benchedHitters = detail.benchedHitters.filter(b => !used.has(b));
   }
 
   // Pitchers → relievers all count; starters forced-first then capped at GS.
@@ -595,13 +618,13 @@ function renderDerivation(myId) {
   for (const h of detail.hitters.slice().sort((a, b) => a.slotId - b.slotId)) {
     html += '<tr><td class="muted">' + h.slot + '</td><td>' + esc(h.name) + badges(h) + '</td>' + hitStatCells(h.ros) + act(h.name, true) + '</tr>';
   }
-  if (detail.benchHitter) {
-    const bh = detail.benchHitter;
-    html += '<tr class="muted"><td class="muted">BN</td><td>' + esc(bh.name) + ' (rotation)' + badges(bh) + '</td>' + hitStatCells(_scaleHitter(bh.ros, bh.f)) + act(bh.name, true) + '</tr>';
+  for (const bf of (detail.benchFill?.players || [])) {
+    html += '<tr class="muted"><td class="muted">BN</td><td>' + esc(bf.name) + ' (fill-in)' + badges(bf) + '</td>' + hitStatCells(_scaleHitter(bf.ros, bf.f)) + act(bf.name, true) + '</tr>';
   }
   html += '</tbody></table>';
-  if (detail.benchHitter) html += '<p class="muted small">Bench bat (' + esc(detail.benchHitter.name) + ') prorated to <b>' +
-    Math.round(detail.benchHitter.benchPA) + ' PA</b> — 50% of your starters’ average.</p>';
+  if (detail.benchFill?.players.length) html += '<p class="muted small">Bench fill-ins cover off-days and injured starters (a full-time slot ≈ <b>' +
+    Math.round(detail.benchFill.fullSlotPA) + ' PA</b>): ' +
+    detail.benchFill.players.map(bf => esc(bf.name) + ' ' + Math.round(bf.fillPA) + ' PA').join(", ") + '.</p>';
 
   // Benched hitters (out-projected) — with eligibility + value so you can see why.
   if (detail.benchedHitters.length) {
