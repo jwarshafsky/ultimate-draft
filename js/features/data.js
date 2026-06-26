@@ -57,13 +57,13 @@ function renderData() {
   html += '<div><h3>Hitters</h3>';
   html += '<div class="small" style="margin-bottom:4px;"><a href="' + esc(fangraphsApiUrl(rosSel, "bat")) + '" target="_blank" rel="noopener" style="color:var(--accent);">1) Open hitters JSON ↗</a> → select all, copy</div>';
   html += '<textarea id="ros-hit-json" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="2) paste the JSON here"></textarea>';
-  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-hit-json-import" style="width:auto;">Import hitters</button></div></div>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-hit-json-import" style="width:auto;">Import hitters</button> <span class="small muted">or save the page & </span><input type="file" id="ros-hit-json-file" accept=".json,.txt,application/json"></div></div>';
   html += '<div><h3>Pitchers</h3>';
   html += '<div class="small" style="margin-bottom:4px;"><a href="' + esc(fangraphsApiUrl(rosSel, "pit")) + '" target="_blank" rel="noopener" style="color:var(--accent);">1) Open pitchers JSON ↗</a> → select all, copy</div>';
   html += '<textarea id="ros-pit-json" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="2) paste the JSON here"></textarea>';
-  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-pit-json-import" style="width:auto;">Import pitchers</button></div></div>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-pit-json-import" style="width:auto;">Import pitchers</button> <span class="small muted">or save the page & </span><input type="file" id="ros-pit-json-file" accept=".json,.txt,application/json"></div></div>';
   html += '</div>';
-  html += '<p class="small muted" style="margin-top:6px;">Tip: in your browser the JSON page should start with <code>[{"Team"…</code> — select all, copy, paste. (ATC’s in-season feed is FanGraphs’ “ATC DC (RoS)”.)</p>';
+  html += '<p class="small muted" style="margin-top:6px;">The JSON page should start with <code>[{"Team"…</code>. It’s large — if pasting drops players (check the <b>Projection coverage</b> on the Standings tab), instead <b>save the page</b> (⌘S / right-click → Save As) and use the file picker, which never truncates. (ATC’s in-season feed is FanGraphs’ “ATC DC (RoS)”.)</p>';
 
   if (rosHasData(rosSel)) {
     const c = getRosCounts(rosSel);
@@ -170,6 +170,24 @@ function renderData() {
   }
   wireJsonImport("ros-hit-json-import", "bat", "hitters");
   wireJsonImport("ros-pit-json-import", "pit", "pitchers");
+  // JSON file upload (no paste-truncation for the big files).
+  function wireJsonFile(fileId, kind, label) {
+    document.getElementById(fileId)?.addEventListener("change", (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const count = importRosJSON(_dataRosSel, kind, String(reader.result));
+          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+          renderData();
+        } catch (e) { alert(e.message || String(e)); }
+      };
+      reader.readAsText(file);
+    });
+  }
+  wireJsonFile("ros-hit-json-file", "bat", "hitters");
+  wireJsonFile("ros-pit-json-file", "pit", "pitchers");
   function wireRosImport(textareaId, fileId, fn, label) {
     const btnId = textareaId.replace("-csv", "-import");
     document.getElementById(btnId)?.addEventListener("click", () => {

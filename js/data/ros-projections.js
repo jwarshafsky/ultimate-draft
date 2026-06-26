@@ -156,8 +156,16 @@ function _buildIndex(sourceId) {
   const d = _ros.data[sourceId];
   const idx = { H: new Map(), P: new Map() };
   if (d) {
-    for (const h of d.hitters) idx.H.set(normalizePlayerName(h.name), h);
-    for (const p of d.pitchers) idx.P.set(normalizePlayerName(p.name), p);
+    // On duplicate normalized names, keep the bigger projection (the real
+    // regular over a minor-league namesake) instead of last-wins.
+    for (const h of d.hitters) {
+      const k = normalizePlayerName(h.name), ex = idx.H.get(k);
+      if (!ex || (h.PA || 0) > (ex.PA || 0)) idx.H.set(k, h);
+    }
+    for (const p of d.pitchers) {
+      const k = normalizePlayerName(p.name), ex = idx.P.get(k);
+      if (!ex || (p.IP || 0) > (ex.IP || 0)) idx.P.set(k, p);
+    }
   }
   _ros.index[sourceId] = idx;
   return idx;

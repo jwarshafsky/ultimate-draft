@@ -406,6 +406,7 @@ function renderStandings() {
     html += renderStandingsTable(_standings.computed, me?.id);
     if (me) html += renderGapCard(_standings.computed, me.id);
     if (me && _standings.mode !== "current") html += renderDerivation(me.id);
+    if (_standings.mode !== "current") html += renderCoverageAudit(me?.id);
     if (me && _standings.mode !== "current") html += renderWhatIfCard(me.id);
   }
 
@@ -633,6 +634,52 @@ function renderDerivation(myId) {
       foot.map(e => '<div>' + e + '</div>').join("") + '</div>';
   }
 
+  html += '</details></div>';
+  return html;
+}
+
+// Projection coverage audit: every rostered player whose projection is MISSING
+// (likely a name/paste problem) or LOW PA (verify it's a real injury/bench
+// role). Helps catch incomplete pastes and bad matches across the whole league.
+const COVERAGE_LOW_PA = 250;     // ROS hitter PA below this is "low — verify"
+function renderCoverageAudit(myId) {
+  if (!_standings.pool) return "";
+  const flagged = [];
+  for (const [tid, players] of Object.entries(_standings.pool)) {
+    for (const p of players) {
+      const mine = tid === myId;
+      if (p.type === "H") {
+        const pa = p.ros ? (p.ros.PA || 0) : null;
+        if (pa == null || pa === 0) flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "—" });
+        else if (pa < COVERAGE_LOW_PA) flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "low", pa, metric: Math.round(pa) + " PA" });
+      } else if (!p.ros) {
+        flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "— (P)" });
+      }
+    }
+  }
+  if (!flagged.length) {
+    return '<div class="card"><p class="small good">✓ Projection coverage looks complete — every rostered hitter has a healthy projected PA.</p></div>';
+  }
+  // missing first, then low PA ascending; your team first within each.
+  flagged.sort((a, b) =>
+    (a.status === b.status ? 0 : a.status === "missing" ? -1 : 1) ||
+    (b.mine - a.mine) || (a.pa - b.pa));
+  const missing = flagged.filter(f => f.status === "missing").length;
+  const low = flagged.filter(f => f.status === "low").length;
+
+  let html = '<div class="card"><details><summary style="cursor:pointer;"><b>Projection coverage</b> ' +
+    '<span class="small ' + (missing ? 'bad' : 'warn') + '">' + missing + ' missing · ' + low + ' low-PA</span></summary>';
+  html += '<p class="muted small" style="margin-top:8px;"><b>Missing</b> = no projection matched (usually an incomplete paste or a name mismatch — re-import that source). <b>Low PA</b> = verify it’s a real injury/bench role. Rest-of-season, a regular projects ~300+ PA.</p>';
+  html += '<div style="overflow-x:auto;"><table style="font-size:12px;"><thead><tr><th>Player</th><th>Team</th><th>Status</th><th class="num">Proj</th></tr></thead><tbody>';
+  for (const f of flagged) {
+    html += '<tr' + (f.mine ? ' style="font-weight:600;"' : '') + '>';
+    html += '<td>' + esc(f.name) + (f.mine ? ' ◄' : '') + '</td>';
+    html += '<td class="muted small">' + esc(f.owner) + '</td>';
+    html += '<td class="' + (f.status === "missing" ? "bad" : "warn") + ' small">' + (f.status === "missing" ? "MISSING" : "low") + '</td>';
+    html += '<td class="num">' + f.metric + '</td></tr>';
+  }
+  html += '</tbody></table></div>';
+  html += '<p class="muted small" style="margin-top:6px;">Fix missing players by re-importing the projection on the <b>Data</b> tab (use file upload for the big JSON to avoid paste truncation).</p>';
   html += '</details></div>';
   return html;
 }
