@@ -25,6 +25,7 @@ const _standings = {
   pickups: null,                             // cached best-pickups result
   lineupOverride: { start: new Set(), sit: new Set() },   // your manual force-start/bench
   derivOpen: false,                          // keep the breakdown open across re-renders
+  derivTeam: null,                           // which team's breakdown to view (null = mine)
 };
 
 // Persist manual lineup overrides across reloads.
@@ -571,19 +572,23 @@ function _fmtGap(cat, v) {
 // user's ROS totals — the optimized lineup, the GS-cap allocation, and what's
 // excluded. Collapsible so it doesn't dominate.
 function renderDerivation(myId) {
-  const pool = _standings.pool?.[myId] || [];
-  const gsUsed = (_standings.ytd?.gsUsed?.[myId]) || 0;
-  const gsRem = _standings.gsRemaining?.[myId];
-  const ov = _standings.lineupOverride;
+  // View any team; default to yours. Overrides/edit only on your own team.
+  const tid = (_standings.derivTeam && _standings.pool?.[_standings.derivTeam]) ? _standings.derivTeam : myId;
+  const isMine = tid === myId;
+  const pool = _standings.pool?.[tid] || [];
+  const gsUsed = (_standings.ytd?.gsUsed?.[tid]) || 0;
+  const gsRem = _standings.gsRemaining?.[tid];
+  const ov = isMine ? _standings.lineupOverride : { start: new Set(), sit: new Set() };
   const { lines, detail } = buildLineup(pool, gsRem, ov);
   const tot = aggregateTeamCats(lines);
   const modeLbl = _standings.mode === "full" ? "Full-Season" : "Rest-of-Season";
   const hasOverrides = ov.start.size || ov.sit.size;
 
-  // Small controls: ★ forced badge, IL badge, and a Start/Bench toggle button.
+  // Small controls: ★ forced badge, IL badge, and (your team only) a Start/Bench toggle.
   const badges = (p) => (p.il ? ' <span class="warn" style="font-size:10px;">IL</span>' : '') +
     (p.forced ? ' <span style="color:var(--accent);font-size:10px;">★set</span>' : '');
   const act = (name, inLineup) => {
+    if (!isMine) return '<td></td>';   // read-only for opponents
     const forced = ov.start.has(name) || ov.sit.has(name);
     const btn = inLineup
       ? '<button class="btn ghost" data-lo="sit" data-lo-name="' + esc(name) + '" style="padding:0 7px;font-size:11px;">Bench</button>'
@@ -592,13 +597,26 @@ function renderDerivation(myId) {
   };
 
   let html = '<div class="card"><details id="deriv-details"' + (_standings.derivOpen ? ' open' : '') +
-    '><summary style="cursor:pointer;"><b>How your ' + modeLbl +
-    ' total is built</b> <span class="muted small">(' + esc(getRosSourceLabel(_standings.rosSource)) + ' projection · editable lineup)</span></summary>';
-  html += '<p class="muted small" style="margin-top:8px;">Your best legal lineup (IL players included if they project well). Use <b>Start</b>/<b>Bench</b> to override — the rest re-optimizes around your picks. Opponents are auto-optimized.' +
-    (hasOverrides ? ' <button class="btn ghost" id="lo-reset" style="padding:0 8px;font-size:11px;">Reset to optimal</button>' : '') + '</p>';
+    '><summary style="cursor:pointer;"><b>How ' + (isMine ? 'your' : esc(_teamLabel(tid)) + '’s') + ' ' + modeLbl +
+    ' total is built</b> <span class="muted small">(' + esc(getRosSourceLabel(_standings.rosSource)) + ' projection)</span></summary>';
+
+  // Team selector
+  html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px; margin-top:8px;">View team ' +
+    '<select id="deriv-team">';
+  for (const t of LEAGUE.teams) {
+    html += '<option value="' + t.id + '"' + (t.id === tid ? ' selected' : '') + '>' + esc(t.owner) + (t.id === myId ? ' (you)' : '') + '</option>';
+  }
+  html += '</select></label>';
+
+  if (isMine) {
+    html += '<p class="muted small" style="margin-top:6px;">Your best legal lineup (IL players included if they project well). Use <b>Start</b>/<b>Bench</b> to override — the rest re-optimizes around your picks.' +
+      (hasOverrides ? ' <button class="btn ghost" id="lo-reset" style="padding:0 8px;font-size:11px;">Reset to optimal</button>' : '') + '</p>';
+  } else {
+    html += '<p class="muted small" style="margin-top:6px;">' + esc(_teamLabel(tid)) + '’s auto-optimized lineup (read-only) — exactly the stats counted for them in the standings.</p>';
+  }
 
   if (_standings.mode === "full") {
-    html += '<p class="muted small">Full-Season = your <b>banked YTD</b> (ESPN actuals) + the rest-of-season projection below.</p>';
+    html += '<p class="muted small">Full-Season = ' + (isMine ? 'your' : 'their') + ' <b>banked YTD</b> (ESPN actuals) + the rest-of-season projection below.</p>';
   }
 
   // ROS category totals (matches the standings contribution)
@@ -1087,6 +1105,12 @@ function wireStandings() {
   });
   const dd = document.getElementById("deriv-details");
   if (dd) dd.addEventListener("toggle", () => { _standings.derivOpen = dd.open; });
+  const dt = document.getElementById("deriv-team");
+  if (dt) dt.addEventListener("change", () => {
+    _standings.derivTeam = dt.value;
+    _standings.derivOpen = true;
+    renderStandings();
+  });
 
   const drop = document.getElementById("wi-drop");
   if (drop) drop.addEventListener("change", () => { _standings.whatIf.dropName = drop.value || null; renderStandings(); });
