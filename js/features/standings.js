@@ -70,6 +70,7 @@ async function loadStandingsData() {
 // math + title-odds Monte Carlo. Pure recompute — no network.
 function recomputeStandings() {
   if (!_standings.ytd) { _standings.computed = null; return; }
+  _buildPool();
   const built = buildEngineRosters();
   _standings.built = built.rosters;
   _standings.coverage = built.coverage;
@@ -78,53 +79,117 @@ function recomputeStandings() {
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
 }
 
-function buildEngineRosters() {
-  const ytdTeam = _standings.ytd?.ytdTeam || {};   // ESPN's actual accumulated totals
-  const rosters = _standings.ytd?.rosters || {};   // current roster players (for ROS + what-if)
-  const teamIds = Object.keys(ytdTeam).length ? Object.keys(ytdTeam) : Object.keys(rosters);
+// --- Optimal starting lineup --------------------------------------------
+// Roto only counts players in active lineup slots, so ROS/Full project each
+// team's BEST legal lineup (fill the league's starting slots with the highest-
+// projected eligible players), excluding the IL. Bench players count only if
+// they out-project a starter at a slot they qualify for.
+//   hitters: C(0) 1B(1) 2B(2) 3B(3) SS(4) OF(5)x5 MI(6) CI(7) UTIL(12) = 13
+//   pitchers: 9 generic P slots          IL = slot 17 (excluded)
+const LINEUP_HIT_SLOTS = [
+  { id: 0, cap: 1 }, { id: 1, cap: 1 }, { id: 2, cap: 1 }, { id: 3, cap: 1 },
+  { id: 4, cap: 1 }, { id: 5, cap: 5 }, { id: 6, cap: 1 }, { id: 7, cap: 1 }, { id: 12, cap: 1 },
+];
+const LINEUP_HIT_TRY = [0, 1, 2, 3, 4, 5, 6, 7, 12]; // dedicated first, UTIL last
+const LINEUP_P_SLOTS = 9;
+const ESPN_IL_SLOT = 17;
 
-  // Current = ESPN's official season-to-date totals (matches their standings).
-  if (_standings.mode === "current") {
-    const out = {};
-    for (const tid of teamIds) out[tid] = (ytdTeam[tid] || []).slice();
-    return { rosters: out, coverage: null };
+function _hitValue(r) {
+  return (r.R || 0) * 0.7 + (r.RBI || 0) * 0.7 + (r.HR || 0) * 1.3 + (r.SB || 0) * 1.4 +
+    Math.max(0, (r.OBP || 0) - 0.300) * (r.PA || 0) * 3;
+}
+function _pitValue(r) {
+  const ip = r.IP || 0;
+  return (r.K || 0) * 0.3 + (r.QS || 0) * 2.5 + ((r.SV || 0) + (r.HLD || 0)) * 1.8 +
+    Math.max(0, 4.20 - (r.ERA || 9)) * ip * 0.3 + Math.max(0, 1.28 - (r.WHIP || 9)) * ip * 0.5;
+}
+
+// Return the ROS stat lines of a team's optimal starting lineup from its pool
+// (players carry {type, eligibleSlots, lineupSlotId, ros}). Excludes IL and
+// anyone without a projection.
+function optimizeStarters(poolPlayers) {
+  const valid = (poolPlayers || []).filter(p => p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
+  const hitters = valid.filter(p => p.type === "H").map(p => ({ p, v: _hitValue(p.ros) })).sort((a, b) => b.v - a.v);
+  const pitchers = valid.filter(p => p.type === "P").map(p => ({ p, v: _pitValue(p.ros) })).sort((a, b) => b.v - a.v);
+  const open = {};
+  for (const s of LINEUP_HIT_SLOTS) open[s.id] = s.cap;
+  const lines = [];
+  for (const { p } of hitters) {
+    const elig = new Set(p.eligibleSlots || []);
+    for (const sid of LINEUP_HIT_TRY) {
+      if (open[sid] > 0 && elig.has(sid)) { open[sid]--; lines.push(p.ros); break; }
+    }
   }
+  for (const { p } of pitchers.slice(0, LINEUP_P_SLOTS)) lines.push(p.ros);
+  return lines;
+}
 
-  const includeYtd = _standings.mode === "full";   // full = YTD + ROS; ros = ROS only
+// Per-team pool: every rostered player paired with its ROS line.
+function _buildPool() {
+  const rosters = _standings.ytd?.rosters || {};
   const src = _standings.rosSource;
+  const pool = {};
+  for (const [tid, players] of Object.entries(rosters)) {
+    pool[tid] = players.map(p => ({
+      name: p.name, type: p.type, eligibleSlots: p.eligibleSlots || [],
+      lineupSlotId: p.lineupSlotId,
+      ros: src ? getRosLine(src, p.name, p.type) : null,
+    }));
+  }
+  _standings.pool = pool;
+  return pool;
+}
+
+// A free agent as a pool player (eligible to start, not on anyone's IL).
+function _faToPoolPlayer(fa) {
+  return {
+    name: fa.name, type: fa.type, eligibleSlots: fa.eligibleSlots || [], lineupSlotId: undefined,
+    ros: _standings.rosSource ? getRosLine(_standings.rosSource, fa.name, fa.type) : null,
+  };
+}
+
+// Mode-aware stat lines for one team from its pool players.
+function _teamLinesFromPool(tid, poolPlayers) {
+  const ytdTeam = _standings.ytd?.ytdTeam || {};
+  if (_standings.mode === "current") return (ytdTeam[tid] || []).slice();
+  const starters = optimizeStarters(poolPlayers).map(r => {
+    if (_standings.mode === "full") r._ros = true; else delete r._ros;
+    return r;
+  });
+  return _standings.mode === "full" ? (ytdTeam[tid] || []).concat(starters) : starters;
+}
+
+function buildEngineRosters() {
+  const pool = _standings.pool || _buildPool();
+  const teamIds = Object.keys(pool).length ? Object.keys(pool) : Object.keys(_standings.ytd?.ytdTeam || {});
   const out = {};
   let matched = 0, total = 0;
   for (const tid of teamIds) {
-    const arr = [];
-    if (includeYtd) for (const l of (ytdTeam[tid] || [])) arr.push(l); // ESPN actual YTD
-    for (const p of (rosters[tid] || [])) {
-      total++;
-      const ros = src ? getRosLine(src, p.name, p.type) : null;
-      if (ros) {
-        // Tag ROS only in full mode, where the YTD/ROS split drives the
-        // title-odds "fraction remaining". In ROS-only mode there's no YTD, so
-        // leave untagged and let the sim use the calendar estimate.
-        if (includeYtd) ros._ros = true; else delete ros._ros;
-        arr.push(ros);
-        matched++;
-      }
+    out[tid] = _teamLinesFromPool(tid, pool[tid] || []);
+    if (_standings.mode !== "current") {
+      const nonIl = (pool[tid] || []).filter(p => p.lineupSlotId !== ESPN_IL_SLOT);
+      total += nonIl.length;
+      matched += nonIl.filter(p => p.ros).length;
     }
-    out[tid] = arr;
   }
-  return { rosters: out, coverage: { matched, total } };
+  return { rosters: out, coverage: _standings.mode === "current" ? null : { matched, total } };
 }
 
-// Stat lines to add when picking up a free agent. You only get their
-// REST-OF-SEASON production (their YTD was earned elsewhere), so a pickup adds
-// the ROS line only — never the FA's banked YTD. Nothing to add in Current mode
-// (banked totals can't change). In Full mode the ROS line is tagged so the
-// title-odds "fraction remaining" stays correct.
-function _whatIfAddLines(fa) {
-  if (!fa || _standings.mode === "current") return [];
-  const ros = _standings.rosSource ? getRosLine(_standings.rosSource, fa.name, fa.type) : null;
-  if (!ros) return [];
-  if (_standings.mode === "full") ros._ros = true; else delete ros._ros;
-  return [ros];
+// League line-sets with specific teams' pools overridden (for what-ifs). Reuses
+// the base built lines for unchanged teams; re-optimizes only the overridden.
+function _afterLines(overrides) {
+  const out = {};
+  for (const tid of Object.keys(_standings.built)) out[tid] = _standings.built[tid];
+  for (const [tid, poolPlayers] of Object.entries(overrides)) out[tid] = _teamLinesFromPool(tid, poolPlayers);
+  return out;
+}
+
+// My pool after a drop and/or add (free agent).
+function _poolWithMove(tid, dropName, addFa) {
+  let arr = (_standings.pool[tid] || []).slice();
+  if (dropName) arr = arr.filter(p => p.name !== dropName);
+  if (addFa) arr = arr.concat([_faToPoolPlayer(addFa)]);
+  return arr;
 }
 
 function _teamLabel(teamId) {
@@ -196,10 +261,9 @@ function renderStandings() {
     } else if (_standings.coverage) {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
-      const tail = _standings.mode === "full" ? "Unmatched players count YTD only." : "Unmatched players contribute nothing (no projection).";
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · matched ' +
-        cv.matched + '/' + cv.total + ' rostered players (' + pctMatched + '%). ' + tail + '</p>';
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · projecting each team’s best starting lineup (13 hitters + 9 pitchers, IL excluded) · ' +
+        cv.matched + '/' + cv.total + ' active players have a projection (' + pctMatched + '%).</p>';
     }
   }
 
@@ -390,24 +454,16 @@ function renderAddDropPanel(myId) {
   html += '<button class="btn ghost" id="wi-clear">Clear</button>';
   html += '</div>';
 
-  // Result
+  // Result — re-optimize my lineup after the move (a worse add won't help).
   if (_standings.whatIf.add || _standings.whatIf.dropName) {
-    const baseRosters = _standings.built;
-    const addLines = _whatIfAddLines(_standings.whatIf.add);
-    const res = whatIfStandings(baseRosters, {
-      teamId: myId, add: addLines, dropName: _standings.whatIf.dropName,
-    });
-    const d = res.delta;
-    const beforeMe = res.before.teams.find(t => t.teamId === myId);
-    const afterMe = res.after.teams.find(t => t.teamId === myId);
-
-    // Title-odds before/after (cheaper sim — what-if recomputes on demand).
-    const afterRosters = _afterRosters(baseRosters, myId, addLines, _standings.whatIf.dropName);
+    const beforeMe = _standings.computed.teams.find(t => t.teamId === myId);
+    const afterLines = _afterLines({ [myId]: _poolWithMove(myId, _standings.whatIf.dropName, _standings.whatIf.add) });
+    const after = computeStandings(afterLines);
+    const afterMe = after.teams.find(t => t.teamId === myId);
+    const d = { rotoPoints: afterMe.rotoPoints - beforeMe.rotoPoints, place: beforeMe.place - afterMe.place };
     const frac = seasonFractionRemaining();
-    const oddsBefore = simulateTitleOdds(baseRosters, { sims: 1500, fracRemaining: frac });
-    const oddsAfter = simulateTitleOdds(afterRosters, { sims: 1500, fracRemaining: frac });
-    const pBefore = oddsBefore.byTeam[myId]?.pFirst || 0;
-    const pAfter = oddsAfter.byTeam[myId]?.pFirst || 0;
+    const pBefore = simulateTitleOdds(_standings.built, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+    const pAfter = simulateTitleOdds(afterLines, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
 
     html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
     const moveTxt = [];
@@ -482,13 +538,12 @@ function renderTradePanel(myId) {
     '<button class="btn ghost" id="tr-clear">Clear</button></div>';
   html += '</div>';
 
-  // Result
+  // Result — both teams' lineups re-optimized after the swap.
   const send = _standings.trade.send, recv = _standings.trade.recv;
   if (send.length || recv.length) {
-    const base = _standings.built;
-    const after = _afterTradeRosters(base, myId, partner, send, recv);
-    const before = computeStandings(base), aft = computeStandings(after);
-    const oddsB = _oddsFor(base), oddsA = _oddsFor(after);
+    const afterLines = _afterLines(_poolsAfterTrade(myId, partner, send, recv));
+    const before = _standings.computed, aft = computeStandings(afterLines);
+    const oddsB = _oddsFor(_standings.built), oddsA = _oddsFor(afterLines);
 
     html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
     html += '<p class="small">' + esc(_teamLabel(myId)) + ' sends <b>' + (send.map(esc).join(", ") || "—") +
@@ -539,27 +594,27 @@ function renderTradePanel(myId) {
 // roto-point gain from adding them, then run the Monte-Carlo title odds only on
 // the top few to report the actual championship-% lift.
 function computeBestPickups(myId) {
-  const pool = _standings.faPool || [];
-  const base = _standings.built;
-  const baseRoto = computeStandings(base).teams.find(t => t.teamId === myId).rotoPoints;
+  const fas = _standings.faPool || [];
+  const baseRoto = _standings.computed.teams.find(t => t.teamId === myId).rotoPoints;
   const cands = [];
   let scanned = 0;
-  for (const fa of pool) {
+  for (const fa of fas) {
     if (scanned >= 90) break;
-    const addLines = _whatIfAddLines(fa);
-    if (!addLines.length) continue;          // no projection in this source → skip
+    const pp = _faToPoolPlayer(fa);
+    if (!pp.ros) continue;                    // no projection in this source → skip
     scanned++;
-    const after = _afterRosters(base, myId, addLines, null);
-    const dRoto = computeStandings(after).teams.find(t => t.teamId === myId).rotoPoints - baseRoto;
+    // Add to my pool, re-optimize my lineup (a FA worse than my starters = no gain).
+    const afterLines = _afterLines({ [myId]: (_standings.pool[myId] || []).concat([pp]) });
+    const dRoto = computeStandings(afterLines).teams.find(t => t.teamId === myId).rotoPoints - baseRoto;
     cands.push({ fa, dRoto });
   }
   cands.sort((a, b) => b.dRoto - a.dRoto);
   const top = cands.slice(0, 8);
   const frac = seasonFractionRemaining();
-  const baseP = simulateTitleOdds(base, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+  const baseP = simulateTitleOdds(_standings.built, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
   for (const c of top) {
-    const after = _afterRosters(base, myId, _whatIfAddLines(c.fa), null);
-    c.pAfter = simulateTitleOdds(after, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+    const afterLines = _afterLines({ [myId]: (_standings.pool[myId] || []).concat([_faToPoolPlayer(c.fa)]) });
+    c.pAfter = simulateTitleOdds(afterLines, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
     c.dPct = c.pAfter - baseP;
   }
   top.sort((a, b) => b.dPct - a.dPct || b.dRoto - a.dRoto);
@@ -567,7 +622,7 @@ function computeBestPickups(myId) {
 }
 
 function renderPickupsPanel(myId) {
-  let html = '<p class="muted small">Free agents ranked by how much they’d raise your championship odds (adds rest-of-season only; assumes an open roster spot). Uses the ' +
+  let html = '<p class="muted small">Free agents ranked by how much they’d raise your championship odds. Each FA is slotted into your best lineup (rest-of-season), so only those who out-project a current starter show a gain. Uses the ' +
     esc(getRosSourceLabel(_standings.rosSource) || "selected") + ' projection.</p>';
 
   if (_standings.mode === "current") {
@@ -604,26 +659,17 @@ function renderPickupsPanel(myId) {
   return html;
 }
 
-// Move traded players (all their stat lines, matched by name) between two teams.
-function _afterTradeRosters(base, aId, bId, sendNames, recvNames) {
-  const next = {};
-  for (const [id, players] of Object.entries(base)) next[id] = players.slice();
+// Move traded players between two teams' pools (by name). Returns the override
+// map {aId: newPool, bId: newPool} for _afterLines.
+function _poolsAfterTrade(aId, bId, sendNames, recvNames) {
   const sendSet = new Set(sendNames), recvSet = new Set(recvNames);
-  const aSend = (next[aId] || []).filter(l => sendSet.has(l.name));
-  const bRecv = (next[bId] || []).filter(l => recvSet.has(l.name));
-  next[aId] = (next[aId] || []).filter(l => !sendSet.has(l.name)).concat(bRecv);
-  next[bId] = (next[bId] || []).filter(l => !recvSet.has(l.name)).concat(aSend);
-  return next;
-}
-
-function _afterRosters(baseRosters, teamId, addLines, dropName) {
-  const next = {};
-  for (const [id, players] of Object.entries(baseRosters)) next[id] = players.slice();
-  if (next[teamId]) {
-    if (dropName) next[teamId] = next[teamId].filter(p => p.name !== dropName);
-    if (addLines) next[teamId] = next[teamId].concat(addLines);
-  }
-  return next;
+  const aPool = _standings.pool[aId] || [], bPool = _standings.pool[bId] || [];
+  const aSend = aPool.filter(p => sendSet.has(p.name));
+  const bRecv = bPool.filter(p => recvSet.has(p.name));
+  return {
+    [aId]: aPool.filter(p => !sendSet.has(p.name)).concat(bRecv),
+    [bId]: bPool.filter(p => !recvSet.has(p.name)).concat(aSend),
+  };
 }
 
 function _statBox(label, valueText, delta) {
