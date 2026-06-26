@@ -125,8 +125,10 @@ function _scaleHitter(r, f) {
     H: (r.H || 0) * f, BB: (r.BB || 0) * f, HBP: (r.HBP || 0) * f, SF: (r.SF || 0) * f,
     AB: (r.AB || 0) * f, PA: (r.PA || 0) * f };
 }
-// One bench hitter rotates in for ~half a season (off-days, injuries, platoons).
-const BENCH_HITTER_FRAC = 0.5;
+// One bench hitter rotates in for a part-season's worth of plate appearances:
+// 50% of the starters' average PA (off-days, injuries, platoons). Their rate
+// stats are applied over that PA, independent of their own projected playing time.
+const BENCH_PA_FRAC = 0.5;
 
 const SLOT_LABEL = { 0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 6: "MI", 7: "CI", 12: "UTIL" };
 
@@ -155,12 +157,18 @@ function buildLineup(poolPlayers, gsRemaining) {
     else detail.benchedHitters.push({ name: p.name, ros: p.ros });
   }
 
-  // Best bench hitter rotates in part-time → counts at BENCH_HITTER_FRAC.
-  if (detail.benchedHitters.length) {
+  // Best bench hitter rotates in for 50% of the starters' average PA.
+  if (detail.benchedHitters.length && detail.hitters.length) {
     const bh = detail.benchedHitters[0];   // highest-value unplaced hitter
-    lines.push(_scaleHitter(bh.ros, BENCH_HITTER_FRAC));
-    detail.benchHitter = { name: bh.name, frac: BENCH_HITTER_FRAC, ros: bh.ros };
-    detail.benchedHitters = detail.benchedHitters.slice(1);   // the rest don't count
+    const avgPA = detail.hitters.reduce((s, h) => s + (h.ros.PA || 0), 0) / detail.hitters.length;
+    const benchPA = BENCH_PA_FRAC * avgPA;
+    const bhPA = bh.ros.PA || 0;
+    const f = bhPA > 0 ? benchPA / bhPA : 0;   // scale their rate over benchPA
+    if (f > 0) {
+      lines.push(_scaleHitter(bh.ros, f));
+      detail.benchHitter = { name: bh.name, benchPA, f, ros: bh.ros };
+      detail.benchedHitters = detail.benchedHitters.slice(1);   // the rest don't count
+    }
   }
 
   // Pitchers → relievers all count; starters capped at the GS budget.
@@ -328,7 +336,7 @@ function renderStandings() {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + a 50% bench bat + all pitchers (starts capped at 200 GS/season), IL excluded · ' +
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + a bench bat (50% of avg PA) + all pitchers (starts capped at 200 GS/season), IL excluded · ' +
         cv.matched + '/' + cv.total + ' active players have a projection (' + pctMatched + '%).</p>';
     }
   }
@@ -502,10 +510,11 @@ function renderDerivation(myId) {
   for (const h of orderedHitters) html += hitRow(h.slot, h.name, h.ros);
   if (detail.benchHitter) {
     const bh = detail.benchHitter;
-    html += hitRow('BN ' + Math.round(bh.frac * 100) + '%', bh.name + ' (rotation)', _scaleHitter(bh.ros, bh.frac), true);
+    html += hitRow('BN', bh.name + ' (rotation)', _scaleHitter(bh.ros, bh.f), true);
   }
   html += '</tbody></table>';
-  if (detail.benchHitter) html += '<p class="muted small">Your best bench bat (' + esc(detail.benchHitter.name) + ') counts at ' + Math.round(detail.benchHitter.frac * 100) + '% — rotating in on off-days, injuries, and platoons.</p>';
+  if (detail.benchHitter) html += '<p class="muted small">Your best bench bat (' + esc(detail.benchHitter.name) + ') is prorated to <b>' +
+    Math.round(detail.benchHitter.benchPA) + ' PA</b> — 50% of your starters’ average — rotating in on off-days, injuries, and platoons.</p>';
 
   // Pitchers + GS cap
   html += '<h3 style="margin-top:12px;">Pitchers</h3>';
