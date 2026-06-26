@@ -118,6 +118,15 @@ function _scalePitcher(r, f) {
   return { ...r, IP: (r.IP || 0) * f, ER: (r.ER || 0) * f, HA: (r.HA || 0) * f,
     BBA: (r.BBA || 0) * f, K: (r.K || 0) * f, QS: (r.QS || 0) * f, GS: (r.GS || 0) * f };
 }
+// Scale a hitter's stats by f — used for the bench bat that rotates in part-time.
+// All on-base components scale too, so OBP contributes at the right (half) weight.
+function _scaleHitter(r, f) {
+  return { ...r, R: (r.R || 0) * f, HR: (r.HR || 0) * f, RBI: (r.RBI || 0) * f, SB: (r.SB || 0) * f,
+    H: (r.H || 0) * f, BB: (r.BB || 0) * f, HBP: (r.HBP || 0) * f, SF: (r.SF || 0) * f,
+    AB: (r.AB || 0) * f, PA: (r.PA || 0) * f };
+}
+// One bench hitter rotates in for ~half a season (off-days, injuries, platoons).
+const BENCH_HITTER_FRAC = 0.5;
 
 const SLOT_LABEL = { 0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 6: "MI", 7: "CI", 12: "UTIL" };
 
@@ -142,8 +151,16 @@ function buildLineup(poolPlayers, gsRemaining) {
     for (const sid of LINEUP_HIT_TRY) {
       if (open[sid] > 0 && elig.has(sid)) { open[sid]--; placed = sid; break; }
     }
-    if (placed != null) { lines.push(p.ros); detail.hitters.push({ name: p.name, slot: SLOT_LABEL[placed], ros: p.ros }); }
+    if (placed != null) { lines.push(p.ros); detail.hitters.push({ name: p.name, slot: SLOT_LABEL[placed], slotId: placed, ros: p.ros }); }
     else detail.benchedHitters.push({ name: p.name, ros: p.ros });
+  }
+
+  // Best bench hitter rotates in part-time → counts at BENCH_HITTER_FRAC.
+  if (detail.benchedHitters.length) {
+    const bh = detail.benchedHitters[0];   // highest-value unplaced hitter
+    lines.push(_scaleHitter(bh.ros, BENCH_HITTER_FRAC));
+    detail.benchHitter = { name: bh.name, frac: BENCH_HITTER_FRAC, ros: bh.ros };
+    detail.benchedHitters = detail.benchedHitters.slice(1);   // the rest don't count
   }
 
   // Pitchers → relievers all count; starters capped at the GS budget.
@@ -311,7 +328,7 @@ function renderStandings() {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + all pitchers (starters capped at 200 GS/season), IL excluded · ' +
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + a 50% bench bat + all pitchers (starts capped at 200 GS/season), IL excluded · ' +
         cv.matched + '/' + cv.total + ' active players have a projection (' + pctMatched + '%).</p>';
     }
   }
@@ -471,17 +488,24 @@ function renderDerivation(myId) {
   for (const c of STANDINGS_CATS) html += '<td class="num">' + _fmtCat(c, tot[c]) + '</td>';
   html += '</tr></tbody></table>';
 
-  // Hitters (13-slot lineup)
+  // Hitters — in ESPN position order (C, 1B, 2B, 3B, SS, OF, MI, CI, UTIL),
+  // plus the best bench bat at part-time weight.
   html += '<h3 style="margin-top:12px;">Hitters (best lineup)</h3>';
   html += '<table style="font-size:12px;"><thead><tr><th>Slot</th><th>Player</th><th class="num">R</th><th class="num">HR</th><th class="num">RBI</th><th class="num">SB</th><th class="num">OBP</th><th class="num">PA</th></tr></thead><tbody>';
-  for (const h of detail.hitters) {
-    const r = h.ros;
-    html += '<tr><td class="muted">' + h.slot + '</td><td>' + esc(h.name) + '</td>' +
+  const hitRow = (slotLabel, name, r, muted) => {
+    return '<tr' + (muted ? ' class="muted"' : '') + '><td class="muted">' + slotLabel + '</td><td>' + esc(name) + '</td>' +
       '<td class="num">' + Math.round(r.R || 0) + '</td><td class="num">' + Math.round(r.HR || 0) + '</td>' +
       '<td class="num">' + Math.round(r.RBI || 0) + '</td><td class="num">' + Math.round(r.SB || 0) + '</td>' +
       '<td class="num">' + (r.OBP || 0).toFixed(3).replace(/^0/, "") + '</td><td class="num">' + Math.round(r.PA || 0) + '</td></tr>';
+  };
+  const orderedHitters = detail.hitters.slice().sort((a, b) => a.slotId - b.slotId);
+  for (const h of orderedHitters) html += hitRow(h.slot, h.name, h.ros);
+  if (detail.benchHitter) {
+    const bh = detail.benchHitter;
+    html += hitRow('BN ' + Math.round(bh.frac * 100) + '%', bh.name + ' (rotation)', _scaleHitter(bh.ros, bh.frac), true);
   }
   html += '</tbody></table>';
+  if (detail.benchHitter) html += '<p class="muted small">Your best bench bat (' + esc(detail.benchHitter.name) + ') counts at ' + Math.round(detail.benchHitter.frac * 100) + '% — rotating in on off-days, injuries, and platoons.</p>';
 
   // Pitchers + GS cap
   html += '<h3 style="margin-top:12px;">Pitchers</h3>';
