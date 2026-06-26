@@ -33,6 +33,15 @@ function normalizePlayerName(s) {
   return n.replace(/\s+/g, " ").trim();
 }
 
+// "Core" key: first + last name only, dropping middle initials. Used as a
+// fallback so "Jose Ferrer" (ESPN) matches "Jose A. Ferrer" (FanGraphs).
+function coreNameKey(name) {
+  const toks = normalizePlayerName(name).split(" ").filter(Boolean);
+  if (toks.length <= 2) return toks.join(" ");
+  const mids = toks.slice(1, -1).filter(t => t.length > 1);   // keep real middle names, drop initials
+  return [toks[0], ...mids, toks[toks.length - 1]].join(" ");
+}
+
 function loadRosFromStorage() {
   for (const s of ROS_SOURCES) {
     try {
@@ -176,17 +185,22 @@ function clearRosSource(sourceId) {
 
 function _buildIndex(sourceId) {
   const d = _ros.data[sourceId];
-  const idx = { H: new Map(), P: new Map() };
+  // H/P = exact normalized name; Hc/Pc = core key (no middle initials) fallback.
+  const idx = { H: new Map(), P: new Map(), Hc: new Map(), Pc: new Map() };
   if (d) {
-    // On duplicate normalized names, keep the bigger projection (the real
-    // regular over a minor-league namesake) instead of last-wins.
+    // On duplicate keys, keep the bigger projection (the real regular over a
+    // minor-league namesake) instead of last-wins.
     for (const h of d.hitters) {
       const k = normalizePlayerName(h.name), ex = idx.H.get(k);
       if (!ex || (h.PA || 0) > (ex.PA || 0)) idx.H.set(k, h);
+      const ck = coreNameKey(h.name), exc = idx.Hc.get(ck);
+      if (!exc || (h.PA || 0) > (exc.PA || 0)) idx.Hc.set(ck, h);
     }
     for (const p of d.pitchers) {
       const k = normalizePlayerName(p.name), ex = idx.P.get(k);
       if (!ex || (p.IP || 0) > (ex.IP || 0)) idx.P.set(k, p);
+      const ck = coreNameKey(p.name), exc = idx.Pc.get(ck);
+      if (!exc || (p.IP || 0) > (exc.IP || 0)) idx.Pc.set(ck, p);
     }
   }
   _ros.index[sourceId] = idx;
@@ -200,12 +214,12 @@ function getRosLine(sourceId, name, type) {
   const idx = _ros.index[sourceId] || _buildIndex(sourceId);
   const key = normalizePlayerName(name);
   if (type === "P") {
-    const p = idx.P.get(key);
+    const p = idx.P.get(key) || idx.Pc.get(coreNameKey(name));   // fallback: drop middle initials
     if (!p) return null;
     return { name: p.name, type: "P", K: p.K, QS: p.QS, SV: p.SV, HLD: p.HLD, GS: p.GS || 0,
       IP: p.IP, ER: p.ER || null, HA: p.HA || null, BBA: p.BBA || null, ERA: p.ERA, WHIP: p.WHIP };
   }
-  const h = idx.H.get(key);
+  const h = idx.H.get(key) || idx.Hc.get(coreNameKey(name));   // fallback: drop middle initials
   if (!h) return null;
   return { name: h.name, type: "H", R: h.R, HR: h.HR, RBI: h.RBI, SB: h.SB,
     OBP: h.OBP, PA: h.PA, AB: h.AB || null, H: h.H || null, BB: h.BB || null,
