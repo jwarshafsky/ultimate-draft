@@ -23,7 +23,35 @@ const _standings = {
   whatIfTab: "addrop",                       // "addrop" | "trade" | "pickups"
   trade: { partner: null, send: [], recv: [] },
   pickups: null,                             // cached best-pickups result
+  lineupOverride: { start: new Set(), sit: new Set() },   // your manual force-start/bench
+  derivOpen: false,                          // keep the breakdown open across re-renders
 };
+
+// Persist manual lineup overrides across reloads.
+const LINEUP_OVERRIDE_KEY = "ud_lineup_override_v1";
+function loadLineupOverride() {
+  try {
+    const o = JSON.parse(localStorage.getItem(LINEUP_OVERRIDE_KEY) || "null");
+    if (o) _standings.lineupOverride = { start: new Set(o.start || []), sit: new Set(o.sit || []) };
+  } catch {}
+}
+function saveLineupOverride() {
+  localStorage.setItem(LINEUP_OVERRIDE_KEY, JSON.stringify({
+    start: [..._standings.lineupOverride.start], sit: [..._standings.lineupOverride.sit],
+  }));
+}
+// Toggle a player between forced-start / forced-bench / auto.
+function setLineupOverride(name, mode) {
+  const o = _standings.lineupOverride;
+  o.start.delete(name); o.sit.delete(name);
+  if (mode === "start") o.start.add(name);
+  else if (mode === "sit") o.sit.add(name);
+  saveLineupOverride();
+  _standings.derivOpen = true;   // keep the breakdown open after re-render
+  recomputeStandings();
+  renderStandings();
+}
+loadLineupOverride();
 
 // Modes that require a ROS projection source.
 function _modeNeedsRos(m) { return m === "ros" || m === "full"; }
@@ -132,53 +160,71 @@ const BENCH_PA_FRAC = 0.5;
 
 const SLOT_LABEL = { 0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 6: "MI", 7: "CI", 12: "UTIL" };
 
-// Build a team's counted lineup AND a human-readable breakdown of how it was
-// chosen. `gsRemaining` = starts left under the 200 cap (null = no cap).
-function buildLineup(poolPlayers, gsRemaining) {
+// Eligible starting positions as a short label (e.g. "1B/3B/CI/UTIL").
+function _eligPosLabel(eligibleSlots) {
+  const order = [0, 1, 2, 3, 4, 5, 6, 7, 12];
+  const set = new Set(eligibleSlots || []);
+  return order.filter(s => set.has(s)).map(s => SLOT_LABEL[s]).join("/") || "—";
+}
+
+// Build a team's counted lineup AND a breakdown of how it was chosen.
+//   gsRemaining = starts left under the 200 GS cap (null = no cap)
+//   overrides   = { start:Set(names), sit:Set(names) } — manual force-start /
+//                 force-bench, applied to the user's own team only.
+// IL players are NOT auto-excluded: they compete on their projection (which a
+// good ROS source already shrinks for injuries). Force-sit to drop one.
+function buildLineup(poolPlayers, gsRemaining, overrides) {
+  const startSet = overrides?.start || new Set();
+  const sitSet = overrides?.sit || new Set();
+  const forced = p => startSet.has(p.name) ? 1 : 0;
+  const ilOf = p => p.lineupSlotId === ESPN_IL_SLOT;
+
   const all = poolPlayers || [];
-  const il = all.filter(p => p.lineupSlotId === ESPN_IL_SLOT);
-  const valid = all.filter(p => p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
-  const noProj = all.filter(p => !p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
+  const valid = all.filter(p => p.ros && !sitSet.has(p.name));
+  const noProj = all.filter(p => !p.ros && !sitSet.has(p.name));
+  const sat = all.filter(p => sitSet.has(p.name));   // manually benched
   const lines = [];
-  const detail = { hitters: [], benchedHitters: [], relievers: [], starters: [], il, noProj,
+  const detail = { hitters: [], benchedHitters: [], relievers: [], starters: [], sat, noProj,
     gsRemaining, spGsProjected: 0, spGsCounted: 0 };
 
-  // Hitters → best legal lineup.
-  const hitters = valid.filter(p => p.type === "H").map(p => ({ p, v: _hitValue(p.ros) })).sort((a, b) => b.v - a.v);
+  // Hitters → forced-start first, then by value; placed greedily into slots.
+  const hitters = valid.filter(p => p.type === "H")
+    .sort((a, b) => (forced(b) - forced(a)) || (_hitValue(b.ros) - _hitValue(a.ros)));
   const open = {};
   for (const s of LINEUP_HIT_SLOTS) open[s.id] = s.cap;
-  for (const { p } of hitters) {
+  for (const p of hitters) {
     const elig = new Set(p.eligibleSlots || []);
     let placed = null;
     for (const sid of LINEUP_HIT_TRY) {
       if (open[sid] > 0 && elig.has(sid)) { open[sid]--; placed = sid; break; }
     }
-    if (placed != null) { lines.push(p.ros); detail.hitters.push({ name: p.name, slot: SLOT_LABEL[placed], slotId: placed, ros: p.ros }); }
-    else detail.benchedHitters.push({ name: p.name, ros: p.ros });
+    const e = { name: p.name, ros: p.ros, val: _hitValue(p.ros), elig: p.eligibleSlots, il: ilOf(p), forced: !!forced(p) };
+    if (placed != null) { lines.push(p.ros); detail.hitters.push({ ...e, slot: SLOT_LABEL[placed], slotId: placed }); }
+    else detail.benchedHitters.push(e);
   }
 
   // Best bench hitter rotates in for 50% of the starters' average PA.
   if (detail.benchedHitters.length && detail.hitters.length) {
-    const bh = detail.benchedHitters[0];   // highest-value unplaced hitter
+    const bh = detail.benchedHitters[0];
     const avgPA = detail.hitters.reduce((s, h) => s + (h.ros.PA || 0), 0) / detail.hitters.length;
     const benchPA = BENCH_PA_FRAC * avgPA;
     const bhPA = bh.ros.PA || 0;
-    const f = bhPA > 0 ? benchPA / bhPA : 0;   // scale their rate over benchPA
+    const f = bhPA > 0 ? benchPA / bhPA : 0;
     if (f > 0) {
       lines.push(_scaleHitter(bh.ros, f));
-      detail.benchHitter = { name: bh.name, benchPA, f, ros: bh.ros };
-      detail.benchedHitters = detail.benchedHitters.slice(1);   // the rest don't count
+      detail.benchHitter = { ...bh, benchPA, f };
+      detail.benchedHitters = detail.benchedHitters.slice(1);
     }
   }
 
-  // Pitchers → relievers all count; starters capped at the GS budget.
+  // Pitchers → relievers all count; starters forced-first then capped at GS.
   const sps = [];
   for (const p of valid.filter(x => x.type === "P")) {
     const gs = p.ros.GS || 0;
-    if (gs >= 1) { sps.push({ name: p.name, ros: p.ros, gs, vps: _pitValue(p.ros) / Math.max(1, gs) }); detail.spGsProjected += gs; }
-    else { lines.push(p.ros); detail.relievers.push({ name: p.name, ros: p.ros }); }
+    if (gs >= 1) { sps.push({ name: p.name, ros: p.ros, gs, vps: _pitValue(p.ros) / Math.max(1, gs), il: ilOf(p), forced: !!forced(p) }); detail.spGsProjected += gs; }
+    else { lines.push(p.ros); detail.relievers.push({ name: p.name, ros: p.ros, il: ilOf(p) }); }
   }
-  sps.sort((a, b) => b.vps - a.vps);   // best starters per start first
+  sps.sort((a, b) => (forced(b) - forced(a)) || (b.vps - a.vps));
   let budget = (gsRemaining == null) ? Infinity : Math.max(0, gsRemaining);
   for (const s of sps) {
     let counted = 0, frac = 0;
@@ -187,14 +233,14 @@ function buildLineup(poolPlayers, gsRemaining) {
       else { frac = budget / s.gs; lines.push(_scalePitcher(s.ros, frac)); counted = budget; budget = 0; }
     }
     detail.spGsCounted += counted;
-    detail.starters.push({ name: s.name, gs: s.gs, counted, frac, ros: s.ros });
+    detail.starters.push({ name: s.name, gs: s.gs, counted, frac, ros: s.ros, il: s.il, forced: s.forced });
   }
   return { lines, detail };
 }
 
 // Return just the counted ROS stat lines (used by the engine builders).
-function optimizeStarters(poolPlayers, gsRemaining) {
-  return buildLineup(poolPlayers, gsRemaining).lines;
+function optimizeStarters(poolPlayers, gsRemaining, overrides) {
+  return buildLineup(poolPlayers, gsRemaining, overrides).lines;
 }
 
 // Per-team pool: every rostered player paired with its ROS line.
@@ -226,7 +272,9 @@ function _teamLinesFromPool(tid, poolPlayers) {
   const ytdTeam = _standings.ytd?.ytdTeam || {};
   if (_standings.mode === "current") return (ytdTeam[tid] || []).slice();
   const gsRem = _standings.gsRemaining ? _standings.gsRemaining[tid] : null;
-  const starters = optimizeStarters(poolPlayers, gsRem).map(r => {
+  // Manual lineup overrides apply to your own team only; opponents stay auto.
+  const ov = (tid === getMyTeam()?.id) ? _standings.lineupOverride : null;
+  const starters = optimizeStarters(poolPlayers, gsRem, ov).map(r => {
     if (_standings.mode === "full") r._ros = true; else delete r._ros;
     return r;
   });
@@ -336,7 +384,7 @@ function renderStandings() {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + a bench bat (50% of avg PA) + all pitchers (starts capped at 200 GS/season), IL excluded · ' +
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + a bench bat (50% of avg PA) + all pitchers (starts capped at 200 GS/season); IL counted if projected well · ' +
         cv.matched + '/' + cv.total + ' active players have a projection (' + pctMatched + '%).</p>';
     }
   }
@@ -477,87 +525,112 @@ function renderDerivation(myId) {
   const pool = _standings.pool?.[myId] || [];
   const gsUsed = (_standings.ytd?.gsUsed?.[myId]) || 0;
   const gsRem = _standings.gsRemaining?.[myId];
-  const { lines, detail } = buildLineup(pool, gsRem);
+  const ov = _standings.lineupOverride;
+  const { lines, detail } = buildLineup(pool, gsRem, ov);
   const tot = aggregateTeamCats(lines);
   const modeLbl = _standings.mode === "full" ? "Full-Season" : "Rest-of-Season";
+  const hasOverrides = ov.start.size || ov.sit.size;
 
-  let html = '<div class="card"><details><summary style="cursor:pointer;"><b>How your ' + modeLbl +
-    ' total is built</b> <span class="muted small">(' + esc(getRosSourceLabel(_standings.rosSource)) + ' projection)</span></summary>';
+  // Small controls: ★ forced badge, IL badge, and a Start/Bench toggle button.
+  const badges = (p) => (p.il ? ' <span class="warn" style="font-size:10px;">IL</span>' : '') +
+    (p.forced ? ' <span style="color:var(--accent);font-size:10px;">★set</span>' : '');
+  const act = (name, inLineup) => {
+    const forced = ov.start.has(name) || ov.sit.has(name);
+    const btn = inLineup
+      ? '<button class="btn ghost" data-lo="sit" data-lo-name="' + esc(name) + '" style="padding:0 7px;font-size:11px;">Bench</button>'
+      : '<button class="btn ghost" data-lo="start" data-lo-name="' + esc(name) + '" style="padding:0 7px;font-size:11px;">Start</button>';
+    return '<td>' + btn + (forced ? ' <a href="#" data-lo="auto" data-lo-name="' + esc(name) + '" style="color:var(--accent);font-size:11px;">auto</a>' : '') + '</td>';
+  };
+
+  let html = '<div class="card"><details id="deriv-details"' + (_standings.derivOpen ? ' open' : '') +
+    '><summary style="cursor:pointer;"><b>How your ' + modeLbl +
+    ' total is built</b> <span class="muted small">(' + esc(getRosSourceLabel(_standings.rosSource)) + ' projection · editable lineup)</span></summary>';
+  html += '<p class="muted small" style="margin-top:8px;">Your best legal lineup (IL players included if they project well). Use <b>Start</b>/<b>Bench</b> to override — the rest re-optimizes around your picks. Opponents are auto-optimized.' +
+    (hasOverrides ? ' <button class="btn ghost" id="lo-reset" style="padding:0 8px;font-size:11px;">Reset to optimal</button>' : '') + '</p>';
 
   if (_standings.mode === "full") {
-    html += '<p class="muted small" style="margin-top:8px;">Full-Season = your <b>banked YTD</b> (ESPN actuals) + the rest-of-season projection broken down below.</p>';
+    html += '<p class="muted small">Full-Season = your <b>banked YTD</b> (ESPN actuals) + the rest-of-season projection below.</p>';
   }
 
-  // ROS category totals (matches the standings ROS contribution)
-  html += '<p class="muted small" style="margin-top:8px;">Rest-of-season totals from your projected lineup:</p>';
+  // ROS category totals (matches the standings contribution)
+  html += '<p class="muted small" style="margin-top:6px;">Rest-of-season totals from this lineup:</p>';
   html += '<table style="font-size:12px;"><tbody><tr>';
   for (const c of STANDINGS_CATS) html += '<th class="num">' + STANDINGS_CAT_LABELS[c] + '</th>';
   html += '</tr><tr>';
   for (const c of STANDINGS_CATS) html += '<td class="num">' + _fmtCat(c, tot[c]) + '</td>';
   html += '</tr></tbody></table>';
 
-  // Hitters — in ESPN position order (C, 1B, 2B, 3B, SS, OF, MI, CI, UTIL),
-  // plus the best bench bat at part-time weight.
-  html += '<h3 style="margin-top:12px;">Hitters (best lineup)</h3>';
-  html += '<table style="font-size:12px;"><thead><tr><th>Slot</th><th>Player</th><th class="num">R</th><th class="num">HR</th><th class="num">RBI</th><th class="num">SB</th><th class="num">OBP</th><th class="num">PA</th></tr></thead><tbody>';
-  const hitRow = (slotLabel, name, r, muted) => {
-    return '<tr' + (muted ? ' class="muted"' : '') + '><td class="muted">' + slotLabel + '</td><td>' + esc(name) + '</td>' +
-      '<td class="num">' + Math.round(r.R || 0) + '</td><td class="num">' + Math.round(r.HR || 0) + '</td>' +
-      '<td class="num">' + Math.round(r.RBI || 0) + '</td><td class="num">' + Math.round(r.SB || 0) + '</td>' +
-      '<td class="num">' + (r.OBP || 0).toFixed(3).replace(/^0/, "") + '</td><td class="num">' + Math.round(r.PA || 0) + '</td></tr>';
-  };
-  const orderedHitters = detail.hitters.slice().sort((a, b) => a.slotId - b.slotId);
-  for (const h of orderedHitters) html += hitRow(h.slot, h.name, h.ros);
+  // Hitters — ESPN position order, then the 50% bench bat.
+  html += '<h3 style="margin-top:12px;">Hitters (lineup)</h3>';
+  html += '<table style="font-size:12px;"><thead><tr><th>Slot</th><th>Player</th><th class="num">R</th><th class="num">HR</th><th class="num">RBI</th><th class="num">SB</th><th class="num">OBP</th><th class="num">PA</th><th></th></tr></thead><tbody>';
+  const hitStatCells = (r) => '<td class="num">' + Math.round(r.R || 0) + '</td><td class="num">' + Math.round(r.HR || 0) +
+    '</td><td class="num">' + Math.round(r.RBI || 0) + '</td><td class="num">' + Math.round(r.SB || 0) +
+    '</td><td class="num">' + (r.OBP || 0).toFixed(3).replace(/^0/, "") + '</td><td class="num">' + Math.round(r.PA || 0) + '</td>';
+  for (const h of detail.hitters.slice().sort((a, b) => a.slotId - b.slotId)) {
+    html += '<tr><td class="muted">' + h.slot + '</td><td>' + esc(h.name) + badges(h) + '</td>' + hitStatCells(h.ros) + act(h.name, true) + '</tr>';
+  }
   if (detail.benchHitter) {
     const bh = detail.benchHitter;
-    html += hitRow('BN', bh.name + ' (rotation)', _scaleHitter(bh.ros, bh.f), true);
+    html += '<tr class="muted"><td class="muted">BN</td><td>' + esc(bh.name) + ' (rotation)' + badges(bh) + '</td>' + hitStatCells(_scaleHitter(bh.ros, bh.f)) + act(bh.name, true) + '</tr>';
   }
   html += '</tbody></table>';
-  if (detail.benchHitter) html += '<p class="muted small">Your best bench bat (' + esc(detail.benchHitter.name) + ') is prorated to <b>' +
-    Math.round(detail.benchHitter.benchPA) + ' PA</b> — 50% of your starters’ average — rotating in on off-days, injuries, and platoons.</p>';
+  if (detail.benchHitter) html += '<p class="muted small">Bench bat (' + esc(detail.benchHitter.name) + ') prorated to <b>' +
+    Math.round(detail.benchHitter.benchPA) + ' PA</b> — 50% of your starters’ average.</p>';
+
+  // Benched hitters (out-projected) — with eligibility + value so you can see why.
+  if (detail.benchedHitters.length) {
+    html += '<p class="muted small" style="margin-top:8px;">Not in lineup — out-projected at every eligible slot (Start to force in):</p>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Player</th><th>Eligible</th><th class="num">HR</th><th class="num">SB</th><th class="num">OBP</th><th class="num">PA</th><th class="num">value</th><th></th></tr></thead><tbody>';
+    for (const b of detail.benchedHitters.slice().sort((a, b2) => b2.val - a.val)) {
+      const r = b.ros;
+      html += '<tr><td>' + esc(b.name) + badges(b) + '</td><td class="muted small">' + _eligPosLabel(b.elig) + '</td>' +
+        '<td class="num">' + Math.round(r.HR || 0) + '</td><td class="num">' + Math.round(r.SB || 0) + '</td>' +
+        '<td class="num">' + (r.OBP || 0).toFixed(3).replace(/^0/, "") + '</td><td class="num">' + Math.round(r.PA || 0) + '</td>' +
+        '<td class="num">' + Math.round(b.val) + '</td>' + act(b.name, false) + '</tr>';
+    }
+    html += '</tbody></table>';
+  }
 
   // Pitchers + GS cap
   html += '<h3 style="margin-top:12px;">Pitchers</h3>';
   html += '<p class="small ' + (detail.spGsProjected > (gsRem ?? 1e9) ? 'warn' : 'muted') + '">' +
     'Games started: <b>' + Math.round(gsUsed) + '</b> used / ' + GS_CAP + ' cap → <b>' + Math.round(gsRem ?? 0) + '</b> left. ' +
-    'Your starters project <b>' + Math.round(detail.spGsProjected) + '</b> starts; <b>' + Math.round(detail.spGsCounted) + '</b> counted' +
+    'Starters project <b>' + Math.round(detail.spGsProjected) + '</b> starts; <b>' + Math.round(detail.spGsCounted) + '</b> counted' +
     (detail.spGsProjected > (gsRem ?? 1e9) ? ' (capped — lowest-value starts dropped).' : '.') + '</p>';
   if (detail.starters.length) {
-    html += '<table style="font-size:12px;"><thead><tr><th>Starter</th><th class="num">GS proj</th><th class="num">GS counted</th><th class="num">IP</th><th class="num">K</th><th class="num">QS</th><th class="num">ERA</th><th class="num">WHIP</th></tr></thead><tbody>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Starter</th><th class="num">GS proj</th><th class="num">GS counted</th><th class="num">IP</th><th class="num">K</th><th class="num">QS</th><th class="num">ERA</th><th class="num">WHIP</th><th></th></tr></thead><tbody>';
     for (const s of detail.starters) {
       const r = s.ros, dropped = s.counted <= 0, partial = s.frac > 0 && s.frac < 1;
       const note = dropped ? ' <span class="bad small">(over cap)</span>' : partial ? ' <span class="warn small">(' + Math.round(s.frac * 100) + '%)</span>' : '';
-      html += '<tr' + (dropped ? ' class="muted"' : '') + '><td>' + esc(s.name) + note + '</td>' +
+      html += '<tr' + (dropped ? ' class="muted"' : '') + '><td>' + esc(s.name) + note + badges(s) + '</td>' +
         '<td class="num">' + Math.round(s.gs) + '</td><td class="num">' + (Math.round(s.counted * 10) / 10) + '</td>' +
         '<td class="num">' + Math.round((r.IP || 0) * (dropped ? 0 : s.frac)) + '</td>' +
         '<td class="num">' + Math.round((r.K || 0) * (dropped ? 0 : s.frac)) + '</td>' +
         '<td class="num">' + Math.round((r.QS || 0) * (dropped ? 0 : s.frac)) + '</td>' +
-        '<td class="num">' + (r.ERA || 0).toFixed(2) + '</td><td class="num">' + (r.WHIP || 0).toFixed(2) + '</td></tr>';
+        '<td class="num">' + (r.ERA || 0).toFixed(2) + '</td><td class="num">' + (r.WHIP || 0).toFixed(2) + '</td>' + act(s.name, !dropped) + '</tr>';
     }
     html += '</tbody></table>';
   }
   if (detail.relievers.length) {
     html += '<p class="muted small" style="margin-top:8px;">Relievers (all innings count):</p>';
-    html += '<table style="font-size:12px;"><thead><tr><th>Reliever</th><th class="num">IP</th><th class="num">K</th><th class="num">SV</th><th class="num">HLD</th><th class="num">ERA</th><th class="num">WHIP</th></tr></thead><tbody>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Reliever</th><th class="num">IP</th><th class="num">K</th><th class="num">SV</th><th class="num">HLD</th><th class="num">ERA</th><th class="num">WHIP</th><th></th></tr></thead><tbody>';
     for (const rp of detail.relievers) {
       const r = rp.ros;
-      html += '<tr><td>' + esc(rp.name) + '</td><td class="num">' + Math.round(r.IP || 0) + '</td>' +
+      html += '<tr><td>' + esc(rp.name) + badges(rp) + '</td><td class="num">' + Math.round(r.IP || 0) + '</td>' +
         '<td class="num">' + Math.round(r.K || 0) + '</td><td class="num">' + Math.round(r.SV || 0) + '</td>' +
         '<td class="num">' + Math.round(r.HLD || 0) + '</td><td class="num">' + (r.ERA || 0).toFixed(2) + '</td>' +
-        '<td class="num">' + (r.WHIP || 0).toFixed(2) + '</td></tr>';
+        '<td class="num">' + (r.WHIP || 0).toFixed(2) + '</td>' + act(rp.name, true) + '</tr>';
     }
     html += '</tbody></table>';
   }
 
-  // Not counted
-  const excl = [];
-  if (detail.il.length) excl.push('On IL (excluded): ' + detail.il.map(p => esc(p.name)).join(", "));
-  if (detail.benchedHitters.length) excl.push('Benched hitters (out-projected at every slot): ' + detail.benchedHitters.map(p => esc(p.name)).join(", "));
-  if (detail.noProj.length) excl.push('No projection in this source: ' + detail.noProj.map(p => esc(p.name)).join(", "));
-  if (excl.length) {
-    html += '<div class="small muted" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">';
-    html += excl.map(e => '<div>' + e + '</div>').join("");
-    html += '</div>';
+  // Manually benched + no-projection
+  const foot = [];
+  if (detail.sat.length) foot.push('Benched by you: ' + detail.sat.map(p => esc(p.name) + ' <a href="#" data-lo="auto" data-lo-name="' + esc(p.name) + '" style="color:var(--accent);">restore</a>').join(", "));
+  if (detail.noProj.length) foot.push('No projection in this source (not counted): ' + detail.noProj.map(p => esc(p.name)).join(", "));
+  if (foot.length) {
+    html += '<div class="small muted" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">' +
+      foot.map(e => '<div>' + e + '</div>').join("") + '</div>';
   }
 
   html += '</details></div>';
@@ -871,6 +944,24 @@ function wireStandings() {
   });
   const refresh = document.getElementById("std-refresh");
   if (refresh) refresh.addEventListener("click", loadStandingsData);
+
+  // Lineup overrides (Start / Bench / restore-to-auto) in the breakdown.
+  document.querySelectorAll("[data-lo]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      setLineupOverride(el.dataset.loName, el.dataset.lo);
+    });
+  });
+  const loReset = document.getElementById("lo-reset");
+  if (loReset) loReset.addEventListener("click", () => {
+    _standings.lineupOverride = { start: new Set(), sit: new Set() };
+    saveLineupOverride();
+    _standings.derivOpen = true;
+    recomputeStandings();
+    renderStandings();
+  });
+  const dd = document.getElementById("deriv-details");
+  if (dd) dd.addEventListener("toggle", () => { _standings.derivOpen = dd.open; });
 
   const drop = document.getElementById("wi-drop");
   if (drop) drop.addEventListener("change", () => { _standings.whatIf.dropName = drop.value || null; renderStandings(); });
