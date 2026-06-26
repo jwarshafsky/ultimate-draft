@@ -119,11 +119,18 @@ function _scalePitcher(r, f) {
     BBA: (r.BBA || 0) * f, K: (r.K || 0) * f, QS: (r.QS || 0) * f, GS: (r.GS || 0) * f };
 }
 
-// Return the ROS stat lines a team actually counts. `gsRemaining` = starts left
-// under the 200 cap (null/undefined = no cap).
-function optimizeStarters(poolPlayers, gsRemaining) {
-  const valid = (poolPlayers || []).filter(p => p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
+const SLOT_LABEL = { 0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 6: "MI", 7: "CI", 12: "UTIL" };
+
+// Build a team's counted lineup AND a human-readable breakdown of how it was
+// chosen. `gsRemaining` = starts left under the 200 cap (null = no cap).
+function buildLineup(poolPlayers, gsRemaining) {
+  const all = poolPlayers || [];
+  const il = all.filter(p => p.lineupSlotId === ESPN_IL_SLOT);
+  const valid = all.filter(p => p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
+  const noProj = all.filter(p => !p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
   const lines = [];
+  const detail = { hitters: [], benchedHitters: [], relievers: [], starters: [], il, noProj,
+    gsRemaining, spGsProjected: 0, spGsCounted: 0 };
 
   // Hitters → best legal lineup.
   const hitters = valid.filter(p => p.type === "H").map(p => ({ p, v: _hitValue(p.ros) })).sort((a, b) => b.v - a.v);
@@ -131,26 +138,38 @@ function optimizeStarters(poolPlayers, gsRemaining) {
   for (const s of LINEUP_HIT_SLOTS) open[s.id] = s.cap;
   for (const { p } of hitters) {
     const elig = new Set(p.eligibleSlots || []);
+    let placed = null;
     for (const sid of LINEUP_HIT_TRY) {
-      if (open[sid] > 0 && elig.has(sid)) { open[sid]--; lines.push(p.ros); break; }
+      if (open[sid] > 0 && elig.has(sid)) { open[sid]--; placed = sid; break; }
     }
+    if (placed != null) { lines.push(p.ros); detail.hitters.push({ name: p.name, slot: SLOT_LABEL[placed], ros: p.ros }); }
+    else detail.benchedHitters.push({ name: p.name, ros: p.ros });
   }
 
   // Pitchers → relievers all count; starters capped at the GS budget.
   const sps = [];
   for (const p of valid.filter(x => x.type === "P")) {
     const gs = p.ros.GS || 0;
-    if (gs >= 1) sps.push({ ros: p.ros, gs, vps: _pitValue(p.ros) / Math.max(1, gs) });
-    else lines.push(p.ros);   // reliever — all innings count
+    if (gs >= 1) { sps.push({ name: p.name, ros: p.ros, gs, vps: _pitValue(p.ros) / Math.max(1, gs) }); detail.spGsProjected += gs; }
+    else { lines.push(p.ros); detail.relievers.push({ name: p.name, ros: p.ros }); }
   }
   sps.sort((a, b) => b.vps - a.vps);   // best starters per start first
   let budget = (gsRemaining == null) ? Infinity : Math.max(0, gsRemaining);
   for (const s of sps) {
-    if (budget <= 0) break;
-    if (s.gs <= budget) { lines.push(s.ros); budget -= s.gs; }
-    else { lines.push(_scalePitcher(s.ros, budget / s.gs)); budget = 0; }
+    let counted = 0, frac = 0;
+    if (budget > 0) {
+      if (s.gs <= budget) { lines.push(s.ros); counted = s.gs; frac = 1; budget -= s.gs; }
+      else { frac = budget / s.gs; lines.push(_scalePitcher(s.ros, frac)); counted = budget; budget = 0; }
+    }
+    detail.spGsCounted += counted;
+    detail.starters.push({ name: s.name, gs: s.gs, counted, frac, ros: s.ros });
   }
-  return lines;
+  return { lines, detail };
+}
+
+// Return just the counted ROS stat lines (used by the engine builders).
+function optimizeStarters(poolPlayers, gsRemaining) {
+  return buildLineup(poolPlayers, gsRemaining).lines;
 }
 
 // Per-team pool: every rostered player paired with its ROS line.
@@ -313,6 +332,7 @@ function renderStandings() {
     if (_standings.mode !== "current") html += renderTitleOddsCard(_standings.computed, _standings.odds, me?.id);
     html += renderStandingsTable(_standings.computed, me?.id);
     if (me) html += renderGapCard(_standings.computed, me.id);
+    if (me && _standings.mode !== "current") html += renderDerivation(me.id);
     if (me && _standings.mode !== "current") html += renderWhatIfCard(me.id);
   }
 
@@ -423,6 +443,92 @@ function _fmtGap(cat, v) {
   if (cat === "OBP") return (v).toFixed(3).replace(/^0/, "");
   if (cat === "ERA" || cat === "WHIP") return v.toFixed(2);
   return Math.round(v).toString();
+}
+
+// Transparency: show exactly which players (and how much of each) build the
+// user's ROS totals — the optimized lineup, the GS-cap allocation, and what's
+// excluded. Collapsible so it doesn't dominate.
+function renderDerivation(myId) {
+  const pool = _standings.pool?.[myId] || [];
+  const gsUsed = (_standings.ytd?.gsUsed?.[myId]) || 0;
+  const gsRem = _standings.gsRemaining?.[myId];
+  const { lines, detail } = buildLineup(pool, gsRem);
+  const tot = aggregateTeamCats(lines);
+  const modeLbl = _standings.mode === "full" ? "Full-Season" : "Rest-of-Season";
+
+  let html = '<div class="card"><details><summary style="cursor:pointer;"><b>How your ' + modeLbl +
+    ' total is built</b> <span class="muted small">(' + esc(getRosSourceLabel(_standings.rosSource)) + ' projection)</span></summary>';
+
+  if (_standings.mode === "full") {
+    html += '<p class="muted small" style="margin-top:8px;">Full-Season = your <b>banked YTD</b> (ESPN actuals) + the rest-of-season projection broken down below.</p>';
+  }
+
+  // ROS category totals (matches the standings ROS contribution)
+  html += '<p class="muted small" style="margin-top:8px;">Rest-of-season totals from your projected lineup:</p>';
+  html += '<table style="font-size:12px;"><tbody><tr>';
+  for (const c of STANDINGS_CATS) html += '<th class="num">' + STANDINGS_CAT_LABELS[c] + '</th>';
+  html += '</tr><tr>';
+  for (const c of STANDINGS_CATS) html += '<td class="num">' + _fmtCat(c, tot[c]) + '</td>';
+  html += '</tr></tbody></table>';
+
+  // Hitters (13-slot lineup)
+  html += '<h3 style="margin-top:12px;">Hitters (best lineup)</h3>';
+  html += '<table style="font-size:12px;"><thead><tr><th>Slot</th><th>Player</th><th class="num">R</th><th class="num">HR</th><th class="num">RBI</th><th class="num">SB</th><th class="num">OBP</th><th class="num">PA</th></tr></thead><tbody>';
+  for (const h of detail.hitters) {
+    const r = h.ros;
+    html += '<tr><td class="muted">' + h.slot + '</td><td>' + esc(h.name) + '</td>' +
+      '<td class="num">' + Math.round(r.R || 0) + '</td><td class="num">' + Math.round(r.HR || 0) + '</td>' +
+      '<td class="num">' + Math.round(r.RBI || 0) + '</td><td class="num">' + Math.round(r.SB || 0) + '</td>' +
+      '<td class="num">' + (r.OBP || 0).toFixed(3).replace(/^0/, "") + '</td><td class="num">' + Math.round(r.PA || 0) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+
+  // Pitchers + GS cap
+  html += '<h3 style="margin-top:12px;">Pitchers</h3>';
+  html += '<p class="small ' + (detail.spGsProjected > (gsRem ?? 1e9) ? 'warn' : 'muted') + '">' +
+    'Games started: <b>' + Math.round(gsUsed) + '</b> used / ' + GS_CAP + ' cap → <b>' + Math.round(gsRem ?? 0) + '</b> left. ' +
+    'Your starters project <b>' + Math.round(detail.spGsProjected) + '</b> starts; <b>' + Math.round(detail.spGsCounted) + '</b> counted' +
+    (detail.spGsProjected > (gsRem ?? 1e9) ? ' (capped — lowest-value starts dropped).' : '.') + '</p>';
+  if (detail.starters.length) {
+    html += '<table style="font-size:12px;"><thead><tr><th>Starter</th><th class="num">GS proj</th><th class="num">GS counted</th><th class="num">IP</th><th class="num">K</th><th class="num">QS</th><th class="num">ERA</th><th class="num">WHIP</th></tr></thead><tbody>';
+    for (const s of detail.starters) {
+      const r = s.ros, dropped = s.counted <= 0, partial = s.frac > 0 && s.frac < 1;
+      const note = dropped ? ' <span class="bad small">(over cap)</span>' : partial ? ' <span class="warn small">(' + Math.round(s.frac * 100) + '%)</span>' : '';
+      html += '<tr' + (dropped ? ' class="muted"' : '') + '><td>' + esc(s.name) + note + '</td>' +
+        '<td class="num">' + Math.round(s.gs) + '</td><td class="num">' + (Math.round(s.counted * 10) / 10) + '</td>' +
+        '<td class="num">' + Math.round((r.IP || 0) * (dropped ? 0 : s.frac)) + '</td>' +
+        '<td class="num">' + Math.round((r.K || 0) * (dropped ? 0 : s.frac)) + '</td>' +
+        '<td class="num">' + Math.round((r.QS || 0) * (dropped ? 0 : s.frac)) + '</td>' +
+        '<td class="num">' + (r.ERA || 0).toFixed(2) + '</td><td class="num">' + (r.WHIP || 0).toFixed(2) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+  if (detail.relievers.length) {
+    html += '<p class="muted small" style="margin-top:8px;">Relievers (all innings count):</p>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Reliever</th><th class="num">IP</th><th class="num">K</th><th class="num">SV</th><th class="num">HLD</th><th class="num">ERA</th><th class="num">WHIP</th></tr></thead><tbody>';
+    for (const rp of detail.relievers) {
+      const r = rp.ros;
+      html += '<tr><td>' + esc(rp.name) + '</td><td class="num">' + Math.round(r.IP || 0) + '</td>' +
+        '<td class="num">' + Math.round(r.K || 0) + '</td><td class="num">' + Math.round(r.SV || 0) + '</td>' +
+        '<td class="num">' + Math.round(r.HLD || 0) + '</td><td class="num">' + (r.ERA || 0).toFixed(2) + '</td>' +
+        '<td class="num">' + (r.WHIP || 0).toFixed(2) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  // Not counted
+  const excl = [];
+  if (detail.il.length) excl.push('On IL (excluded): ' + detail.il.map(p => esc(p.name)).join(", "));
+  if (detail.benchedHitters.length) excl.push('Benched hitters (out-projected at every slot): ' + detail.benchedHitters.map(p => esc(p.name)).join(", "));
+  if (detail.noProj.length) excl.push('No projection in this source: ' + detail.noProj.map(p => esc(p.name)).join(", "));
+  if (excl.length) {
+    html += '<div class="small muted" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">';
+    html += excl.map(e => '<div>' + e + '</div>').join("");
+    html += '</div>';
+  }
+
+  html += '</details></div>';
+  return html;
 }
 
 // Unique player names on a team (from the canonical YTD roster).
