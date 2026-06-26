@@ -893,7 +893,13 @@ function _computeTradeImpact(myId, partner, send, recv) {
   const oddsA = simulateTitleOdds(afterLines, { sims: 2500, fracRemaining: frac });
   const team = (tid, gives, gets) => {
     const b = before.teams.find(t => t.teamId === tid), a = after.teams.find(t => t.teamId === tid);
-    return { name: _teamLabel(tid), gives, gets,
+    const catChanges = [];
+    for (const cat of STANDINGS_CATS) {
+      const delta = a.byCat[cat].points - b.byCat[cat].points;
+      if (Math.abs(delta) > 0.05) catChanges.push({ cat, delta });
+    }
+    catChanges.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+    return { name: _teamLabel(tid), gives, gets, catChanges,
       rotoB: b.rotoPoints, rotoA: a.rotoPoints, placeB: b.place, placeA: a.place,
       pB: oddsB.byTeam[tid]?.pFirst || 0, pA: oddsA.byTeam[tid]?.pFirst || 0 };
   };
@@ -916,10 +922,31 @@ function drawTradeImage(impact) {
     muted: "#9aa6b2", accent: "#4f8ef7", good: "#3fb950", bad: "#f85149", gold: "#ffd166" };
   const F = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
   const scale = 2, W = 1060, pad = 40, gap = 36, panelW = (W - pad * 2 - gap) / 2;
-  const nP = impact.me.gives.length + impact.me.gets.length;
   const rowH = 27, headerH = 116, footerH = 46;
+  const round1 = n => Math.round(n * 10) / 10;
+
+  // Wrap each team's category-point changes into colored tokens.
+  const meas = document.createElement("canvas").getContext("2d");
+  const catTok = c => STANDINGS_CAT_LABELS[c.cat] + " " + (c.delta > 0 ? "+" : "") + round1(c.delta);
+  meas.font = "600 14px " + F;
+  const sepW = meas.measureText("    ").width, catMaxW = panelW - 48;
+  const wrapCats = (changes) => {
+    const lines = []; let line = [], x = 0;
+    for (const c of changes) {
+      const tok = { text: catTok(c), good: c.delta > 0, x: 0 };
+      const w = meas.measureText(tok.text).width;
+      if (line.length && x + w > catMaxW) { lines.push(line); line = []; x = 0; }
+      tok.x = x; line.push(tok); x += w + sepW;
+    }
+    if (line.length) lines.push(line);
+    return lines;
+  };
+  const meLines = wrapCats(impact.me.catChanges), pLines = wrapCats(impact.partner.catChanges);
+  const catLines = Math.max(meLines.length, pLines.length);
+  const catSectionH = catLines ? 44 + catLines * 24 : 0;
+
   const panelH = 36 + 28 + (26 + Math.max(1, impact.me.gives.length) * rowH) + 6 +
-    (26 + Math.max(1, impact.me.gets.length) * rowH) + 34 + 3 * 48 + 16;
+    (26 + Math.max(1, impact.me.gets.length) * rowH) + 34 + 3 * 48 + catSectionH + 16;
   const H = headerH + panelH + footerH;
 
   const cv = document.createElement("canvas");
@@ -934,12 +961,11 @@ function drawTradeImage(impact) {
   ctx.fillStyle = C.muted; font(400, 15);
   ctx.fillText(impact.modeLbl + " projection · " + impact.source, W / 2, 82);
 
-  const round1 = n => Math.round(n * 10) / 10;
   const dRoto = d => (d > 0 ? "+" : "") + round1(d);
   const dPlace = d => d > 0 ? "+" + d + " ▲" : d < 0 ? d + " ▼" : "even";   // d = placeB - placeA (up = +)
   const dPP = d => (d > 0 ? "+" : "") + Math.round(d * 100) + "pp";
 
-  const panel = (x, t) => {
+  const panel = (x, t, lines) => {
     const y = headerH;
     _roundRect(ctx, x, y, panelW, panelH, 14); ctx.fillStyle = C.panel; ctx.fill();
     ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.stroke();
@@ -969,9 +995,22 @@ function drawTradeImage(impact) {
     metric("ROTO POINTS", round1(t.rotoB), round1(t.rotoA), t.rotoA - t.rotoB, dRoto(t.rotoA - t.rotoB));
     metric("STANDING", ordinal(t.placeB), ordinal(t.placeA), t.placeB - t.placeA, dPlace(t.placeB - t.placeA));
     metric("🏆 TITLE ODDS", _pct(t.pB), _pct(t.pA), t.pA - t.pB, dPP(t.pA - t.pB), true);
+
+    if (catSectionH) {
+      ctx.textAlign = "left";
+      ctx.strokeStyle = C.border; ctx.beginPath(); ctx.moveTo(x + 24, cy); ctx.lineTo(x + panelW - 24, cy); ctx.stroke();
+      cy += 22;
+      ctx.fillStyle = C.muted; font(600, 12); ctx.fillText("CATEGORY POINTS (Δ)", x + 24, cy); cy += 22;
+      font(600, 14);
+      if (!lines.length) { ctx.fillStyle = C.muted; ctx.fillText("no change", x + 24, cy); }
+      for (const ln of lines) {
+        for (const tok of ln) { ctx.fillStyle = tok.good ? C.good : C.bad; ctx.fillText(tok.text, x + 24 + tok.x, cy); }
+        cy += 24;
+      }
+    }
   };
-  panel(pad, impact.me);
-  panel(pad + panelW + gap, impact.partner);
+  panel(pad, impact.me, meLines);
+  panel(pad + panelW + gap, impact.partner, pLines);
 
   ctx.textAlign = "center"; ctx.fillStyle = C.muted; font(400, 13);
   ctx.fillText("Ultimate Draft · " + new Date().toLocaleDateString(), W / 2, H - 18);
