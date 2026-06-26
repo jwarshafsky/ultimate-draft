@@ -71,6 +71,12 @@ async function loadStandingsData() {
 function recomputeStandings() {
   if (!_standings.ytd) { _standings.computed = null; return; }
   _buildPool();
+  // Remaining games-started budget per team under the 200 GS cap.
+  const used = _standings.ytd.gsUsed || {};
+  _standings.gsRemaining = {};
+  for (const tid of Object.keys(_standings.ytd.rosters || {})) {
+    _standings.gsRemaining[tid] = Math.max(0, GS_CAP - (used[tid] || 0));
+  }
   const built = buildEngineRosters();
   _standings.built = built.rosters;
   _standings.coverage = built.coverage;
@@ -79,20 +85,22 @@ function recomputeStandings() {
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
 }
 
-// --- Optimal starting lineup --------------------------------------------
-// Roto only counts players in active lineup slots, so ROS/Full project each
-// team's BEST legal lineup (fill the league's starting slots with the highest-
-// projected eligible players), excluding the IL. Bench players count only if
-// they out-project a starter at a slot they qualify for.
-//   hitters: C(0) 1B(1) 2B(2) 3B(3) SS(4) OF(5)x5 MI(6) CI(7) UTIL(12) = 13
-//   pitchers: 9 generic P slots          IL = slot 17 (excluded)
+// --- Optimal lineup -----------------------------------------------------
+// HITTERS: roto only counts active lineup slots, so project each team's best
+// legal lineup (fill the starting slots with the highest-projected eligible
+// players, IL excluded).
+//   C(0) 1B(1) 2B(2) 3B(3) SS(4) OF(5)x5 MI(6) CI(7) UTIL(12) = 13
+// PITCHERS: every pitcher pitches — relievers' innings all count; starters are
+// capped by the league's 200 games-started limit (ESPN statId 33). For ROS we
+// allocate the team's REMAINING starts (200 − GS used) to its best starters by
+// value-per-start, pro-rating the marginal one. IL excluded.
 const LINEUP_HIT_SLOTS = [
   { id: 0, cap: 1 }, { id: 1, cap: 1 }, { id: 2, cap: 1 }, { id: 3, cap: 1 },
   { id: 4, cap: 1 }, { id: 5, cap: 5 }, { id: 6, cap: 1 }, { id: 7, cap: 1 }, { id: 12, cap: 1 },
 ];
 const LINEUP_HIT_TRY = [0, 1, 2, 3, 4, 5, 6, 7, 12]; // dedicated first, UTIL last
-const LINEUP_P_SLOTS = 9;
 const ESPN_IL_SLOT = 17;
+const GS_CAP = 200;   // league games-started cap (ESPN lineupSlotStatLimits statId 33)
 
 function _hitValue(r) {
   return (r.R || 0) * 0.7 + (r.RBI || 0) * 0.7 + (r.HR || 0) * 1.3 + (r.SB || 0) * 1.4 +
@@ -104,23 +112,44 @@ function _pitValue(r) {
     Math.max(0, 4.20 - (r.ERA || 9)) * ip * 0.3 + Math.max(0, 1.28 - (r.WHIP || 9)) * ip * 0.5;
 }
 
-// Return the ROS stat lines of a team's optimal starting lineup from its pool
-// (players carry {type, eligibleSlots, lineupSlotId, ros}). Excludes IL and
-// anyone without a projection.
-function optimizeStarters(poolPlayers) {
+// Scale a pitcher's counting stats by f (for a starter only partly within the
+// remaining GS budget). Rates (ERA/WHIP) are derived from the scaled ER/IP.
+function _scalePitcher(r, f) {
+  return { ...r, IP: (r.IP || 0) * f, ER: (r.ER || 0) * f, HA: (r.HA || 0) * f,
+    BBA: (r.BBA || 0) * f, K: (r.K || 0) * f, QS: (r.QS || 0) * f, GS: (r.GS || 0) * f };
+}
+
+// Return the ROS stat lines a team actually counts. `gsRemaining` = starts left
+// under the 200 cap (null/undefined = no cap).
+function optimizeStarters(poolPlayers, gsRemaining) {
   const valid = (poolPlayers || []).filter(p => p.ros && p.lineupSlotId !== ESPN_IL_SLOT);
+  const lines = [];
+
+  // Hitters → best legal lineup.
   const hitters = valid.filter(p => p.type === "H").map(p => ({ p, v: _hitValue(p.ros) })).sort((a, b) => b.v - a.v);
-  const pitchers = valid.filter(p => p.type === "P").map(p => ({ p, v: _pitValue(p.ros) })).sort((a, b) => b.v - a.v);
   const open = {};
   for (const s of LINEUP_HIT_SLOTS) open[s.id] = s.cap;
-  const lines = [];
   for (const { p } of hitters) {
     const elig = new Set(p.eligibleSlots || []);
     for (const sid of LINEUP_HIT_TRY) {
       if (open[sid] > 0 && elig.has(sid)) { open[sid]--; lines.push(p.ros); break; }
     }
   }
-  for (const { p } of pitchers.slice(0, LINEUP_P_SLOTS)) lines.push(p.ros);
+
+  // Pitchers → relievers all count; starters capped at the GS budget.
+  const sps = [];
+  for (const p of valid.filter(x => x.type === "P")) {
+    const gs = p.ros.GS || 0;
+    if (gs >= 1) sps.push({ ros: p.ros, gs, vps: _pitValue(p.ros) / Math.max(1, gs) });
+    else lines.push(p.ros);   // reliever — all innings count
+  }
+  sps.sort((a, b) => b.vps - a.vps);   // best starters per start first
+  let budget = (gsRemaining == null) ? Infinity : Math.max(0, gsRemaining);
+  for (const s of sps) {
+    if (budget <= 0) break;
+    if (s.gs <= budget) { lines.push(s.ros); budget -= s.gs; }
+    else { lines.push(_scalePitcher(s.ros, budget / s.gs)); budget = 0; }
+  }
   return lines;
 }
 
@@ -152,7 +181,8 @@ function _faToPoolPlayer(fa) {
 function _teamLinesFromPool(tid, poolPlayers) {
   const ytdTeam = _standings.ytd?.ytdTeam || {};
   if (_standings.mode === "current") return (ytdTeam[tid] || []).slice();
-  const starters = optimizeStarters(poolPlayers).map(r => {
+  const gsRem = _standings.gsRemaining ? _standings.gsRemaining[tid] : null;
+  const starters = optimizeStarters(poolPlayers, gsRem).map(r => {
     if (_standings.mode === "full") r._ros = true; else delete r._ros;
     return r;
   });
@@ -262,7 +292,7 @@ function renderStandings() {
       const cv = _standings.coverage;
       const pctMatched = cv.total ? Math.round(cv.matched / cv.total * 100) : 0;
       html += '<p class="small ' + (pctMatched >= 80 ? 'muted' : 'warn') + '" style="margin-top:8px;">' +
-        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · projecting each team’s best starting lineup (13 hitters + 9 pitchers, IL excluded) · ' +
+        'Projection: <b>' + esc(getRosSourceLabel(_standings.rosSource)) + '</b> · best lineup: 13 hitters + all pitchers (starters capped at 200 GS/season), IL excluded · ' +
         cv.matched + '/' + cv.total + ' active players have a projection (' + pctMatched + '%).</p>';
     }
   }

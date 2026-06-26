@@ -91,7 +91,7 @@ function importRosPitchers(sourceId, text) {
     out.push({
       name,
       K: toNum(pickCol(r, ["SO", "K"])), QS: toNum(pickCol(r, ["QS"])),
-      SV: toNum(pickCol(r, ["SV", "S"])), HLD: toNum(pickCol(r, ["HLD", "HD"])),
+      SV: toNum(pickCol(r, ["SV", "S"])), HLD: toNum(pickCol(r, ["HLD", "HD"])), GS: toNum(pickCol(r, ["GS"])),
       IP: toNum(pickCol(r, ["IP"])), ERA: toNum(pickCol(r, ["ERA"])), WHIP: toNum(pickCol(r, ["WHIP"])),
       ER: toNum(pickCol(r, ["ER"])), HA: toNum(pickCol(r, ["H"])), BBA: toNum(pickCol(r, ["BB"])),
     });
@@ -129,7 +129,7 @@ function importRosJSON(sourceId, kind, text) {
   const d = _ensureSource(sourceId);
   if (kind === "pit") {
     d.pitchers = arr.filter(nm).map(o => ({
-      name: nm(o), K: n(o, "SO"), QS: n(o, "QS"), SV: n(o, "SV"), HLD: n(o, "HLD"),
+      name: nm(o), K: n(o, "SO"), QS: n(o, "QS"), SV: n(o, "SV"), HLD: n(o, "HLD"), GS: n(o, "GS"),
       IP: n(o, "IP"), ERA: n(o, "ERA"), WHIP: n(o, "WHIP"), ER: n(o, "ER"), HA: n(o, "H"), BBA: n(o, "BB"),
     }));
   } else {
@@ -172,7 +172,7 @@ function getRosLine(sourceId, name, type) {
   if (type === "P") {
     const p = idx.P.get(key);
     if (!p) return null;
-    return { name: p.name, type: "P", K: p.K, QS: p.QS, SV: p.SV, HLD: p.HLD,
+    return { name: p.name, type: "P", K: p.K, QS: p.QS, SV: p.SV, HLD: p.HLD, GS: p.GS || 0,
       IP: p.IP, ER: p.ER || null, HA: p.HA || null, BBA: p.BBA || null, ERA: p.ERA, WHIP: p.WHIP };
   }
   const h = idx.H.get(key);

@@ -78,7 +78,7 @@ function renderData() {
   html += '<div class="grid cols-2" style="margin-top:8px;">';
   html += '<div><textarea id="ros-hit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Hitters CSV: Name,PA,AB,H,R,HR,RBI,SB,BB,OBP"></textarea>';
   html += '<div style="margin-top:6px;"><button class="btn" id="ros-hit-import" style="width:auto;">Import hitters CSV</button> <input type="file" id="ros-hit-file" accept=".csv,text/csv"></div></div>';
-  html += '<div><textarea id="ros-pit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Pitchers CSV: Name,IP,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
+  html += '<div><textarea id="ros-pit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Pitchers CSV: Name,IP,GS,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
   html += '<div style="margin-top:6px;"><button class="btn" id="ros-pit-import" style="width:auto;">Import pitchers CSV</button> <input type="file" id="ros-pit-file" accept=".csv,text/csv"></div></div>';
   html += '</div></details>';
   html += '</div>';

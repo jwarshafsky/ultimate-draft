@@ -79,7 +79,7 @@ const ESPN_STAT_ID = {
   // hitting
   AB: 0, H: 1, HR: 5, BB: 10, HBP: 12, SF: 13, PA: 16, OBP: 17, R: 20, RBI: 21, SB: 23,
   // pitching
-  IP_OUTS: 34, P_H: 37, P_BB: 39, WHIP: 41, ER: 45, ERA: 47, K: 48, W: 53, SV: 57, HLD: 60, QS: 63,
+  GS: 33, IP_OUTS: 34, P_H: 37, P_BB: 39, WHIP: 41, ER: 45, ERA: 47, K: 48, W: 53, SV: 57, HLD: 60, QS: 63,
 };
 
 // Pull a number out of an ESPN stat map by id (returns null if absent).
@@ -236,6 +236,7 @@ function parseEspnRosters(data, sourceId) {
   const teamMeta = {};
   const ytdTeam = {};
   const espnPoints = {};
+  const gsUsed = {};     // team's games-started used this season (for the 200 GS cap)
   for (const t of (data.teams || [])) {
     const ourId = espnTeamIdToOwnerId(t.id);
     if (!ourId) continue;
@@ -245,6 +246,8 @@ function parseEspnRosters(data, sourceId) {
       .filter(Boolean);
     const ytdLines = _buildYtdTeamLines(t.valuesByStat);
     if (ytdLines) ytdTeam[ourId] = ytdLines;
+    const vbs = t.valuesByStat || {};
+    gsUsed[ourId] = (vbs[ESPN_STAT_ID.GS] != null ? vbs[ESPN_STAT_ID.GS] : vbs[String(ESPN_STAT_ID.GS)]) || 0;
     if (typeof t.points === "number") espnPoints[ourId] = t.points;
     teamMeta[ourId] = {
       espnId: t.id,
@@ -253,7 +256,7 @@ function parseEspnRosters(data, sourceId) {
       playerCount: rosters[ourId].length,
     };
   }
-  return { rosters, teamMeta, ytdTeam, espnPoints, season, sourceId };
+  return { rosters, teamMeta, ytdTeam, espnPoints, gsUsed, season, sourceId };
 }
 
 // Fetch the available-player pool (kona_player_info) for what-if "add" moves,
