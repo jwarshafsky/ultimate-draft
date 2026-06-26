@@ -883,6 +883,101 @@ function renderAddDropPanel(myId) {
   return html;
 }
 
+// --- Shareable trade image ----------------------------------------------
+// Recompute both teams' before/after roto, standing, and title odds for a trade.
+function _computeTradeImpact(myId, partner, send, recv) {
+  const afterLines = _afterLines(_poolsAfterTrade(myId, partner, send, recv));
+  const before = _standings.computed, after = computeStandings(afterLines);
+  const frac = seasonFractionRemaining();
+  const oddsB = simulateTitleOdds(_standings.built, { sims: 2500, fracRemaining: frac });
+  const oddsA = simulateTitleOdds(afterLines, { sims: 2500, fracRemaining: frac });
+  const team = (tid, gives, gets) => {
+    const b = before.teams.find(t => t.teamId === tid), a = after.teams.find(t => t.teamId === tid);
+    return { name: _teamLabel(tid), gives, gets,
+      rotoB: b.rotoPoints, rotoA: a.rotoPoints, placeB: b.place, placeA: a.place,
+      pB: oddsB.byTeam[tid]?.pFirst || 0, pA: oddsA.byTeam[tid]?.pFirst || 0 };
+  };
+  return {
+    me: team(myId, send, recv), partner: team(partner, recv, send),
+    modeLbl: _standings.mode === "full" ? "Full-Season" : "Rest-of-Season",
+    source: getRosSourceLabel(_standings.rosSource),
+  };
+}
+
+function _roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+// Draw the trade card to a canvas and return a PNG data URL.
+function drawTradeImage(impact) {
+  const C = { bg: "#0e1116", panel: "#161b22", border: "#2a3340", text: "#e6edf3",
+    muted: "#9aa6b2", accent: "#4f8ef7", good: "#3fb950", bad: "#f85149", gold: "#ffd166" };
+  const F = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+  const scale = 2, W = 1060, pad = 40, gap = 36, panelW = (W - pad * 2 - gap) / 2;
+  const nP = impact.me.gives.length + impact.me.gets.length;
+  const rowH = 27, headerH = 116, footerH = 46;
+  const panelH = 36 + 28 + (26 + Math.max(1, impact.me.gives.length) * rowH) + 6 +
+    (26 + Math.max(1, impact.me.gets.length) * rowH) + 34 + 3 * 48 + 16;
+  const H = headerH + panelH + footerH;
+
+  const cv = document.createElement("canvas");
+  cv.width = W * scale; cv.height = H * scale;
+  const ctx = cv.getContext("2d");
+  ctx.scale(scale, scale);
+  const font = (w, s) => { ctx.font = w + " " + s + "px " + F; };
+
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = "center";
+  ctx.fillStyle = C.accent; font(700, 34); ctx.fillText("⇄ TRADE PROPOSAL", W / 2, 56);
+  ctx.fillStyle = C.muted; font(400, 15);
+  ctx.fillText(impact.modeLbl + " projection · " + impact.source, W / 2, 82);
+
+  const round1 = n => Math.round(n * 10) / 10;
+  const dRoto = d => (d > 0 ? "+" : "") + round1(d);
+  const dPlace = d => d > 0 ? "+" + d + " ▲" : d < 0 ? d + " ▼" : "even";   // d = placeB - placeA (up = +)
+  const dPP = d => (d > 0 ? "+" : "") + Math.round(d * 100) + "pp";
+
+  const panel = (x, t) => {
+    const y = headerH;
+    _roundRect(ctx, x, y, panelW, panelH, 14); ctx.fillStyle = C.panel; ctx.fill();
+    ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.stroke();
+    ctx.textAlign = "left";
+    let cy = y + 36;
+    ctx.fillStyle = C.text; font(700, 22); ctx.fillText(t.name, x + 24, cy); cy += 30;
+    const list = (label, color, players) => {
+      ctx.fillStyle = color; font(600, 13); ctx.fillText(label, x + 24, cy); cy += 24;
+      ctx.fillStyle = C.text; font(400, 16);
+      if (!players.length) { ctx.fillStyle = C.muted; ctx.fillText("—", x + 32, cy); cy += rowH; }
+      for (const p of players) { ctx.fillText("•  " + p, x + 32, cy); cy += rowH; }
+      cy += 4;
+    };
+    list("▼ GIVES UP", C.bad, t.gives);
+    list("▲ RECEIVES", C.good, t.gets);
+    cy += 4;
+    ctx.strokeStyle = C.border; ctx.beginPath(); ctx.moveTo(x + 24, cy); ctx.lineTo(x + panelW - 24, cy); ctx.stroke();
+    cy += 26;
+    const metric = (label, bS, aS, delta, dStr, big) => {
+      ctx.textAlign = "left"; ctx.fillStyle = C.muted; font(600, 12); ctx.fillText(label, x + 24, cy);
+      ctx.fillStyle = C.text; font(big ? 700 : 600, big ? 19 : 16);
+      ctx.fillText(bS + "  →  " + aS, x + 24, cy + 22);
+      ctx.textAlign = "right"; ctx.fillStyle = delta > 0.0001 ? C.good : delta < -0.0001 ? C.bad : C.muted;
+      font(700, big ? 18 : 15); ctx.fillText(dStr, x + panelW - 24, cy + 22);
+      cy += 48;
+    };
+    metric("ROTO POINTS", round1(t.rotoB), round1(t.rotoA), t.rotoA - t.rotoB, dRoto(t.rotoA - t.rotoB));
+    metric("STANDING", ordinal(t.placeB), ordinal(t.placeA), t.placeB - t.placeA, dPlace(t.placeB - t.placeA));
+    metric("🏆 TITLE ODDS", _pct(t.pB), _pct(t.pA), t.pA - t.pB, dPP(t.pA - t.pB), true);
+  };
+  panel(pad, impact.me);
+  panel(pad + panelW + gap, impact.partner);
+
+  ctx.textAlign = "center"; ctx.fillStyle = C.muted; font(400, 13);
+  ctx.fillText("Ultimate Draft · " + new Date().toLocaleDateString(), W / 2, H - 18);
+  return cv.toDataURL("image/png");
+}
+
 // --- Trade what-if -------------------------------------------------------
 function renderTradePanel(myId) {
   const teams = LEAGUE.teams.filter(t => t.id !== myId);
@@ -950,6 +1045,11 @@ function renderTradePanel(myId) {
       html += '</tr>';
     }
     html += '</tbody></table>';
+
+    // Shareable image
+    html += '<div style="margin-top:10px;"><button class="btn primary" id="tr-image">📸 Generate shareable image</button> ' +
+      '<span class="muted small" id="tr-image-status"></span></div>';
+    html += '<div id="tr-image-preview" style="margin-top:8px;"></div>';
 
     // My per-category point swing
     const bMe = before.teams.find(t => t.teamId === myId), aMe = aft.teams.find(t => t.teamId === myId);
@@ -1157,6 +1257,24 @@ function wireStandings() {
   });
   const trClear = document.getElementById("tr-clear");
   if (trClear) trClear.addEventListener("click", () => { _standings.trade.send = []; _standings.trade.recv = []; renderStandings(); });
+  const trImg = document.getElementById("tr-image");
+  if (trImg) trImg.addEventListener("click", () => {
+    const me = getMyTeam(), t = _standings.trade;
+    if (!me || (!t.send.length && !t.recv.length)) return;
+    const status = document.getElementById("tr-image-status");
+    if (status) status.textContent = "Rendering…";
+    setTimeout(() => {
+      try {
+        const url = drawTradeImage(_computeTradeImpact(me.id, t.partner, t.send, t.recv));
+        const prev = document.getElementById("tr-image-preview");
+        if (prev) prev.innerHTML = '<img src="' + url + '" alt="trade card" style="max-width:100%;border:1px solid var(--border);border-radius:10px;">';
+        const a = document.createElement("a");
+        a.href = url; a.download = "trade-" + _teamLabel(me.id) + "-" + _teamLabel(t.partner) + ".png";
+        document.body.appendChild(a); a.click(); a.remove();
+        if (status) status.textContent = "Saved as PNG — or right-click the image to copy.";
+      } catch (e) { if (status) status.textContent = "Image error: " + (e.message || e); }
+    }, 20);
+  });
 
   // Best Pickups
   const pkLoad = document.getElementById("pk-load");
