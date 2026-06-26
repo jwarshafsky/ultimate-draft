@@ -286,7 +286,7 @@ function _buildPool() {
   const rosters = _standings.ytd?.rosters || {};
   const src = _standings.rosSource;
   const pool = {};
-  const mk = (p, type, ros) => ({ name: p.name, type, eligibleSlots: p.eligibleSlots || [], lineupSlotId: p.lineupSlotId, ros });
+  const mk = (p, type, ros) => ({ name: p.name, type, eligibleSlots: p.eligibleSlots || [], lineupSlotId: p.lineupSlotId, injuryStatus: p.injuryStatus, ros });
   for (const [tid, players] of Object.entries(rosters)) {
     const arr = [];
     for (const p of players) {
@@ -686,34 +686,41 @@ function renderDerivation(myId) {
   return html;
 }
 
-// Projection coverage: every rostered player with NO projection — a hitter with
-// no projected PA, or a pitcher with no projected IP. (Likely an incomplete
-// import or a name mismatch; injured/out players legitimately have none.)
-function _coverageFlags(myId) {
-  const out = [];
-  if (!_standings.pool) return out;
-  for (const [tid, players] of Object.entries(_standings.pool)) {
-    for (const p of players) {
-      const missing = p.type === "H"
-        ? !(p.ros && (p.ros.PA || 0) > 0)
-        : !(p.ros && (p.ros.IP || 0) > 0);
-      if (missing) out.push({ name: p.name, owner: _teamLabel(tid), mine: tid === myId, type: p.type });
-    }
-  }
-  return out;
+// Is a rostered player injured (on the IL or carrying a DL/OUT status)? Such a
+// player legitimately has no projection — expected, not a data error.
+function _isInjured(p) {
+  if (p.lineupSlotId === ESPN_IL_SLOT) return true;
+  const s = p.injuryStatus || "";
+  return /DL|IL|OUT/.test(s);   // SIXTY_DAY_DL, TEN_DAY_DL, OUT, etc. (not DAY_TO_DAY/ACTIVE)
 }
 
-// Auto-banner shown above the standings whenever rostered players are missing a
-// projection — so an incomplete import can't silently skew the numbers.
+// Rostered players with NO projection (hitter: no PA, pitcher: no IP), split
+// into `active` (likely a data problem to fix) and `injured` (expected).
+function _coverageFlags(myId) {
+  const active = [], injured = [];
+  if (!_standings.pool) return { active, injured };
+  for (const [tid, players] of Object.entries(_standings.pool)) {
+    for (const p of players) {
+      const missing = p.type === "H" ? !(p.ros && (p.ros.PA || 0) > 0) : !(p.ros && (p.ros.IP || 0) > 0);
+      if (!missing) continue;
+      const row = { name: p.name, owner: _teamLabel(tid), mine: tid === myId, type: p.type };
+      (_isInjured(p) ? injured : active).push(row);
+    }
+  }
+  return { active, injured };
+}
+
+// Auto-banner — only for ACTIVE players missing a projection (a real import gap).
+// Injured/out players are expected and don't trigger it.
 function renderCoverageBanner(myId) {
   if (_standings.mode === "current" || !firstLoadedRosSource()) return "";
-  const missing = _coverageFlags(myId);
-  if (!missing.length) return "";
-  const mine = missing.filter(m => m.mine).map(m => m.name + (m.type === "P" ? " (pitching)" : ""));
+  const { active } = _coverageFlags(myId);
+  if (!active.length) return "";
+  const mine = active.filter(m => m.mine).map(m => m.name + (m.type === "P" ? " (pitching)" : ""));
   let html = '<div class="card" style="border-color: rgba(248,81,73,.55); background: rgba(248,81,73,.06);">';
-  html += '<p class="bad" style="margin:0;"><b>⚠ ' + missing.length + ' rostered player' + (missing.length === 1 ? '' : 's') +
+  html += '<p class="bad" style="margin:0;"><b>⚠ ' + active.length + ' healthy rostered player' + (active.length === 1 ? '' : 's') +
     ' have no projection</b> in ' + esc(getRosSourceLabel(_standings.rosSource)) +
-    ' — likely an incomplete import (these players score zero). Injured/out players are expected.</p>';
+    ' — likely an incomplete import or name mismatch (these players score zero).</p>';
   if (mine.length) html += '<p class="small" style="margin:4px 0 0;">On your team: <b>' + mine.map(esc).join(", ") + '</b>.</p>';
   html += '<p class="small muted" style="margin:4px 0 0;">Re-import this source via <b>file upload</b> on the Data tab. Full list in “Projection coverage” below.</p>';
   html += '</div>';
@@ -722,23 +729,35 @@ function renderCoverageBanner(myId) {
 
 function renderCoverageAudit(myId) {
   if (!_standings.pool) return "";
-  const flagged = _coverageFlags(myId);
-  if (!flagged.length) {
-    return '<div class="card"><p class="small good">✓ Projection coverage complete — every rostered player has a projection.</p></div>';
+  const { active, injured } = _coverageFlags(myId);
+  if (!active.length && !injured.length) {
+    return '<div class="card"><p class="small good">✓ Projection coverage complete — every healthy rostered player has a projection.</p></div>';
   }
-  flagged.sort((a, b) => (b.mine - a.mine) || (a.owner < b.owner ? -1 : 1));   // your team first
+  const sortFn = (a, b) => (b.mine - a.mine) || (a.owner < b.owner ? -1 : 1);
+  active.sort(sortFn); injured.sort(sortFn);
+  const nameCell = (f) => '<td' + (f.mine ? ' style="font-weight:600;"' : '') + '>' + esc(f.name) +
+    (f.type === "P" ? ' <span class="muted small">(pitching)</span>' : '') + (f.mine ? ' ◄' : '') + '</td>' +
+    '<td class="muted small">' + esc(f.owner) + '</td>';
 
-  let html = '<div class="card"><details open><summary style="cursor:pointer;"><b>Projection coverage</b> ' +
-    '<span class="small bad">' + flagged.length + ' missing</span></summary>';
-  html += '<p class="muted small" style="margin-top:8px;">Rostered players with no projection (hitters: no PA · pitchers: no IP). Usually an incomplete import or name mismatch — re-import that source. Injured/out players legitimately have none.</p>';
-  html += '<div style="overflow-x:auto;"><table style="font-size:12px;"><thead><tr><th>Player</th><th>Team</th></tr></thead><tbody>';
-  for (const f of flagged) {
-    html += '<tr' + (f.mine ? ' style="font-weight:600;"' : '') + '>';
-    html += '<td>' + esc(f.name) + (f.type === "P" ? ' <span class="muted small">(pitching)</span>' : '') + (f.mine ? ' ◄' : '') + '</td>';
-    html += '<td class="muted small">' + esc(f.owner) + '</td></tr>';
+  let html = '<div class="card"><details' + (active.length ? ' open' : '') + '><summary style="cursor:pointer;"><b>Projection coverage</b> ' +
+    '<span class="small ' + (active.length ? 'bad' : 'good') + '">' + active.length + ' to fix</span>' +
+    (injured.length ? ' <span class="small muted">· ' + injured.length + ' injured (expected)</span>' : '') + '</summary>';
+
+  if (active.length) {
+    html += '<p class="muted small" style="margin-top:8px;"><b>Healthy players with no projection</b> — likely an incomplete import or name mismatch. Re-import that source (file upload). Tell me any names that should match and I’ll fix the matcher.</p>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Player</th><th>Team</th></tr></thead><tbody>';
+    for (const f of active) html += '<tr>' + nameCell(f) + '</tr>';
+    html += '</tbody></table>';
+  } else {
+    html += '<p class="small good" style="margin-top:8px;">✓ Every healthy rostered player has a projection.</p>';
   }
-  html += '</tbody></table></div>';
-  html += '<p class="muted small" style="margin-top:6px;">Fix by re-importing on the <b>Data</b> tab (use file upload for the big JSON to avoid paste truncation).</p>';
+
+  if (injured.length) {
+    html += '<details style="margin-top:10px;"><summary class="muted small" style="cursor:pointer;">' + injured.length + ' injured / IL players with no projection (expected — they’re out)</summary>';
+    html += '<table style="font-size:12px; margin-top:6px;"><tbody>';
+    for (const f of injured) html += '<tr>' + nameCell(f) + '</tr>';
+    html += '</tbody></table></details>';
+  }
   html += '</details></div>';
   return html;
 }

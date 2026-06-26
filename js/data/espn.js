@@ -158,7 +158,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
     const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
     return {
       name, espnId: player.id, type: "P", pctOwned, pos, eligibleSlots: slots, twoWay,
-      lineupSlotId: entry.lineupSlotId,
+      injuryStatus: player.injuryStatus || null, lineupSlotId: entry.lineupSlotId,
       K: _statById(m, ESPN_STAT_ID.K) || 0,
       QS: _statById(m, ESPN_STAT_ID.QS) || 0,
       SV: _statById(m, ESPN_STAT_ID.SV) || 0,
@@ -174,7 +174,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   }
   return {
     name, espnId: player.id, type: "H", pctOwned, pos, eligiblePos, eligibleSlots: slots, twoWay,
-    lineupSlotId: entry.lineupSlotId,
+    injuryStatus: player.injuryStatus || null, lineupSlotId: entry.lineupSlotId,
     R: _statById(m, ESPN_STAT_ID.R) || 0,
     HR: _statById(m, ESPN_STAT_ID.HR) || 0,
     RBI: _statById(m, ESPN_STAT_ID.RBI) || 0,
