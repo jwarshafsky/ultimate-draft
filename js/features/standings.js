@@ -399,6 +399,7 @@ function renderStandings() {
   html += '</div>';
 
   if (_standings.computed) {
+    html += renderCoverageBanner(me?.id);   // auto-flag incomplete projections
     // Title odds & what-if are about the FINISH — only meaningful once a
     // projection is layered on (Rest of Season / Full Season). Current mode is
     // a snapshot of what's already banked.
@@ -642,21 +643,46 @@ function renderDerivation(myId) {
 // (likely a name/paste problem) or LOW PA (verify it's a real injury/bench
 // role). Helps catch incomplete pastes and bad matches across the whole league.
 const COVERAGE_LOW_PA = 250;     // ROS hitter PA below this is "low — verify"
-function renderCoverageAudit(myId) {
-  if (!_standings.pool) return "";
-  const flagged = [];
+// Scan every rostered player for a MISSING projection (likely a truncated import
+// or name mismatch) or LOW PA (verify it's a real injury/bench role).
+function _coverageFlags(myId) {
+  const out = [];
+  if (!_standings.pool) return out;
   for (const [tid, players] of Object.entries(_standings.pool)) {
     for (const p of players) {
       const mine = tid === myId;
       if (p.type === "H") {
         const pa = p.ros ? (p.ros.PA || 0) : null;
-        if (pa == null || pa === 0) flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "—" });
-        else if (pa < COVERAGE_LOW_PA) flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "low", pa, metric: Math.round(pa) + " PA" });
+        if (pa == null || pa === 0) out.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "—" });
+        else if (pa < COVERAGE_LOW_PA) out.push({ name: p.name, owner: _teamLabel(tid), mine, status: "low", pa, metric: Math.round(pa) + " PA" });
       } else if (!p.ros) {
-        flagged.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "— (P)" });
+        out.push({ name: p.name, owner: _teamLabel(tid), mine, status: "missing", pa: -1, metric: "— (P)" });
       }
     }
   }
+  return out;
+}
+
+// Auto-banner shown above the standings whenever rostered players are missing a
+// projection — so an incomplete import can't silently skew the numbers.
+function renderCoverageBanner(myId) {
+  if (_standings.mode === "current" || !firstLoadedRosSource()) return "";
+  const missing = _coverageFlags(myId).filter(f => f.status === "missing");
+  if (!missing.length) return "";
+  const mine = missing.filter(m => m.mine).map(m => m.name);
+  let html = '<div class="card" style="border-color: rgba(248,81,73,.55); background: rgba(248,81,73,.06);">';
+  html += '<p class="bad" style="margin:0;"><b>⚠ ' + missing.length + ' rostered player' + (missing.length === 1 ? '' : 's') +
+    ' have no projection</b> in ' + esc(getRosSourceLabel(_standings.rosSource)) +
+    ' — the import is likely incomplete (a truncated paste). These players score zero, skewing the standings.</p>';
+  if (mine.length) html += '<p class="small" style="margin:4px 0 0;">On your team: <b>' + mine.map(esc).join(", ") + '</b>.</p>';
+  html += '<p class="small muted" style="margin:4px 0 0;">Fix: re-import this source via <b>file upload</b> on the Data tab. Full list in “Projection coverage” below.</p>';
+  html += '</div>';
+  return html;
+}
+
+function renderCoverageAudit(myId) {
+  if (!_standings.pool) return "";
+  const flagged = _coverageFlags(myId);
   if (!flagged.length) {
     return '<div class="card"><p class="small good">✓ Projection coverage looks complete — every rostered hitter has a healthy projected PA.</p></div>';
   }

@@ -163,7 +163,7 @@ function renderData() {
       try {
         const count = importRosJSON(_dataRosSel, kind, text);
         if (ta) ta.value = "";
-        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ".");
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + "." + rosImportWarning(kind, count));
         renderData();
       } catch (e) { alert(e.message || String(e)); }
     });
@@ -179,7 +179,7 @@ function renderData() {
       reader.onload = () => {
         try {
           const count = importRosJSON(_dataRosSel, kind, String(reader.result));
-          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + "." + rosImportWarning(kind, count));
           renderData();
         } catch (e) { alert(e.message || String(e)); }
       };

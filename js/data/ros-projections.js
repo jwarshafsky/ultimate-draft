@@ -118,10 +118,20 @@ function fangraphsApiUrl(sourceId, stats) {
 
 // Import projections pasted as raw FanGraphs API JSON (an array of player rows).
 // kind = "bat" | "pit". Returns the row count.
+// A complete FanGraphs ROS list has well over this many players; fewer almost
+// always means a truncated paste.
+const ROS_MIN_EXPECTED = { bat: 700, pit: 450 };
 function importRosJSON(sourceId, kind, text) {
+  const t = (text || "").trim();
   let arr;
-  try { arr = JSON.parse(text); }
-  catch (e) { throw new Error("That isn't valid JSON. Open the link, select all (⌘A), copy, and paste the whole page."); }
+  try { arr = JSON.parse(t); }
+  catch (e) {
+    // A long blob that doesn't close with ']' was almost certainly cut off.
+    if (t.length > 2000 && !t.endsWith("]") && !t.endsWith("}")) {
+      throw new Error("This looks cut off (truncated) — the FanGraphs JSON is too big to paste reliably. Save the page to a file (⌘S) and use the file picker instead.");
+    }
+    throw new Error("That isn't valid JSON. Open the link, select all (⌘A), copy, and paste the whole page — or use the file picker.");
+  }
   if (!Array.isArray(arr)) arr = Array.isArray(arr?.data) ? arr.data : null;
   if (!arr) throw new Error("Expected a JSON list of players from the FanGraphs API link.");
   const n = (o, k) => { const v = o[k]; return (typeof v === "number" && isFinite(v)) ? v : 0; };
@@ -143,6 +153,18 @@ function importRosJSON(sourceId, kind, text) {
   _saveRos(sourceId);
   fireData && fireData();
   return kind === "pit" ? d.pitchers.length : d.hitters.length;
+}
+
+// Warning string if an import count is suspiciously low (likely truncated /
+// wrong link), else "". Shown after import.
+function rosImportWarning(kind, count) {
+  const min = ROS_MIN_EXPECTED[kind === "pit" ? "pit" : "bat"];
+  if (count < min) {
+    return "\n\n⚠ Only " + count + " players imported — a full FanGraphs list has many more. " +
+      "This source may be incomplete (truncated paste, or a position-filtered link). " +
+      "Check “Projection coverage” on the Standings tab.";
+  }
+  return "";
 }
 
 function clearRosSource(sourceId) {
