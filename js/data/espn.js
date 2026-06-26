@@ -139,9 +139,14 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   const player = entry?.playerPoolEntry?.player || entry?.player;
   if (!player) return null;
   const slots = player.eligibleSlots || [];
+  // Two-way player (Ohtani): eligible for BOTH a hitter slot (0-12) and a
+  // pitcher slot (13 SP / 14 RP). Counted as a hitter AND a pitcher downstream.
+  const hasHitSlot = slots.some(s => s >= 0 && s <= 12);
+  const hasPitSlot = slots.includes(13) || slots.includes(14) || slots.includes(15);
+  const twoWay = hasHitSlot && hasPitSlot;
   // Pitcher if eligible only for pitching slots (13 SP / 14 RP) and not a hitter slot.
-  const isPitcher = (player.defaultPositionId === 1) ||
-    (slots.includes(13) || slots.includes(14)) && !slots.some(s => s >= 0 && s <= 12 && s !== 1);
+  const isPitcher = !twoWay && ((player.defaultPositionId === 1) ||
+    (slots.includes(13) || slots.includes(14)) && !slots.some(s => s >= 0 && s <= 12 && s !== 1));
   const se = _pickStatEntry(player, season, sourceId);
   const m = se?.stats || {};
   const name = player.fullName || ("Player " + player.id);
@@ -152,7 +157,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   if (isPitcher) {
     const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
     return {
-      name, espnId: player.id, type: "P", pctOwned, pos, eligibleSlots: slots,
+      name, espnId: player.id, type: "P", pctOwned, pos, eligibleSlots: slots, twoWay,
       lineupSlotId: entry.lineupSlotId,
       K: _statById(m, ESPN_STAT_ID.K) || 0,
       QS: _statById(m, ESPN_STAT_ID.QS) || 0,
@@ -168,7 +173,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
     };
   }
   return {
-    name, espnId: player.id, type: "H", pctOwned, pos, eligiblePos, eligibleSlots: slots,
+    name, espnId: player.id, type: "H", pctOwned, pos, eligiblePos, eligibleSlots: slots, twoWay,
     lineupSlotId: entry.lineupSlotId,
     R: _statById(m, ESPN_STAT_ID.R) || 0,
     HR: _statById(m, ESPN_STAT_ID.HR) || 0,

@@ -243,17 +243,41 @@ function optimizeStarters(poolPlayers, gsRemaining, overrides) {
   return buildLineup(poolPlayers, gsRemaining, overrides).lines;
 }
 
-// Per-team pool: every rostered player paired with its ROS line.
+// Plate appearances a two-way player loses each start he pitches (he's in the
+// SP slot, not a hitting slot that day). His hitting projection is docked
+// PER_START × his projected remaining starts.
+const TWO_WAY_PA_PER_START = 4.5;
+
+// Reduce a hitter's projection by `lostPA` plate appearances (scaling all
+// counting components; OBP rate unchanged).
+function _reduceHitterPA(r, lostPA) {
+  const pa = r.PA || 0;
+  if (pa <= 0 || lostPA <= 0) return r;
+  return _scaleHitter(r, Math.max(0, (pa - lostPA) / pa));
+}
+
+// Per-team pool: every rostered player paired with its ROS line. Two-way
+// players (Ohtani) become TWO pool entries — a hitter (PA docked for his
+// pitching starts) and a pitcher (his SP line, counted against the GS cap).
 function _buildPool() {
   const rosters = _standings.ytd?.rosters || {};
   const src = _standings.rosSource;
   const pool = {};
+  const mk = (p, type, ros) => ({ name: p.name, type, eligibleSlots: p.eligibleSlots || [], lineupSlotId: p.lineupSlotId, ros });
   for (const [tid, players] of Object.entries(rosters)) {
-    pool[tid] = players.map(p => ({
-      name: p.name, type: p.type, eligibleSlots: p.eligibleSlots || [],
-      lineupSlotId: p.lineupSlotId,
-      ros: src ? getRosLine(src, p.name, p.type) : null,
-    }));
+    const arr = [];
+    for (const p of players) {
+      if (p.twoWay) {
+        const pitRos = src ? getRosLine(src, p.name, "P") : null;
+        let hitRos = src ? getRosLine(src, p.name, "H") : null;
+        if (hitRos && pitRos) hitRos = _reduceHitterPA(hitRos, TWO_WAY_PA_PER_START * (pitRos.GS || 0));
+        arr.push(mk(p, "H", hitRos));
+        arr.push(mk(p, "P", pitRos));
+      } else {
+        arr.push(mk(p, p.type, src ? getRosLine(src, p.name, p.type) : null));
+      }
+    }
+    pool[tid] = arr;
   }
   _standings.pool = pool;
   return pool;
