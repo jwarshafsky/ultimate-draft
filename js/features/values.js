@@ -8,6 +8,27 @@ let _valuesState = {
   search: "",
 };
 
+// Manual per-player value overrides (Values tab). Persisted; keyed by
+// normalized name so they survive source/name variations.
+const MANUAL_VAL_KEY = "ud_manual_values_v1";
+const USE_MANUAL_KEY = "ud_use_manual_values_v1";
+let _manualValues = null;
+function _loadManualValues() {
+  if (_manualValues) return _manualValues;
+  try { _manualValues = JSON.parse(localStorage.getItem(MANUAL_VAL_KEY) || "{}") || {}; }
+  catch (_) { _manualValues = {}; }
+  return _manualValues;
+}
+function _mvKey(name) { return (typeof normalizePlayerName === "function") ? normalizePlayerName(name) : String(name || "").toLowerCase(); }
+function getManualValue(name) { const v = _loadManualValues()[_mvKey(name)]; return (typeof v === "number" && isFinite(v)) ? v : null; }
+function setManualValue(name, v) {
+  const m = _loadManualValues(), k = _mvKey(name);
+  if (v == null || !isFinite(v)) delete m[k]; else m[k] = v;
+  localStorage.setItem(MANUAL_VAL_KEY, JSON.stringify(m));
+}
+function useManualValues() { return localStorage.getItem(USE_MANUAL_KEY) === "1"; }
+function setUseManualValues(on) { localStorage.setItem(USE_MANUAL_KEY, on ? "1" : "0"); }
+
 function renderValues() {
   const root = document.getElementById("view-root");
   const values = getValues();
@@ -18,6 +39,11 @@ function renderValues() {
   const inflation = computeTieredInflation();
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+
+  // Effective value: your manual value (when the override is on and one is set),
+  // otherwise the projected FanGraphs/source value.
+  const useMine = useManualValues();
+  const eff = (p) => { const m = getManualValue(p.name); return (useMine && m != null) ? m : p.value; };
 
   // Projection source toggle (shared app-wide with the Keepers tab).
   const sources = (typeof projectionSources === "function") ? projectionSources() : [];
@@ -46,6 +72,7 @@ function renderValues() {
   }
   html += '</select>';
   html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" id="val-kept"' + (_valuesState.showKept ? ' checked' : '') + '> Show kept</label>';
+  html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px;" title="Use the values you typed in the My $ column; blank rows fall back to the projected value."><input type="checkbox" id="val-usemine"' + (useMine ? ' checked' : '') + '> Use my values</label>';
   html += '</div></div>';
 
   // Filter + sort
@@ -57,11 +84,11 @@ function renderValues() {
   });
   const sortKey = _valuesState.sort;
   filtered.sort((a, b) => {
-    let av = a[sortKey], bv = b[sortKey];
-    if (sortKey === "infl") {
-      av = inflatedValue(a, inflation);
-      bv = inflatedValue(b, inflation);
-    }
+    let av, bv;
+    if (sortKey === "value") { av = eff(a); bv = eff(b); }
+    else if (sortKey === "infl") { av = inflatedValue({ ...a, value: eff(a) }, inflation); bv = inflatedValue({ ...b, value: eff(b) }, inflation); }
+    else if (sortKey === "mine") { av = getManualValue(a.name) ?? -Infinity; bv = getManualValue(b.name) ?? -Infinity; }
+    else { av = a[sortKey]; bv = b[sortKey]; }
     if (typeof av === "string") return av.localeCompare(bv) * _valuesState.dir;
     return ((av || 0) - (bv || 0)) * _valuesState.dir;
   });
@@ -71,7 +98,7 @@ function renderValues() {
   const cols = [
     ["name", "Player"], ["pos", "Pos"], ["team", "Tm"],
     ["sgpAbove", "vsRepl"],
-    ["value", "Value"], ["infl", "Inflated"],
+    ["value", "Value"], ["mine", "My $"], ["infl", "Inflated"],
     ["nfbc", "NFBC"], ["xstat", "xwOBA / xERA"],
   ];
   for (const [k, lbl] of cols) {
@@ -80,8 +107,11 @@ function renderValues() {
   }
   html += '</tr></thead><tbody>';
   for (const p of filtered.slice(0, 400)) {
-    const inflV = inflatedValue(p, inflation);
-    const delta = inflV - p.value;
+    const e = eff(p);
+    const mv = getManualValue(p.name);
+    const overridden = useMine && mv != null;
+    const inflV = inflatedValue({ ...p, value: e }, inflation);
+    const delta = inflV - e;
     const isKept = keptNames.has(_nk(p.name));
     const nfbc = getNfbc(p.name);
     const sc = getStatcast(p.name);
@@ -95,7 +125,9 @@ function renderValues() {
     html += '<td>' + esc(p.pos) + '</td>';
     html += '<td class="dim">' + esc(p.team) + '</td>';
     html += '<td class="num">' + p.sgpAbove.toFixed(1) + '</td>';
-    html += '<td class="num">$' + p.value.toFixed(1) + '</td>';
+    html += '<td class="num">$' + e.toFixed(1) +
+      (overridden ? ' <span class="kbd" style="color:var(--accent);" title="Your value (FG $' + p.value.toFixed(0) + ')">M</span>' : '') + '</td>';
+    html += '<td class="num"><input type="number" step="0.5" class="val-mine" data-player="' + esc(p.name) + '" value="' + (mv != null ? mv : '') + '" placeholder="$' + p.value.toFixed(0) + '" style="width:62px; font-size:12px;"></td>';
     html += '<td class="num ' + (delta > 0 ? 'good' : delta < 0 ? 'bad' : '') + '">$' + inflV.toFixed(1) + '</td>';
     html += '<td class="num ' + (nfbc?.avg ? '' : 'dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
     html += '<td class="num ' + (xstat ? '' : 'dim') + '">' + (xstat || '—') + '</td>';
@@ -142,5 +174,21 @@ function renderValues() {
   });
   document.querySelectorAll(".player-name").forEach(el => {
     el.addEventListener("click", () => openNoteEditor(el.dataset.player));
+  });
+  // Manual value override toggle
+  document.getElementById("val-usemine")?.addEventListener("change", (e) => {
+    setUseManualValues(e.target.checked);
+    renderValues();
+  });
+  // Per-player manual value inputs. Use "change" (fires on blur/Enter) so typing
+  // isn't interrupted; only re-render when the override is on (so the effective
+  // Value/Inflated/sort update) — otherwise just persist quietly.
+  document.querySelectorAll(".val-mine").forEach(inp => {
+    inp.addEventListener("change", () => {
+      const raw = inp.value.trim();
+      const v = raw === "" ? null : parseFloat(raw);
+      setManualValue(inp.dataset.player, (v != null && isFinite(v)) ? v : null);
+      if (useManualValues()) renderValues();
+    });
   });
 }
