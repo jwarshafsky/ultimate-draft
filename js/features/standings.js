@@ -861,14 +861,21 @@ function findTrades(myId) {
       }
     }
   }
-  // Best by my roto gain; de-dup identical player sets; cap before the costly odds pass.
+  // Best by my roto gain; de-dup identical player sets; cap before the costly
+  // odds pass. Spread across partners so one team with a very complementary
+  // roster can't monopolize the whole list — pass 1 takes each partner's single
+  // best deal, pass 2 fills the rest up to PER_PARTNER each.
   cands.sort((a, b) => b.myD - a.myD);
-  const seen = new Set(), top = [];
-  for (const c of cands) {
+  const PER_PARTNER = 3, TOTAL = 33;
+  const seen = new Set(), perPartner = {}, top = [];
+  const tryAdd = (c, cap) => {
     const k = c.partner + "|" + c.give.slice().sort() + "|" + c.get.slice().sort();
-    if (seen.has(k)) continue; seen.add(k);
-    top.push(c); if (top.length >= 24) break;
-  }
+    if (seen.has(k)) return;
+    if ((perPartner[c.partner] || 0) >= cap) return;
+    seen.add(k); perPartner[c.partner] = (perPartner[c.partner] || 0) + 1; top.push(c);
+  };
+  for (const c of cands) tryAdd(c, 1);                       // each partner's best
+  for (const c of cands) { if (top.length >= TOTAL) break; tryAdd(c, PER_PARTNER); }
   const frac = seasonFractionRemaining();
   const baseOdds = simulateTitleOdds(_standings.built, { sims: 1500, fracRemaining: frac });
   for (const c of top) {
