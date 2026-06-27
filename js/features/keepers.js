@@ -78,60 +78,66 @@ function _currentKeeperSource(sources) {
   return sources.length ? sources[0].id : "preseason";
 }
 
-// Build the candidate list for one team from The League App's authoritative
-// roster + contract data (majors / call-ups / minors), enriched for display.
-// Anything you've personally marked is also included so nothing is lost.
+// Build one team's candidate list. Membership comes from the LIVE ESPN roster
+// (the only current truth for who's actually on a team); contracts/cost are
+// overlaid by name from The League App (accurate keeper years). Minor-league
+// stashes (not on the ESPN active roster) come from The League App's minors.
+// If ESPN isn't available, fall back to The League App's anchor entirely.
 function _teamCandidates(team, source, inflation) {
   const teamSel = getKeeperSelections()[team.id] || {};
-  const ld = (typeof getLeagueTeamRoster === "function") ? getLeagueTeamRoster(team.id) : null;
   const season = (typeof leagueRosterSeason === "function") ? leagueRosterSeason() : new Date().getFullYear();
+  const espn = _keepersState.rosters;            // { teamId: [espnPlayer] } or null
+  const ld = (typeof getLeagueTeamRoster === "function") ? getLeagueTeamRoster(team.id) : null;
   const rows = [];
   const seen = new Set();
 
-  const push = (name, kind, contract, cost, costMissing) => {
+  const push = (name, o) => {
     if (!name || seen.has(name)) return;
     seen.add(name);
     const v = getPlayerValue(name);
-    const type = v ? v.type : "H";
-    const pos = v ? v.pos : "—";
-    const isMinor = kind === "minor";
+    const type = o.type || (v ? v.type : "H");
+    const pos = o.pos || (v ? v.pos : "—");
+    const cost = o.cost == null ? 0 : o.cost;
     const myPicked = (typeof isMyKeeper === "function") && isMyKeeper(team.id, name);
     const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, name);
     const predValue = _keeperPredValue(name, type, source);
     const surplus = predValue != null ? predValue - cost : null;            // Pred $ − Cost
     const value = predValue != null ? predValue - cost / inflation : null;  // Pred $ − Cost/Inflation
-    const eligible = (contract ? contract.canKeepNextSeason : true) && !myIneligible;
+    const eligible = (o.contract ? o.contract.canKeepNextSeason : true) && !myIneligible;
     rows.push({
-      name, pos, type, kind, isMinor,
+      name, pos, type, kind: o.kind, isMinor: o.kind === "minor",
       leagueSel: teamSel[name] || null, myPicked, myIneligible,
-      cost, costMissing, predValue, surplus, value, contract, eligible,
+      cost, costMissing: !!o.costMissing, predValue, surplus, value, contract: o.contract || null, eligible,
     });
   };
 
-  if (ld) {
-    for (const p of (ld.majors || [])) {
-      const c = leagueMajorContract(p, season);
-      push(p.name, "major", c, c.nextYearPrice, false);
+  if (espn && espn[team.id]) {
+    // Current ML roster from ESPN; overlay The League App contract by name.
+    for (const p of espn[team.id]) {
+      const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(p.name, season) : null;
+      if (ci) push(p.name, { pos: p.pos, type: p.type, kind: ci.kind, contract: ci.contract, cost: ci.cost, costMissing: ci.costMissing });
+      else {
+        const rawCost = getCurrentKeeperSalary(p.name);   // FA pickup — no League App contract
+        push(p.name, { pos: p.pos, type: p.type, kind: "fa", contract: null, cost: rawCost == null ? 0 : rawCost, costMissing: rawCost == null });
+      }
     }
-    for (const p of (ld.callups || [])) {
-      const c = leagueMinorContract(p, season);
-      const ov = (typeof getCallupOverride === "function") ? getCallupOverride(p.name) : null;
-      const cost = ov && ov.price != null ? ov.price : 0;
-      push(p.name, "callup", c, cost, !(ov && ov.price != null));
-    }
-    for (const p of (ld.minors || [])) {
-      push(p.name, "minor", leagueMinorContract(p, season), 0, false);
-    }
-  }
-  // Include any player you've marked who isn't in the roster data (e.g. a recent
-  // FA pickup) so your pick is never lost. Cost falls back to the history guess.
-  for (const name of (typeof getMyTeamPicks === "function" ? getMyTeamPicks(team.id) : [])) {
-    if (seen.has(name)) continue;
-    const rawCost = getCurrentKeeperSalary(name);
-    push(name, "major", null, rawCost == null ? 0 : rawCost, rawCost == null);
+    // Minor-league stashes (not on the ESPN active roster).
+    if (ld) for (const p of (ld.minors || [])) push(p.name, { kind: "minor", contract: leagueMinorContract(p, season), cost: 0 });
+  } else if (ld) {
+    // Fallback: no ESPN — use The League App anchor (may be stale for majors).
+    for (const p of (ld.majors || [])) { const c = leagueMajorContract(p, season); push(p.name, { kind: "major", contract: c, cost: c.nextYearPrice }); }
+    for (const p of (ld.callups || [])) { const c = leagueMinorContract(p, season); const ov = (typeof getCallupOverride === "function") ? getCallupOverride(p.name) : null; push(p.name, { kind: "callup", contract: c, cost: ov && ov.price != null ? ov.price : 0, costMissing: !(ov && ov.price != null) }); }
+    for (const p of (ld.minors || [])) push(p.name, { kind: "minor", contract: leagueMinorContract(p, season), cost: 0 });
   }
 
-  // Sort by inflation-adjusted Value, nulls last.
+  // Include any player you've marked who isn't otherwise listed, so it's never lost.
+  for (const name of (typeof getMyTeamPicks === "function" ? getMyTeamPicks(team.id) : [])) {
+    if (seen.has(name)) continue;
+    const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name, season) : null;
+    if (ci) push(name, { kind: ci.kind, contract: ci.contract, cost: ci.cost, costMissing: ci.costMissing });
+    else { const rawCost = getCurrentKeeperSalary(name); push(name, { kind: "fa", contract: null, cost: rawCost == null ? 0 : rawCost, costMissing: rawCost == null }); }
+  }
+
   rows.sort((a, b) => {
     if (a.value == null && b.value == null) return a.name.localeCompare(b.name);
     if (a.value == null) return 1;
@@ -143,9 +149,9 @@ function _teamCandidates(team, source, inflation) {
 
 function renderKeepers() {
   const root = document.getElementById("view-root");
-  // Auto-load authoritative rosters from The League App on first view.
-  if (typeof getLeagueRosterData === "function" && !getLeagueRosterData() &&
-      !_keepersState.loadingRosters && !_keepersState.rosterError) {
+  // Auto-load rosters (ESPN membership + League App contracts) once on first view.
+  if (!_keepersState.autoLoaded && !_keepersState.loadingRosters) {
+    _keepersState.autoLoaded = true;
     _loadKeeperRosters(false);
   }
   const sources = _keeperSources();
@@ -177,30 +183,44 @@ function renderKeepers() {
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Inflation ' +
     '<input id="kp-infl" type="number" step="0.05" min="1" max="3" value="' + inflation.toFixed(2) + '" style="width:80px;"></label>';
 
-  // Refresh authoritative rosters from The League App.
+  // Refresh both sources.
   html += '<button class="btn" id="kp-load" style="width:auto; padding:6px 12px;">' +
-    (_keepersState.loadingRosters ? "Refreshing…" : "Refresh from The League App") + '</button>';
+    (_keepersState.loadingRosters ? "Refreshing…" : "Refresh rosters") + '</button>';
 
   // Only-keepers filter
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">' +
     '<input type="checkbox" id="kp-only"' + (_keepersState.onlyKeepers ? " checked" : "") + '> Only keepers</label>';
   html += '</div>';
 
-  html += '<p class="small muted" style="margin-top:6px;">Rosters &amp; contracts come from <b>The League App</b> (the source of truth) — eligibility reflects real keeper years. Inflation starts at <b>1.00</b> and rises only as you check players. Updates Values, Board &amp; Overview app-wide.</p>';
+  html += '<p class="small muted" style="margin-top:6px;">Who’s on each team comes from your <b>live ESPN roster</b>; keeper years &amp; cost are overlaid from <b>The League App</b>. Minor-league stashes come from The League App. Inflation starts at <b>1.00</b> and rises only as you check players.</p>';
 
+  // Status: ESPN membership + League App contracts.
   const rosterData = (typeof getLeagueRosterData === "function") ? getLeagueRosterData() : null;
-  if (_keepersState.rosterError) {
-    html += '<p class="small" style="color:var(--bad); margin-top:6px;">Couldn’t load rosters from The League App: ' + esc(_keepersState.rosterError) + '</p>';
-  } else if (!rosterData) {
-    html += '<p class="small muted" style="margin-top:6px;">' + (_keepersState.loadingRosters ? "Loading rosters from The League App…" : "Rosters not loaded yet.") + '</p>';
-  } else {
-    const teamCt = rosterData.teams.length;
-    const playerCt = rosterData.teams.reduce((s, t) => s + (t.majors||[]).length + (t.callups||[]).length + (t.minors||[]).length, 0);
-    const at = (typeof getLeagueRostersUpdatedAt === "function") ? getLeagueRostersUpdatedAt() : null;
-    html += '<p class="small muted" style="margin-top:6px;">' +
-      teamCt + ' teams · ' + playerCt + ' rostered players · season ' + rosterData.season +
-      (at ? ' · synced ' + new Date(at).toLocaleString() : '') + '</p>';
+  const espn = _keepersState.rosters;
+  const proxySet = (typeof getProxyUrl === "function") && getProxyUrl();
+  const statusBits = [];
+  if (espn) {
+    const teamCt = Object.values(espn).filter(a => a && a.length).length;
+    const playerCt = Object.values(espn).reduce((s, a) => s + (a ? a.length : 0), 0);
+    const rm = _keepersState.rosterMeta || {};
+    const unmapped = (rm.unmappedIds && rm.unmappedIds.length) ? rm.unmappedIds.join(", ") : "";
+    statusBits.push('ESPN: ' + teamCt + '/' + LEAGUE.teams.length + ' teams, ' + playerCt + ' players' +
+      (unmapped ? ' <b style="color:var(--bad);">unmapped ids: ' + esc(unmapped) + '</b>' : ''));
+  } else if (_keepersState.espnError) {
+    statusBits.push('<span style="color:var(--warn);">ESPN: ' + esc(_keepersState.espnError) + ' (using League App roster anchor)</span>');
+  } else if (!proxySet) {
+    statusBits.push('<span style="color:var(--warn);">ESPN: no proxy set (Settings) — using League App roster anchor, which can be stale for majors</span>');
+  } else if (_keepersState.loadingRosters) {
+    statusBits.push('ESPN: loading…');
   }
+  if (rosterData) {
+    const at = (typeof getLeagueRostersUpdatedAt === "function") ? getLeagueRostersUpdatedAt() : null;
+    statusBits.push('League App contracts: season ' + rosterData.season + (at ? ', synced ' + new Date(at).toLocaleString() : ''));
+  } else if (_keepersState.leagueError) {
+    statusBits.push('<span style="color:var(--bad);">League App: ' + esc(_keepersState.leagueError) + '</span>');
+  }
+  if (statusBits.length) html += '<p class="small muted" style="margin-top:6px;">' + statusBits.join(' · ') + '</p>';
+
   if (source && source !== "preseason" && !rosHasDollars(source)) {
     html += '<p class="small" style="color:var(--warn); margin-top:6px;">This ROS source has no projected $ — Predicted $ falls back to preseason values. Import a FanGraphs export with a Dollars column (Data tab) for ROS pricing.</p>';
   }
@@ -214,11 +234,13 @@ function renderKeepers() {
   const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
   const order = me ? [me, ...others] : others;
 
-  const rostersLoaded = !!rosterData;
+  const rostersLoaded = !!(espn || rosterData);
   for (const t of order) {
     let rows = _teamCandidates(t, source, inflation);
-    const ldTeam = rostersLoaded ? rosterData.teams.find(x => x.id === t.id) : null;
-    const rosterCount = ldTeam ? ((ldTeam.majors||[]).length + (ldTeam.callups||[]).length + (ldTeam.minors||[]).length) : 0;
+    const ldTeam = rosterData ? rosterData.teams.find(x => x.id === t.id) : null;
+    const espnCount = (espn && espn[t.id]) ? espn[t.id].length : 0;
+    const milCount = ldTeam ? (ldTeam.minors || []).length : 0;
+    const rosterCount = espn ? (espnCount + milCount) : (ldTeam ? ((ldTeam.majors||[]).length + (ldTeam.callups||[]).length + milCount) : 0);
     if (_keepersState.onlyKeepers) {
       rows = rows.filter(r => r.myPicked || (r.leagueSel && (r.leagueSel.keeper || r.leagueSel.minorKeeper)));
     }
@@ -380,16 +402,24 @@ function _wireKeepers() {
 
 async function _loadKeeperRosters(force) {
   if (_keepersState.loadingRosters) return;
-  if (typeof loadLeagueRosters !== "function") return;
   _keepersState.loadingRosters = true;
-  _keepersState.rosterError = null;
+  _keepersState.leagueError = null;
+  _keepersState.espnError = null;
   if (force) renderKeepers();   // show "Refreshing…" only on explicit refresh
-  try {
-    await loadLeagueRosters(!!force);
-  } catch (e) {
-    _keepersState.rosterError = e.message || String(e);
-  } finally {
-    _keepersState.loadingRosters = false;
-    renderKeepers();
+  const tasks = [];
+  // Contracts from The League App.
+  if (typeof loadLeagueRosters === "function") {
+    tasks.push(loadLeagueRosters(!!force).catch(e => { _keepersState.leagueError = e.message || String(e); }));
   }
+  // Membership from live ESPN (only if a proxy is configured).
+  if (typeof fetchEspnRosters === "function" && typeof getProxyUrl === "function" && getProxyUrl()) {
+    tasks.push(fetchEspnRosters(0)
+      .then(res => {
+        _keepersState.rosters = res.rosters || {};
+        _keepersState.rosterMeta = { rawTeamCount: res.rawTeamCount, unmappedIds: res.unmappedIds || [] };
+      })
+      .catch(e => { _keepersState.espnError = e.message || String(e); }));
+  }
+  try { await Promise.all(tasks); }
+  finally { _keepersState.loadingRosters = false; renderKeepers(); }
 }

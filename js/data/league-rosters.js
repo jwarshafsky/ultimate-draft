@@ -42,7 +42,7 @@ function _extractLeagueData(txt) {
 function _loadLeagueRostersFromCache() {
   try {
     const c = JSON.parse(localStorage.getItem(LEAGUE_ROSTERS_KEY) || "null");
-    if (c && c.data) { _leagueRosters = c.data; _leagueRostersAt = c.at || null; }
+    if (c && c.data) { _leagueRosters = c.data; _leagueRostersAt = c.at || null; _leagueIdx = null; }
   } catch (e) { /* ignore */ }
 }
 
@@ -58,6 +58,7 @@ async function loadLeagueRosters(force) {
     if (!data || !Array.isArray(data.teams)) throw new Error("could not parse LEAGUE_DATA");
     _leagueRosters = data;
     _leagueRostersAt = new Date().toISOString();
+    _leagueIdx = null;
     localStorage.setItem(LEAGUE_ROSTERS_KEY, JSON.stringify({ data, at: _leagueRostersAt }));
   } catch (e) {
     console.warn("loadLeagueRosters:", e.message || e);
@@ -74,6 +75,46 @@ function getLeagueRostersUpdatedAt() { return _leagueRostersAt; }
 function leagueRosterSeason() { return _leagueRosters ? _leagueRosters.season : (new Date().getFullYear()); }
 function getLeagueTeamRoster(teamId) {
   return _leagueRosters ? _leagueRosters.teams.find(t => t.id === teamId) || null : null;
+}
+
+// Normalized-name index of every contracted player across all teams, so we can
+// overlay a contract onto whoever ESPN says is currently rostered (by name,
+// regardless of which team's anchor they were last recorded on).
+let _leagueIdx = null;
+function _leagueNameIndex() {
+  if (_leagueIdx) return _leagueIdx;
+  const norm = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const idx = {};
+  if (_leagueRosters) {
+    for (const t of _leagueRosters.teams) {
+      for (const [list, kind] of [["majors", "major"], ["callups", "callup"], ["minors", "minor"]]) {
+        for (const p of (t[list] || [])) idx[norm(p.name)] = { teamId: t.id, kind, player: p };
+      }
+    }
+  }
+  _leagueIdx = idx;
+  return idx;
+}
+
+// Contract + keeper cost for a player by name (any team). Returns null if The
+// League App has no contract on file (i.e. a FA pickup). season optional.
+function getLeagueContractByName(name, season) {
+  const norm = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const hit = _leagueNameIndex()[norm(name)];
+  if (!hit) return null;
+  season = season || leagueRosterSeason();
+  if (hit.kind === "major") {
+    const c = leagueMajorContract(hit.player, season);
+    return { kind: "major", contract: c, cost: c.nextYearPrice, costMissing: false, teamId: hit.teamId };
+  }
+  const c = leagueMinorContract(hit.player, season);
+  let cost = 0, costMissing = false;
+  if (hit.kind === "callup") {
+    const ov = (typeof getCallupOverride === "function") ? getCallupOverride(hit.player.name) : null;
+    cost = ov && ov.price != null ? ov.price : 0;
+    costMissing = !(ov && ov.price != null);
+  }
+  return { kind: hit.kind, contract: c, cost, costMissing, teamId: hit.teamId };
 }
 
 // --- Contract logic (ported from The League App app.js) ---
