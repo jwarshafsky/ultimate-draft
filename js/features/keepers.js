@@ -40,6 +40,31 @@ function _keeperPredValue(name, type, source) {
   return v ? v.value : null;
 }
 
+// The single keeper-inflation value used for the topbar badge on every tab, so
+// it doesn't change as you move between Keepers / Values / Overview. Mirrors the
+// keeper page's own two-pass computation (override, else pool inflation from the
+// active source + eligible predicted keepers).
+function computeKeeperInflation() {
+  const source = _currentKeeperSource(_keeperSources());
+  let keptCost = 0, keptValue = 0;
+  for (const t of LEAGUE.teams) {
+    for (const r of _teamCandidates(t, source)) {
+      if (r.myPicked && r.eligible) { keptCost += r.cost; keptValue += (r.predValue || 0); }
+    }
+  }
+  const override = _keeperInflationOverride();
+  return override != null ? override : _poolInflation(source, keptCost, keptValue);
+}
+
+// Update the topbar inflation badge from the shared keeper-inflation value.
+function updateInflationBadge() {
+  const badge = document.getElementById("inflation-badge");
+  if (!badge) return;
+  const inf = computeKeeperInflation();
+  badge.textContent = "infl " + inf.toFixed(2) + "x";
+  badge.className = "badge " + (inf > 1.2 ? "hot" : inf < 1.0 ? "cold" : "");
+}
+
 // Manual inflation override the user typed (persisted), or null for auto.
 function _keeperInflationOverride() {
   if (_keepersState.inflation == null) {
@@ -376,12 +401,8 @@ function renderKeepers() {
 
   root.innerHTML = html;
 
-  // Keep the topbar inflation badge in sync with the keeper-page inflation.
-  const badge = document.getElementById("inflation-badge");
-  if (badge) {
-    badge.textContent = "infl " + inflation.toFixed(2) + "x";
-    badge.className = "badge " + (inflation > 1.2 ? "hot" : inflation < 1.0 ? "cold" : "");
-  }
+  // Keep the topbar inflation badge in sync (same value used on every tab).
+  updateInflationBadge();
 
   _wireKeepers();
 }

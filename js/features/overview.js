@@ -8,15 +8,8 @@ function renderOverview() {
   const inflation = hasProj ? computeTieredInflation() : null;
   const budgets = computeTeamBudgets();
 
-  // Update inflation badge
-  const badge = document.getElementById("inflation-badge");
-  if (inflation) {
-    badge.textContent = "infl " + inflation.multiplier.toFixed(2) + "x";
-    badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
-  } else {
-    badge.textContent = "infl —";
-    badge.className = "badge";
-  }
+  // Topbar inflation badge — same shared keeper-inflation value as every tab.
+  if (typeof updateInflationBadge === "function") updateInflationBadge();
 
   let html = "";
 

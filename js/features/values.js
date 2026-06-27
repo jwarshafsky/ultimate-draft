@@ -106,6 +106,9 @@ function renderValues() {
 
   root.innerHTML = html;
 
+  // Topbar inflation badge — same shared value as every other tab.
+  if (typeof updateInflationBadge === "function") updateInflationBadge();
+
   // Wire interactions
   const srcSel = document.getElementById("val-source");
   if (srcSel) srcSel.addEventListener("change", (e) => {

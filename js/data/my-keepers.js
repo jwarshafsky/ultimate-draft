@@ -103,6 +103,9 @@ function setKeeperProjSource(sourceId) {
   _myKeepersSource = sourceId || null;
   if (sourceId) localStorage.setItem(MYKEEPERS_SRC_KEY, sourceId);
   else localStorage.removeItem(MYKEEPERS_SRC_KEY);
+  // Source drives valuation app-wide — recompute so every tab reflects it,
+  // no matter which tab changed it.
+  if (typeof refreshValues === "function") refreshValues();
 }
 
 loadMyKeepers();
