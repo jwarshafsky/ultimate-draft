@@ -266,64 +266,120 @@ function getRosLine(sourceId, name, type) {
     HBP: h.HBP || null, SF: h.SF || null };
 }
 
-// Import a standalone "Name, $" CSV of FanGraphs projected auction values for a
-// source — separate from the stats import, since FG publishes $ in the Auction
-// Calculator export. Stored as a name→$ map and merged at lookup time.
-function importRosDollars(sourceId, text) {
+// Import a "Name,$" CSV of FanGraphs projected auction values for a source,
+// split by kind ("bat" | "pit") so hitters and pitchers are uploaded as
+// separate files (matching the stats workflow). Stored per-type as
+// { normName: {v: dollars, name: originalName} } so display names survive.
+function importRosDollars(sourceId, kind, text) {
   const rows = parseCSV(text);
   const d = _ensureSource(sourceId);
-  d.dollarsByName = d.dollarsByName || {};
+  const k = kind === "pit" ? "dollarsP" : "dollarsH";
+  d[k] = d[k] || {};
   let n = 0;
   for (const r of rows) {
     const name = pickCol(r, ["Name", "Player", "PlayerName", "name"]);
     const dol = _pickDollars(r);
-    if (name && dol != null) { d.dollarsByName[normalizePlayerName(name)] = dol; n++; }
+    if (name && dol != null) { d[k][normalizePlayerName(name)] = { v: dol, name }; n++; }
   }
   _saveRos(sourceId);
   fireData && fireData();
   return n;
 }
 
-// Projected auction dollar value for a player in a given source. type "H"|"P"
-// (or omit to try both). Checks per-record dollars first, then a separately
-// uploaded name→$ map. Returns null when no $ is on file for the player.
+// Read a $ entry (number) from a per-type map, tolerating both the new
+// {v,name} object shape and a legacy bare-number shape.
+function _dolVal(map, key) {
+  if (!map) return null;
+  const e = map[key];
+  if (typeof e === "number") return e;
+  if (e && typeof e.v === "number") return e.v;
+  return null;
+}
+
+// Projected auction dollar value for a player. type "H"|"P" (or omit).
+// A genuine two-way player (e.g. Ohtani) has BOTH a hitter $ and a pitcher $ —
+// his keeper value is the SUM of the two (FanGraphs splits his value across the
+// rows). Everyone else just has one.
 function getRosDollar(sourceId, name, type) {
   const d = _ros.data[sourceId];
   if (!d) return null;
-  const idx = _ros.index[sourceId] || _buildIndex(sourceId);
   const key = normalizePlayerName(name), ck = coreNameKey(name);
+  const h = _dolVal(d.dollarsH, key), p = _dolVal(d.dollarsP, key);
+  if (h != null && p != null) return h + p;            // two-way → combined $
+  if (h != null && (type === "H" || type == null)) return h;
+  if (p != null && (type === "P" || type == null)) return p;
+  // record-level $ from a stat import that carried a dollar column
+  const idx = _ros.index[sourceId] || _buildIndex(sourceId);
   let rec;
   if (type === "P") rec = idx.P.get(key) || idx.Pc.get(ck);
   else if (type === "H") rec = idx.H.get(key) || idx.Hc.get(ck);
   else rec = idx.H.get(key) || idx.P.get(key) || idx.Hc.get(ck) || idx.Pc.get(ck);
   if (rec && typeof rec.dollars === "number") return rec.dollars;
-  if (d.dollarsByName) {
-    const v = d.dollarsByName[key];
-    if (typeof v === "number") return v;
-  }
-  return null;
+  // single uploaded $ regardless of requested type, then legacy map
+  if (h != null) return h;
+  if (p != null) return p;
+  const lv = _dolVal(d.dollarsByName, key);
+  return lv != null ? lv : null;
 }
 
-// Full name→$ map for a source (record-level dollars + uploaded dollarsByName).
-// Used to build the value pool for keeper inflation. Returns {} if none.
-function getRosDollarMap(sourceId) {
+// Value list [{name, value, type, twoWay}] from a source's $ — two-way players
+// (both H and P $) are merged into one entry with the SUMMED value. Used as the
+// app-wide valuation source when no preseason projections are loaded, and as the
+// basis for getRosDollarMap (the keeper-inflation pool).
+function rosValueList(sourceId) {
   const d = _ros.data[sourceId];
-  const out = {};
-  if (!d) return out;
-  for (const h of (d.hitters || [])) if (typeof h.dollars === "number") out[normalizePlayerName(h.name)] = h.dollars;
-  for (const p of (d.pitchers || [])) if (typeof p.dollars === "number") out[normalizePlayerName(p.name)] = p.dollars;
-  if (d.dollarsByName) for (const k of Object.keys(d.dollarsByName)) out[k] = d.dollarsByName[k];
+  if (!d) return [];
+  const acc = {};   // normKey -> { name, h, p }
+  const bump = (rawName, field, v) => {
+    if (v == null || !rawName) return;
+    const k = normalizePlayerName(rawName);
+    if (!acc[k]) acc[k] = { name: rawName, h: null, p: null };
+    if (acc[k][field] == null) acc[k][field] = v;
+  };
+  if (d.dollarsH) for (const k in d.dollarsH) { const e = d.dollarsH[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsH, k)); }
+  if (d.dollarsP) for (const k in d.dollarsP) { const e = d.dollarsP[k]; bump(e && e.name ? e.name : k, "p", _dolVal(d.dollarsP, k)); }
+  for (const h of (d.hitters || [])) if (typeof h.dollars === "number") bump(h.name, "h", h.dollars);
+  for (const p of (d.pitchers || [])) if (typeof p.dollars === "number") bump(p.name, "p", p.dollars);
+  if (d.dollarsByName) for (const k in d.dollarsByName) { const e = d.dollarsByName[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsByName, k)); }
+  const out = [];
+  for (const k in acc) {
+    const a = acc[k];
+    if (a.h != null && a.p != null) out.push({ name: a.name, value: a.h + a.p, type: "H", twoWay: true });
+    else if (a.p != null) out.push({ name: a.name, value: a.p, type: "P" });
+    else if (a.h != null) out.push({ name: a.name, value: a.h, type: "H" });
+  }
   return out;
 }
 
-// True if this source includes any projected dollar values (record-level or
-// separately uploaded).
+// Full name→$ map (two-way summed, deduped). Sizes the keeper-inflation pool.
+function getRosDollarMap(sourceId) {
+  const out = {};
+  for (const p of rosValueList(sourceId)) out[normalizePlayerName(p.name)] = p.value;
+  return out;
+}
+
+// Counts of uploaded $ per type, for the Data tab status.
+function getRosDollarCounts(sourceId) {
+  const d = _ros.data[sourceId] || {};
+  return { hitters: Object.keys(d.dollarsH || {}).length, pitchers: Object.keys(d.dollarsP || {}).length };
+}
+
+// True if this source has any projected dollar values (uploaded or per-record).
 function rosHasDollars(sourceId) {
   const d = _ros.data[sourceId];
   if (!d) return false;
-  if (d.dollarsByName && Object.keys(d.dollarsByName).length) return true;
+  for (const m of [d.dollarsH, d.dollarsP, d.dollarsByName]) if (m && Object.keys(m).length) return true;
   return (d.hitters || []).some(h => typeof h.dollars === "number") ||
          (d.pitchers || []).some(p => typeof p.dollars === "number");
+}
+
+// Clear just the uploaded $ for a source (leave stats intact).
+function clearRosDollars(sourceId) {
+  const d = _ros.data[sourceId];
+  if (!d) return;
+  delete d.dollarsH; delete d.dollarsP; delete d.dollarsByName;
+  _saveRos(sourceId);
+  fireData && fireData();
 }
 
 function rosHasData(sourceId) {

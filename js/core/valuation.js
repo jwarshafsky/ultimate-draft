@@ -186,7 +186,24 @@ function computeReplacementLevels(players) {
 function computeValues() {
   const hitters = getHitterProjections();
   const pitchers = getPitcherProjections();
-  if (!hitters.length && !pitchers.length) return [];
+  // No preseason projections loaded → drive app-wide valuation from the active
+  // source's uploaded Dollar Values (FanGraphs auction $). Positions aren't in
+  // that feed, so they default to UTIL/SP, but $ + H/P type (what inflation and
+  // the Values $ list need) are exact.
+  if (!hitters.length && !pitchers.length) {
+    const src = (typeof getKeeperProjSource === "function" && getKeeperProjSource()) ||
+                (typeof firstLoadedRosSource === "function" && firstLoadedRosSource()) || null;
+    const list = (src && typeof rosValueList === "function") ? rosValueList(src) : [];
+    if (!list.length) return [];
+    const out = list.map(p => {
+      const posKey = p.type === "P" ? "SP" : "UTIL";
+      return { name: p.name, team: "", pos: posKey, type: p.type, posKey,
+        value: p.value, fgDollars: p.value, sgpAbove: 0, replacementSGP: 0, totalSGP: 0,
+        proj: {}, elig: [posKey] };
+    });
+    out.sort((a, b) => b.value - a.value);
+    return out;
+  }
 
   // Detect whether we're in FG-dollars mode (any player has fgDollars set).
   const fgMode = hitters.some(h => h.fgDollars != null) || pitchers.some(p => p.fgDollars != null);
@@ -306,7 +323,11 @@ function getPlayerValue(name) {
   return _valuesByName.get(name) || null;
 }
 
-// Wire cache invalidation to projection updates
+// Wire cache invalidation to projection updates (preseason) and league/ROS data
+// changes (uploaded Dollar Values fire onDataChange via fireData).
 if (typeof onProjectionsChange === "function") {
   onProjectionsChange(() => { _valuesCache = null; _valuesByName = null; });
+}
+if (typeof onDataChange === "function") {
+  onDataChange(() => { _valuesCache = null; _valuesByName = null; });
 }

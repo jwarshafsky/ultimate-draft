@@ -11,38 +11,29 @@ function renderData() {
 
   let html = "";
 
-  // Status block
-  html += '<div class="card"><h2>Data Status</h2><div class="grid cols-4">';
-  html += '<div><div class="muted small">Hitter Projections</div><div style="font-size: 22px; font-family: var(--mono);">' + meta.hitterCount + '</div></div>';
-  html += '<div><div class="muted small">Pitcher Projections</div><div style="font-size: 22px; font-family: var(--mono);">' + meta.pitcherCount + '</div></div>';
+  // Status block — per-source stat + dollar coverage.
+  html += '<div class="card"><h2>Data Status</h2>';
+  html += '<table><thead><tr><th>Source</th><th class="num">Stat projections (H / P)</th><th class="num">Dollar values (H / P)</th></tr></thead><tbody>';
+  for (const s of ROS_SOURCES) {
+    const c = getRosCounts(s.id);
+    const dc = (typeof getRosDollarCounts === "function") ? getRosDollarCounts(s.id) : { hitters: 0, pitchers: 0 };
+    html += '<tr><td>' + esc(s.label) + '</td>' +
+      '<td class="num">' + c.hitters + ' / ' + c.pitchers + '</td>' +
+      '<td class="num">' + dc.hitters + ' / ' + dc.pitchers + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<div class="grid cols-2" style="margin-top:10px;">';
   html += '<div><div class="muted small">NFBC Market Prices</div><div style="font-size: 22px; font-family: var(--mono);">' + nfbcMeta.count + '</div></div>';
   html += '<div><div class="muted small">Statcast (hit / pit)</div><div style="font-size: 22px; font-family: var(--mono);">' + savantHit + ' / ' + savantPit + '</div></div>';
   html += '</div></div>';
 
-  // === Projections ===
-  html += '<div class="card"><h2>FanGraphs Projections</h2>';
-  html += '<p class="muted small">Export from FanGraphs Auction Calculator or Projection page. Use your saved settings (12 teams, $260, 70/30 split, OBP/QS/SV+HLD cats — <a href="https://www.fangraphs.com/fantasy-tools/auction-calculator?teams=12&lg=MLB&dollars=260&mb=1&mp=10&msp=5&mrp=5&type=RP&players=&proj=steamer&split=70&points=c%7C1%2C2%2C3%2C4%2C5%7C2%2C3%2C4%2C13%2C14&rep=1&drp=30&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C5%2C1%2C1%2C1%2C0%2C1%2C6%2C4%2C0%2C0%2C0&sort=&view=0" target="_blank" rel="noopener" style="color: var(--accent);">link</a>).</p>';
-
-  html += '<div class="grid cols-2">';
-  // Hitters
-  html += '<div><h3>Hitters</h3>';
-  html += '<textarea id="hit-csv" rows="5" style="width: 100%; font-family: var(--mono); font-size: 12px;" placeholder="Name,Team,POS,PA,AB,H,R,HR,RBI,SB,BB,OBP,AVG"></textarea>';
-  html += '<div style="display: flex; gap: 6px; margin-top: 6px;"><input id="hit-source" placeholder="Source" style="flex: 1;"><button class="btn primary" id="hit-import" style="width: auto;">Import</button></div>';
-  html += '<div class="small muted" style="margin-top: 4px;">Or: <input type="file" id="hit-file" accept=".csv,text/csv"></div>';
-  html += '</div>';
-  // Pitchers
-  html += '<div><h3>Pitchers</h3>';
-  html += '<textarea id="pit-csv" rows="5" style="width: 100%; font-family: var(--mono); font-size: 12px;" placeholder="Name,Team,POS,IP,SO,W,QS,SV,HLD,ERA,WHIP"></textarea>';
-  html += '<div style="display: flex; gap: 6px; margin-top: 6px;"><input id="pit-source" placeholder="Source" style="flex: 1;"><button class="btn primary" id="pit-import" style="width: auto;">Import</button></div>';
-  html += '<div class="small muted" style="margin-top: 4px;">Or: <input type="file" id="pit-file" accept=".csv,text/csv"></div>';
-  html += '</div>';
-  html += '</div></div>';
-
-  // === Rest-of-Season Projections (Standings analyzer) ===
+  // Shared current source for both Stat Projections and Dollar Values.
   const rosSel = (typeof _dataRosSel !== "undefined" && _dataRosSel) || (firstLoadedRosSource() || ROS_SOURCES[0].id);
   _dataRosSel = rosSel;
-  html += '<div class="card"><h2>Rest-of-Season Projections</h2>';
-  html += '<p class="muted small">Feeds the <b>Standings</b> tab’s Rest-of-Season / Full-Season modes. FanGraphs blocks automated downloads, so paste it from your own browser (zero risk) — pick a source, open each link, copy the page, paste below. Updating every week or two is plenty.</p>';
+
+  // === Stat Projections ===
+  html += '<div class="card"><h2>Stat Projections</h2>';
+  html += '<p class="muted small">Raw projected stats per source (Steamer / ATC / BATX). Feeds the <b>Standings</b> tab. Paste from your own browser (FanGraphs blocks automated downloads) — open each link, copy, paste. Updating every week or two is plenty.</p>';
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Source ' +
     '<select id="ros-src-sel">';
   for (const s of ROS_SOURCES) {
@@ -73,22 +64,6 @@ function renderData() {
       ' <button class="btn danger" id="ros-clear" style="width:auto; padding:2px 8px; margin-left:8px;">Clear this source</button></div>';
   }
 
-  // --- Projected $ (FanGraphs auction values) ---
-  html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
-  html += '<h3>Projected $ (auction values)</h3>';
-  html += '<p class="small muted">FanGraphs publishes projected <b>$</b> in its Auction Calculator (your exact league settings baked in). This $ drives the Keepers page <b>Predicted $</b> / Value for <b>' + esc(getRosSourceLabel(rosSel)) + '</b>.</p>';
-  html += '<ol class="small muted" style="margin:6px 0 8px; padding-left:18px; line-height:1.7;">';
-  html += '<li><a href="' + esc(fangraphsAuctionUrl(rosSel)) + '" target="_blank" rel="noopener" style="color:var(--accent); font-weight:600;">Open FanGraphs Auction Calculator — ' + esc(getRosSourceLabel(rosSel)) + ' ↗</a></li>';
-  html += '<li>On that page, click <b>Export Data</b> (above the table) to save the CSV.</li>';
-  html += '<li>Upload it below (or paste a <code>Name,$</code> CSV). A column named Dollars / $ / Value / PV is detected.</li>';
-  html += '</ol>';
-  html += '<textarea id="ros-dol-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Name,$&#10;Aaron Judge,42&#10;Tarik Skubal,28"></textarea>';
-  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-dol-import" style="width:auto;">Import $ values</button> <input type="file" id="ros-dol-file" accept=".csv,text/csv">';
-  if (typeof rosHasDollars === "function" && rosHasDollars(rosSel)) {
-    html += ' <span class="small" style="color:var(--good);">✓ $ values loaded for this source</span>';
-  }
-  html += '</div></div>';
-
   // --- CSV import (fallback, collapsed) ---
   html += '<details style="margin-top:10px;"><summary class="small muted" style="cursor:pointer;">Advanced: import a CSV instead</summary>';
   html += '<div class="grid cols-2" style="margin-top:8px;">';
@@ -97,6 +72,33 @@ function renderData() {
   html += '<div><textarea id="ros-pit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Pitchers CSV: Name,IP,GS,SO,QS,SV,HLD,ER,H,BB,ERA,WHIP"></textarea>';
   html += '<div style="margin-top:6px;"><button class="btn" id="ros-pit-import" style="width:auto;">Import pitchers CSV</button> <input type="file" id="ros-pit-file" accept=".csv,text/csv"></div></div>';
   html += '</div></details>';
+  html += '</div>';
+
+  // === Dollar Values ===
+  html += '<div class="card"><h2>Dollar Values</h2>';
+  html += '<p class="muted small">FanGraphs Auction Calculator <b>$</b> per source, split hitters / pitchers — drives the Keepers page <b>Predicted $</b> / Value. Open the calculator (your exact league settings baked in), click <b>Export Data</b> for hitters and again for pitchers, and upload each below. A column named Dollars / $ / Value / PV is detected.</p>';
+  html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Source ' +
+    '<select id="dol-src-sel">';
+  for (const s of ROS_SOURCES) {
+    const dc = (typeof getRosDollarCounts === "function") ? getRosDollarCounts(s.id) : { hitters: 0, pitchers: 0 };
+    html += '<option value="' + s.id + '"' + (s.id === rosSel ? ' selected' : '') + '>' +
+      esc(s.label) + ' ($' + dc.hitters + ' hit / $' + dc.pitchers + ' pit)</option>';
+  }
+  html += '</select></label>';
+  html += '<div class="small" style="margin:6px 0;"><a href="' + esc(fangraphsAuctionUrl(rosSel)) + '" target="_blank" rel="noopener" style="color:var(--accent); font-weight:600;">Open FanGraphs Auction Calculator — ' + esc(getRosSourceLabel(rosSel)) + ' ↗</a> → Export Data</div>';
+  html += '<div class="grid cols-2" style="margin-top:4px;">';
+  html += '<div><h3>Hitters $</h3>';
+  html += '<textarea id="dol-hit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Name,$&#10;Aaron Judge,42"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="dol-hit-import" style="width:auto;">Import hitter $</button> <input type="file" id="dol-hit-file" accept=".csv,text/csv"></div></div>';
+  html += '<div><h3>Pitchers $</h3>';
+  html += '<textarea id="dol-pit-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Name,$&#10;Tarik Skubal,28"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="dol-pit-import" style="width:auto;">Import pitcher $</button> <input type="file" id="dol-pit-file" accept=".csv,text/csv"></div></div>';
+  html += '</div>';
+  if (typeof rosHasDollars === "function" && rosHasDollars(rosSel)) {
+    const dc = getRosDollarCounts(rosSel);
+    html += '<div class="small muted" style="margin-top:8px;">✓ ' + esc(getRosSourceLabel(rosSel)) + ': ' + dc.hitters + ' hitter $ / ' + dc.pitchers + ' pitcher $' +
+      ' <button class="btn danger" id="dol-clear" style="width:auto; padding:2px 8px; margin-left:8px;">Clear $ for this source</button></div>';
+  }
   html += '</div>';
 
   // === NFBC market prices ===
@@ -159,8 +161,6 @@ function renderData() {
       reader.readAsText(file);
     });
   }
-  wireImport("hit-csv", "hit-file", "hit-source", importHittersCSV, "hitters");
-  wireImport("pit-csv", "pit-file", "pit-source", importPitchersCSV, "pitchers");
   wireImport("nfbc-csv", "nfbc-file", "nfbc-source", importNfbcCSV, "NFBC prices");
   wireImport("savant-hit-csv", "savant-hit-file", null, importStatcastHittersCSV, "Statcast hitters");
   wireImport("savant-pit-csv", "savant-pit-file", null, importStatcastPitchersCSV, "Statcast pitchers");
@@ -230,27 +230,37 @@ function renderData() {
   wireRosImport("ros-hit-csv", "ros-hit-file", importRosHitters, "ROS hitters");
   wireRosImport("ros-pit-csv", "ros-pit-file", importRosPitchers, "ROS pitchers");
 
-  // Projected $ (auction values) import for the selected source.
-  document.getElementById("ros-dol-import")?.addEventListener("click", () => {
-    const text = document.getElementById("ros-dol-csv").value;
-    if (!text.trim()) { alert("Paste a Name,$ CSV first."); return; }
-    const n = importRosDollars(_dataRosSel, text);
-    alert("Imported " + n + " projected $ values into " + getRosSourceLabel(_dataRosSel) + ".");
-    renderData();
-  });
-  document.getElementById("ros-dol-file")?.addEventListener("change", (ev) => {
-    const file = ev.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const n = importRosDollars(_dataRosSel, String(reader.result));
-      alert("Imported " + n + " projected $ values into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
-      renderData();
-    };
-    reader.readAsText(file);
-  });
   document.getElementById("ros-clear")?.addEventListener("click", () => {
-    if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " ROS projections?")) { clearRosSource(_dataRosSel); renderData(); }
+    if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " stat projections?")) { clearRosSource(_dataRosSel); renderData(); }
+  });
+
+  // === Dollar Values wiring (split hitters / pitchers, per source) ===
+  document.getElementById("dol-src-sel")?.addEventListener("change", (e) => { _dataRosSel = e.target.value; renderData(); });
+  function wireDollarImport(textareaId, fileId, kind, label) {
+    const btnId = textareaId.replace("-csv", "-import");
+    document.getElementById(btnId)?.addEventListener("click", () => {
+      const text = document.getElementById(textareaId).value;
+      if (!text.trim()) { alert("Paste a Name,$ CSV first."); return; }
+      const n = importRosDollars(_dataRosSel, kind, text);
+      alert("Imported " + n + " " + label + " $ into " + getRosSourceLabel(_dataRosSel) + ".");
+      renderData();
+    });
+    document.getElementById(fileId)?.addEventListener("change", (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const n = importRosDollars(_dataRosSel, kind, String(reader.result));
+        alert("Imported " + n + " " + label + " $ into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+        renderData();
+      };
+      reader.readAsText(file);
+    });
+  }
+  wireDollarImport("dol-hit-csv", "dol-hit-file", "bat", "hitter");
+  wireDollarImport("dol-pit-csv", "dol-pit-file", "pit", "pitcher");
+  document.getElementById("dol-clear")?.addEventListener("click", () => {
+    if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " dollar values?")) { clearRosDollars(_dataRosSel); renderData(); }
   });
 
   document.getElementById("clear-proj")?.addEventListener("click", () => {
