@@ -40,16 +40,34 @@ function _keeperPredValue(name, type, source) {
   return v ? v.value : null;
 }
 
-// Effective inflation multiplier (e.g. 1.15). User override wins; else the
-// engine's flat multiplier; else 1.0.
-function _keeperInflation() {
+// Manual inflation override the user typed (persisted), or null for auto.
+function _keeperInflationOverride() {
   if (_keepersState.inflation == null) {
     const saved = parseFloat(localStorage.getItem(KEEPER_INFLATION_KEY));
     if (isFinite(saved) && saved > 0) _keepersState.inflation = saved;
   }
-  if (_keepersState.inflation != null && _keepersState.inflation > 0) return _keepersState.inflation;
-  const flat = (typeof computeFlatInflation === "function") ? computeFlatInflation() : null;
-  return flat && flat.multiplier > 0 ? flat.multiplier : 1.0;
+  return (_keepersState.inflation != null && _keepersState.inflation > 0) ? _keepersState.inflation : null;
+}
+
+// Auto inflation from the SAME $ pool that drives Predicted $ (so it works
+// in-season off ROS/FG-$ even when no preseason projections are loaded).
+// Normalized so a no-keeper league reads exactly 1.00; checked keepers (which
+// are bargains) push it above 1, which is what makes Value diverge from Surplus.
+//   inflation = [(budget − keptCost) / (poolValue − keptValue)] / (budget / poolValue)
+function _poolInflation(source, keptCost, keptValue) {
+  let poolValue = 0;
+  const map = (source && source !== "preseason" && typeof getRosDollarMap === "function") ? getRosDollarMap(source) : null;
+  if (map && Object.keys(map).length) {
+    for (const k in map) { if (map[k] > 0) poolValue += map[k]; }
+  } else if (typeof getValues === "function") {
+    for (const p of getValues()) { if (p.value > 0) poolValue += p.value; }
+  }
+  if (poolValue <= 0) return 1;
+  const budget = LEAGUE.draftBudget * LEAGUE.numTeams;
+  const remVal = poolValue - keptValue;
+  if (remVal <= 0) return 1;
+  const infl = ((budget - keptCost) / remVal) / (budget / poolValue);
+  return infl > 0 && isFinite(infl) ? infl : 1;
 }
 
 // Which projection sources are available to choose from.
@@ -57,7 +75,9 @@ function _keeperSources() {
   const out = [];
   if (typeof ROS_SOURCES !== "undefined") {
     for (const s of ROS_SOURCES) {
-      if (rosHasData(s.id)) {
+      // Selectable if it has stats OR just uploaded $ values (the latter is
+      // enough to drive the keeper Predicted $).
+      if (rosHasData(s.id) || rosHasDollars(s.id)) {
         out.push({ id: s.id, label: s.label, hasDollars: rosHasDollars(s.id) });
       }
     }
@@ -83,7 +103,7 @@ function _currentKeeperSource(sources) {
 // overlaid by name from The League App (accurate keeper years). Minor-league
 // stashes (not on the ESPN active roster) come from The League App's minors.
 // If ESPN isn't available, fall back to The League App's anchor entirely.
-function _teamCandidates(team, source, inflation) {
+function _teamCandidates(team, source) {
   const teamSel = getKeeperSelections()[team.id] || {};
   const season = (typeof leagueRosterSeason === "function") ? leagueRosterSeason() : new Date().getFullYear();
   const espn = _keepersState.rosters;            // { teamId: [espnPlayer] } or null
@@ -102,12 +122,13 @@ function _teamCandidates(team, source, inflation) {
     const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, name);
     const predValue = _keeperPredValue(name, type, source);
     const surplus = predValue != null ? predValue - cost : null;            // Pred $ − Cost
-    const value = predValue != null ? predValue - cost / inflation : null;  // Pred $ − Cost/Inflation
-    const eligible = (o.contract ? o.contract.canKeepNextSeason : true) && !myIneligible;
+    const contractExpired = !!(o.contract && !o.contract.canKeepNextSeason); // used all keeper years
+    const eligible = !contractExpired && !myIneligible;
     rows.push({
       name, pos, type, kind: o.kind, isMinor: o.kind === "minor",
       leagueSel: teamSel[name] || null, myPicked, myIneligible,
-      cost, costMissing: !!o.costMissing, predValue, surplus, value, contract: o.contract || null, eligible,
+      cost, costMissing: !!o.costMissing, predValue, surplus, value: null,
+      contract: o.contract || null, contractExpired, eligible,
     });
   };
 
@@ -138,7 +159,15 @@ function _teamCandidates(team, source, inflation) {
     else { const rawCost = getCurrentKeeperSalary(name); push(name, { kind: "fa", contract: null, cost: rawCost == null ? 0 : rawCost, costMissing: rawCost == null }); }
   }
 
+  return rows;   // Value + sorting happen in renderKeepers once inflation is known.
+}
+
+// Eligible keepers first; expired/ineligible sink to the bottom. Within each
+// group, sort by Value (inflation-adjusted surplus), nulls last.
+function _sortKeeperRows(rows) {
   rows.sort((a, b) => {
+    const ae = a.eligible ? 0 : 1, be = b.eligible ? 0 : 1;
+    if (ae !== be) return ae - be;
     if (a.value == null && b.value == null) return a.name.localeCompare(b.name);
     if (a.value == null) return 1;
     if (b.value == null) return -1;
@@ -156,13 +185,36 @@ function renderKeepers() {
   }
   const sources = _keeperSources();
   const source = _currentKeeperSource(sources);
-  const inflation = _keeperInflation();
   const meta = getProjectionMeta();
   const hasAnyProj = sources.length > 0;
 
+  // Team order: me first, then others alphabetically.
+  const me = LEAGUE.teams.find(t => t.isMe);
+  const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
+  const order = me ? [me, ...others] : others;
+
+  // Pass 1: build each team's rows; sum eligible checked picks for inflation.
+  const teamRows = new Map();
+  let keptCost = 0, keptValue = 0;
+  for (const t of order) {
+    const rows = _teamCandidates(t, source);
+    teamRows.set(t.id, rows);
+    for (const r of rows) if (r.myPicked && r.eligible) { keptCost += r.cost; keptValue += (r.predValue || 0); }
+  }
+  // Inflation: manual override if set, else auto from the selected $ pool
+  // (exactly 1.00 with no keepers; rises as bargains are kept).
+  const inflOverride = _keeperInflationOverride();
+  const inflation = inflOverride != null ? inflOverride : _poolInflation(source, keptCost, keptValue);
+  // Pass 2: assign Value = Pred $ − (Cost ÷ Inflation), then sort (expired last).
+  for (const t of order) {
+    const rows = teamRows.get(t.id);
+    for (const r of rows) r.value = r.predValue != null ? r.predValue - r.cost / inflation : null;
+    _sortKeeperRows(rows);
+  }
+
   // === Controls ===
   let html = '<div class="card"><h2>Keepers by Team</h2>';
-  html += '<p class="muted small">Check who you think each team keeps (your picks for your own team). The <b>League</b> column shows what’s flagged on the league site. <b>Value</b> = Predicted $ − (Keeper Cost ÷ Inflation). Sorted by Value.</p>';
+  html += '<p class="muted small"><b>Surplus</b> = Predicted $ − Cost. <b>Value</b> = Predicted $ − (Cost ÷ Inflation) — so Value = Surplus only while Inflation is 1.00, and exceeds it as you check keepers. Expired players sink to the bottom and can’t be checked.</p>';
   html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:8px;">';
 
   // Projection source
@@ -179,9 +231,10 @@ function renderKeepers() {
   }
   html += '</label>';
 
-  // Inflation
+  // Inflation (effective value shown; editing sets a manual override)
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Inflation ' +
-    '<input id="kp-infl" type="number" step="0.05" min="1" max="3" value="' + inflation.toFixed(2) + '" style="width:80px;"></label>';
+    '<input id="kp-infl" type="number" step="0.05" min="1" max="3" value="' + inflation.toFixed(2) + '" style="width:80px;">' +
+    '<span class="dim" style="font-size:11px;">' + (inflOverride != null ? '<a href="#" id="kp-infl-auto">auto</a>' : 'auto') + '</span></label>';
 
   // Refresh both sources.
   html += '<button class="btn" id="kp-load" style="width:auto; padding:6px 12px;">' +
@@ -230,13 +283,9 @@ function renderKeepers() {
   html += '</div>';
 
   // === Per-team boards ===
-  const me = LEAGUE.teams.find(t => t.isMe);
-  const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
-  const order = me ? [me, ...others] : others;
-
   const rostersLoaded = !!(espn || rosterData);
   for (const t of order) {
-    let rows = _teamCandidates(t, source, inflation);
+    let rows = teamRows.get(t.id) || [];
     const ldTeam = rosterData ? rosterData.teams.find(x => x.id === t.id) : null;
     const espnCount = (espn && espn[t.id]) ? espn[t.id].length : 0;
     const milCount = ldTeam ? (ldTeam.minors || []).length : 0;
@@ -248,7 +297,7 @@ function renderKeepers() {
     // back empty is visible, not silently dropped). Otherwise skip empty teams.
     if (!rows.length && !rostersLoaded) continue;
 
-    const picks = rows.filter(r => r.myPicked);
+    const picks = rows.filter(r => r.myPicked && r.eligible);
     const mlPicks = picks.filter(r => !r.isMinor);
     const milPicks = picks.filter(r => r.isMinor);
     const totalCost = mlPicks.reduce((s, r) => s + r.cost, 0);
@@ -282,12 +331,15 @@ function renderKeepers() {
 
     for (const r of rows) {
       const tid = esc(t.id), pn = esc(r.name);
-      const warnRow = r.myPicked && !r.eligible;
-      let cls = r.myPicked ? (r.isMinor ? "minor-kept" : "kept") : "";
-      html += '<tr class="' + cls + '"' + (warnRow ? ' style="background:rgba(229,115,115,.08);"' : '') + '>';
+      const expired = !r.eligible;            // expired contract or manually ineligible
+      let cls = (r.myPicked && r.eligible) ? (r.isMinor ? "minor-kept" : "kept") : "";
+      html += '<tr class="' + cls + '"' + (expired ? ' style="opacity:.6;"' : '') + '>';
 
-      // My-keeper checkbox
-      html += '<td class="num"><input type="checkbox" class="kp-check" data-team="' + tid + '" data-player="' + pn + '"' + (r.myPicked ? " checked" : "") + '></td>';
+      // My-keeper checkbox — disabled for expired/ineligible players (can't keep).
+      // (Stays enabled if somehow already checked, so a stale pick can be cleared.)
+      const disable = expired && !r.myPicked;
+      html += '<td class="num"><input type="checkbox" class="kp-check" data-team="' + tid + '" data-player="' + pn + '"' +
+        (r.myPicked ? " checked" : "") + (disable ? ' disabled title="Expired — can\'t be kept"' : '') + '></td>';
 
       // Player (+ roster-kind badge)
       const kindBadge = r.kind === "minor" ? ' <span class="kbd" style="color:var(--minor);" title="Minor leaguer">MiL</span>'
@@ -332,20 +384,17 @@ function renderKeepers() {
     html += '</tbody></table></div>';
   }
 
-  if (!rostersLoaded && !order.some(t => _teamCandidates(t, source, inflation).length)) {
-    html += '<div class="empty"><p>Loading rosters from The League App…</p><p class="small">If this persists, click “Refresh from The League App”.</p></div>';
+  if (!rostersLoaded && !order.some(t => (teamRows.get(t.id) || []).length)) {
+    html += '<div class="empty"><p>Loading rosters from The League App…</p><p class="small">If this persists, click “Refresh rosters”.</p></div>';
   }
 
   root.innerHTML = html;
 
-  // Keep the topbar inflation badge in sync — it now reflects predicted keepers.
+  // Keep the topbar inflation badge in sync with the keeper-page inflation.
   const badge = document.getElementById("inflation-badge");
-  if (badge && typeof computeTieredInflation === "function") {
-    const inf = computeTieredInflation();
-    if (inf) {
-      badge.textContent = "infl " + inf.multiplier.toFixed(2) + "x";
-      badge.className = "badge " + (inf.multiplier > 1.2 ? "hot" : inf.multiplier < 1.0 ? "cold" : "");
-    }
+  if (badge) {
+    badge.textContent = "infl " + inflation.toFixed(2) + "x";
+    badge.className = "badge " + (inflation > 1.2 ? "hot" : inflation < 1.0 ? "cold" : "");
   }
 
   _wireKeepers();
@@ -392,6 +441,12 @@ function _wireKeepers() {
   if (infl) infl.addEventListener("change", () => {
     const v = parseFloat(infl.value);
     if (isFinite(v) && v > 0) { _keepersState.inflation = v; localStorage.setItem(KEEPER_INFLATION_KEY, String(v)); }
+    renderKeepers();
+  });
+  const inflAuto = document.getElementById("kp-infl-auto");
+  if (inflAuto) inflAuto.addEventListener("click", (e) => {
+    e.preventDefault();
+    _keepersState.inflation = null; localStorage.removeItem(KEEPER_INFLATION_KEY);
     renderKeepers();
   });
   const only = document.getElementById("kp-only");

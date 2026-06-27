@@ -76,7 +76,12 @@ function renderData() {
   // --- Projected $ (FanGraphs auction values) ---
   html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
   html += '<h3>Projected $ (auction values)</h3>';
-  html += '<p class="small muted">FanGraphs publishes projected <b>$</b> in its Auction Calculator (use your saved settings, then export). Paste/upload a <code>Name,$</code> CSV here for <b>' + esc(getRosSourceLabel(rosSel)) + '</b> — it drives the Keepers page <b>Predicted $</b> / Value. (A column named Dollars, $, Value, or PV is detected.)</p>';
+  html += '<p class="small muted">FanGraphs publishes projected <b>$</b> in its Auction Calculator (your exact league settings baked in). This $ drives the Keepers page <b>Predicted $</b> / Value for <b>' + esc(getRosSourceLabel(rosSel)) + '</b>.</p>';
+  html += '<ol class="small muted" style="margin:6px 0 8px; padding-left:18px; line-height:1.7;">';
+  html += '<li><a href="' + esc(fangraphsAuctionUrl(rosSel)) + '" target="_blank" rel="noopener" style="color:var(--accent); font-weight:600;">Open FanGraphs Auction Calculator — ' + esc(getRosSourceLabel(rosSel)) + ' ↗</a></li>';
+  html += '<li>On that page, click <b>Export Data</b> (above the table) to save the CSV.</li>';
+  html += '<li>Upload it below (or paste a <code>Name,$</code> CSV). A column named Dollars / $ / Value / PV is detected.</li>';
+  html += '</ol>';
   html += '<textarea id="ros-dol-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Name,$&#10;Aaron Judge,42&#10;Tarik Skubal,28"></textarea>';
   html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-dol-import" style="width:auto;">Import $ values</button> <input type="file" id="ros-dol-file" accept=".csv,text/csv">';
   if (typeof rosHasDollars === "function" && rosHasDollars(rosSel)) {

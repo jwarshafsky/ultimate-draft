@@ -151,6 +151,18 @@ function fangraphsApiUrl(sourceId, stats) {
     "&stats=" + (stats === "pit" ? "pit" : "bat") + "&pos=all&team=0&players=0&lg=all";
 }
 
+// FanGraphs Auction Calculator page for a source, using Jeff's exact league
+// settings (12 tm, $260, OBP/QS/SV+HLD, 69/31 split, drp=30). The auction $
+// here feed the Keepers page Predicted $ — open it, click "Export Data" to save
+// the CSV, then upload it via the Projected $ importer. proj swapped per source.
+function fangraphsAuctionUrl(sourceId) {
+  const proj = FG_API_SLUG[sourceId] || "steamerr";
+  return "https://www.fangraphs.com/fantasy-tools/auction-calculator" +
+    "?teams=12&lg=MLB&dollars=260&mb=1&mp=10&msp=10&mrp=5&type=SP&players=&proj=" + proj +
+    "&split=69&points=c%7C1%2C2%2C3%2C4%2C5%7C2%2C3%2C4%2C13%2C14&rep=1&drp=30" +
+    "&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C5%2C1%2C1%2C1%2C0%2C1%2C6%2C4%2C0%2C0%2C0&sort=&view=0";
+}
+
 // Import projections pasted as raw FanGraphs API JSON (an array of player rows).
 // kind = "bat" | "pit". Returns the row count.
 // A complete FanGraphs ROS list has well over this many players; fewer almost
@@ -290,6 +302,18 @@ function getRosDollar(sourceId, name, type) {
     if (typeof v === "number") return v;
   }
   return null;
+}
+
+// Full name→$ map for a source (record-level dollars + uploaded dollarsByName).
+// Used to build the value pool for keeper inflation. Returns {} if none.
+function getRosDollarMap(sourceId) {
+  const d = _ros.data[sourceId];
+  const out = {};
+  if (!d) return out;
+  for (const h of (d.hitters || [])) if (typeof h.dollars === "number") out[normalizePlayerName(h.name)] = h.dollars;
+  for (const p of (d.pitchers || [])) if (typeof p.dollars === "number") out[normalizePlayerName(p.name)] = p.dollars;
+  if (d.dollarsByName) for (const k of Object.keys(d.dollarsByName)) out[k] = d.dollarsByName[k];
+  return out;
 }
 
 // True if this source includes any projected dollar values (record-level or
