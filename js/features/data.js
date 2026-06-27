@@ -73,6 +73,17 @@ function renderData() {
       ' <button class="btn danger" id="ros-clear" style="width:auto; padding:2px 8px; margin-left:8px;">Clear this source</button></div>';
   }
 
+  // --- Projected $ (FanGraphs auction values) ---
+  html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
+  html += '<h3>Projected $ (auction values)</h3>';
+  html += '<p class="small muted">FanGraphs publishes projected <b>$</b> in its Auction Calculator (use your saved settings, then export). Paste/upload a <code>Name,$</code> CSV here for <b>' + esc(getRosSourceLabel(rosSel)) + '</b> — it drives the Keepers page <b>Predicted $</b> / Value. (A column named Dollars, $, Value, or PV is detected.)</p>';
+  html += '<textarea id="ros-dol-csv" rows="3" style="width:100%; font-family:var(--mono); font-size:11px;" placeholder="Name,$&#10;Aaron Judge,42&#10;Tarik Skubal,28"></textarea>';
+  html += '<div style="margin-top:6px;"><button class="btn primary" id="ros-dol-import" style="width:auto;">Import $ values</button> <input type="file" id="ros-dol-file" accept=".csv,text/csv">';
+  if (typeof rosHasDollars === "function" && rosHasDollars(rosSel)) {
+    html += ' <span class="small" style="color:var(--good);">✓ $ values loaded for this source</span>';
+  }
+  html += '</div></div>';
+
   // --- CSV import (fallback, collapsed) ---
   html += '<details style="margin-top:10px;"><summary class="small muted" style="cursor:pointer;">Advanced: import a CSV instead</summary>';
   html += '<div class="grid cols-2" style="margin-top:8px;">';
@@ -213,6 +224,26 @@ function renderData() {
   }
   wireRosImport("ros-hit-csv", "ros-hit-file", importRosHitters, "ROS hitters");
   wireRosImport("ros-pit-csv", "ros-pit-file", importRosPitchers, "ROS pitchers");
+
+  // Projected $ (auction values) import for the selected source.
+  document.getElementById("ros-dol-import")?.addEventListener("click", () => {
+    const text = document.getElementById("ros-dol-csv").value;
+    if (!text.trim()) { alert("Paste a Name,$ CSV first."); return; }
+    const n = importRosDollars(_dataRosSel, text);
+    alert("Imported " + n + " projected $ values into " + getRosSourceLabel(_dataRosSel) + ".");
+    renderData();
+  });
+  document.getElementById("ros-dol-file")?.addEventListener("change", (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const n = importRosDollars(_dataRosSel, String(reader.result));
+      alert("Imported " + n + " projected $ values into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ".");
+      renderData();
+    };
+    reader.readAsText(file);
+  });
   document.getElementById("ros-clear")?.addEventListener("click", () => {
     if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " ROS projections?")) { clearRosSource(_dataRosSel); renderData(); }
   });

@@ -78,69 +78,60 @@ function _currentKeeperSource(sources) {
   return sources.length ? sources[0].id : "preseason";
 }
 
-// Build the candidate list for one team: ESPN roster majors + MiL keepers +
-// anything you've already marked. Each entry is enriched for display.
+// Build the candidate list for one team from The League App's authoritative
+// roster + contract data (majors / call-ups / minors), enriched for display.
+// Anything you've personally marked is also included so nothing is lost.
 function _teamCandidates(team, source, inflation) {
-  const selections = getKeeperSelections();
-  const teamSel = selections[team.id] || {};
-  const rosters = _keepersState.rosters;
-  const byName = new Map();
-
-  const add = (name, base) => {
-    if (!name) return;
-    if (!byName.has(name)) byName.set(name, { name, ...base });
-    else Object.assign(byName.get(name), base);
-  };
-
-  // Live ESPN roster (majors).
-  if (rosters && rosters[team.id]) {
-    for (const p of rosters[team.id]) {
-      add(p.name, { pos: p.pos || "", type: p.type || "H", isMinor: false, onRoster: true });
-    }
-  }
-  // Minor-league keepers from the league site (stashed off the ESPN roster).
-  for (const [name, f] of Object.entries(teamSel)) {
-    if (f.minorKeeper) add(name, { isMinor: true });
-  }
-  // League-marked majors + anything you've picked — so nothing you care about
-  // is missing even before rosters load.
-  for (const [name, f] of Object.entries(teamSel)) {
-    if (f.keeper && !byName.has(name)) add(name, { isMinor: false });
-  }
-  for (const name of (typeof getMyTeamPicks === "function" ? getMyTeamPicks(team.id) : [])) {
-    if (!byName.has(name)) add(name, { isMinor: false });
-  }
-
+  const teamSel = getKeeperSelections()[team.id] || {};
+  const ld = (typeof getLeagueTeamRoster === "function") ? getLeagueTeamRoster(team.id) : null;
+  const season = (typeof leagueRosterSeason === "function") ? leagueRosterSeason() : new Date().getFullYear();
   const rows = [];
-  for (const c of byName.values()) {
-    const leagueSel = teamSel[c.name] || null;
-    if (c.isMinor == null) c.isMinor = !!(leagueSel && leagueSel.minorKeeper);
-    let type = c.type;
-    let pos = c.pos;
-    if (!type || !pos) {
-      const v = getPlayerValue(c.name);
-      type = type || (v ? v.type : "H");
-      pos = pos || (v ? v.pos : "—");
-    }
-    const myPicked = (typeof isMyKeeper === "function") && isMyKeeper(team.id, c.name);
-    const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, c.name);
-    const rawCost = c.isMinor ? 0 : getCurrentKeeperSalary(c.name);
-    const cost = rawCost == null ? 0 : rawCost;
-    const costMissing = !c.isMinor && rawCost == null;
-    const predValue = _keeperPredValue(c.name, type, source);
-    const surplus = predValue != null ? predValue - cost : null;            // plain
-    const value = predValue != null ? predValue - cost / inflation : null;  // inflation-adjusted
-    const contract = c.isMinor ? null : getKeeperContractStatus(c.name);
-    const eligible = c.isMinor ? !myIneligible : (!!contract && contract.canKeepNextSeason && !myIneligible);
+  const seen = new Set();
 
+  const push = (name, kind, contract, cost, costMissing) => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    const v = getPlayerValue(name);
+    const type = v ? v.type : "H";
+    const pos = v ? v.pos : "—";
+    const isMinor = kind === "minor";
+    const myPicked = (typeof isMyKeeper === "function") && isMyKeeper(team.id, name);
+    const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, name);
+    const predValue = _keeperPredValue(name, type, source);
+    const surplus = predValue != null ? predValue - cost : null;            // Pred $ − Cost
+    const value = predValue != null ? predValue - cost / inflation : null;  // Pred $ − Cost/Inflation
+    const eligible = (contract ? contract.canKeepNextSeason : true) && !myIneligible;
     rows.push({
-      name: c.name, pos, type, isMinor: c.isMinor, onRoster: !!c.onRoster,
-      leagueSel, myPicked, myIneligible,
+      name, pos, type, kind, isMinor,
+      leagueSel: teamSel[name] || null, myPicked, myIneligible,
       cost, costMissing, predValue, surplus, value, contract, eligible,
     });
+  };
+
+  if (ld) {
+    for (const p of (ld.majors || [])) {
+      const c = leagueMajorContract(p, season);
+      push(p.name, "major", c, c.nextYearPrice, false);
+    }
+    for (const p of (ld.callups || [])) {
+      const c = leagueMinorContract(p, season);
+      const ov = (typeof getCallupOverride === "function") ? getCallupOverride(p.name) : null;
+      const cost = ov && ov.price != null ? ov.price : 0;
+      push(p.name, "callup", c, cost, !(ov && ov.price != null));
+    }
+    for (const p of (ld.minors || [])) {
+      push(p.name, "minor", leagueMinorContract(p, season), 0, false);
+    }
+  }
+  // Include any player you've marked who isn't in the roster data (e.g. a recent
+  // FA pickup) so your pick is never lost. Cost falls back to the history guess.
+  for (const name of (typeof getMyTeamPicks === "function" ? getMyTeamPicks(team.id) : [])) {
+    if (seen.has(name)) continue;
+    const rawCost = getCurrentKeeperSalary(name);
+    push(name, "major", null, rawCost == null ? 0 : rawCost, rawCost == null);
   }
 
-  // Sort by inflation-adjusted Value (surplus), nulls last.
+  // Sort by inflation-adjusted Value, nulls last.
   rows.sort((a, b) => {
     if (a.value == null && b.value == null) return a.name.localeCompare(b.name);
     if (a.value == null) return 1;
@@ -152,6 +143,11 @@ function _teamCandidates(team, source, inflation) {
 
 function renderKeepers() {
   const root = document.getElementById("view-root");
+  // Auto-load authoritative rosters from The League App on first view.
+  if (typeof getLeagueRosterData === "function" && !getLeagueRosterData() &&
+      !_keepersState.loadingRosters && !_keepersState.rosterError) {
+    _loadKeeperRosters(false);
+  }
   const sources = _keeperSources();
   const source = _currentKeeperSource(sources);
   const inflation = _keeperInflation();
@@ -181,32 +177,29 @@ function renderKeepers() {
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">Inflation ' +
     '<input id="kp-infl" type="number" step="0.05" min="1" max="3" value="' + inflation.toFixed(2) + '" style="width:80px;"></label>';
 
-  // Load rosters
+  // Refresh authoritative rosters from The League App.
   html += '<button class="btn" id="kp-load" style="width:auto; padding:6px 12px;">' +
-    (_keepersState.loadingRosters ? "Loading…" : (_keepersState.rosters ? "Refresh rosters" : "Load rosters from ESPN")) + '</button>';
+    (_keepersState.loadingRosters ? "Refreshing…" : "Refresh from The League App") + '</button>';
 
   // Only-keepers filter
   html += '<label class="small muted" style="display:inline-flex; align-items:center; gap:6px;">' +
     '<input type="checkbox" id="kp-only"' + (_keepersState.onlyKeepers ? " checked" : "") + '> Only keepers</label>';
   html += '</div>';
 
-  html += '<p class="small muted" style="margin-top:6px;">Inflation starts at <b>1.00</b> with no keepers and rises as you check players — driven only by your predicted keepers (flagged-ineligible picks excluded). Updates Values, Board &amp; Overview app-wide.</p>';
+  html += '<p class="small muted" style="margin-top:6px;">Rosters &amp; contracts come from <b>The League App</b> (the source of truth) — eligibility reflects real keeper years. Inflation starts at <b>1.00</b> and rises only as you check players. Updates Values, Board &amp; Overview app-wide.</p>';
+
+  const rosterData = (typeof getLeagueRosterData === "function") ? getLeagueRosterData() : null;
   if (_keepersState.rosterError) {
-    html += '<p class="small" style="color:var(--bad); margin-top:6px;">Roster load failed: ' + esc(_keepersState.rosterError) + '</p>';
-  }
-  if (!_keepersState.rosters) {
-    html += '<p class="small muted" style="margin-top:6px;">Load ESPN rosters to predict keepers from each team’s full roster. Until then, only flagged + your picks show.</p>';
+    html += '<p class="small" style="color:var(--bad); margin-top:6px;">Couldn’t load rosters from The League App: ' + esc(_keepersState.rosterError) + '</p>';
+  } else if (!rosterData) {
+    html += '<p class="small muted" style="margin-top:6px;">' + (_keepersState.loadingRosters ? "Loading rosters from The League App…" : "Rosters not loaded yet.") + '</p>';
   } else {
-    const teamCt = Object.values(_keepersState.rosters).filter(a => a && a.length).length;
-    const playerCt = Object.values(_keepersState.rosters).reduce((s, a) => s + (a ? a.length : 0), 0);
-    const lowWarn = teamCt < LEAGUE.teams.length || playerCt < LEAGUE.teams.length * 15;
-    const rm = _keepersState.rosterMeta || {};
-    const unmapped = (rm.unmappedIds && rm.unmappedIds.length) ? rm.unmappedIds.join(", ") : "";
-    html += '<p class="small ' + (lowWarn ? "" : "muted") + '" style="margin-top:6px;' + (lowWarn ? "color:var(--warn);" : "") + '">' +
-      'Loaded <b>' + teamCt + '/' + LEAGUE.teams.length + '</b> teams · <b>' + playerCt + '</b> rostered players' +
-      (rm.rawTeamCount != null ? ' · ESPN returned ' + rm.rawTeamCount + ' teams' : '') +
-      (unmapped ? ' · <b style="color:var(--bad);">unmapped ESPN team ids: ' + esc(unmapped) + '</b> (team-id map needs updating)' : '') +
-      (lowWarn && !unmapped ? ' — that looks low; try “Refresh rosters”. Minor leaguers are stashed off ESPN rosters and come from league MiL marks.' : '') + '</p>';
+    const teamCt = rosterData.teams.length;
+    const playerCt = rosterData.teams.reduce((s, t) => s + (t.majors||[]).length + (t.callups||[]).length + (t.minors||[]).length, 0);
+    const at = (typeof getLeagueRostersUpdatedAt === "function") ? getLeagueRostersUpdatedAt() : null;
+    html += '<p class="small muted" style="margin-top:6px;">' +
+      teamCt + ' teams · ' + playerCt + ' rostered players · season ' + rosterData.season +
+      (at ? ' · synced ' + new Date(at).toLocaleString() : '') + '</p>';
   }
   if (source && source !== "preseason" && !rosHasDollars(source)) {
     html += '<p class="small" style="color:var(--warn); margin-top:6px;">This ROS source has no projected $ — Predicted $ falls back to preseason values. Import a FanGraphs export with a Dollars column (Data tab) for ROS pricing.</p>';
@@ -221,10 +214,11 @@ function renderKeepers() {
   const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
   const order = me ? [me, ...others] : others;
 
-  const rostersLoaded = !!_keepersState.rosters;
+  const rostersLoaded = !!rosterData;
   for (const t of order) {
     let rows = _teamCandidates(t, source, inflation);
-    const rosterCount = (rostersLoaded && _keepersState.rosters[t.id]) ? _keepersState.rosters[t.id].length : 0;
+    const ldTeam = rostersLoaded ? rosterData.teams.find(x => x.id === t.id) : null;
+    const rosterCount = ldTeam ? ((ldTeam.majors||[]).length + (ldTeam.callups||[]).length + (ldTeam.minors||[]).length) : 0;
     if (_keepersState.onlyKeepers) {
       rows = rows.filter(r => r.myPicked || (r.leagueSel && (r.leagueSel.keeper || r.leagueSel.minorKeeper)));
     }
@@ -273,8 +267,10 @@ function renderKeepers() {
       // My-keeper checkbox
       html += '<td class="num"><input type="checkbox" class="kp-check" data-team="' + tid + '" data-player="' + pn + '"' + (r.myPicked ? " checked" : "") + '></td>';
 
-      // Player
-      html += '<td>' + esc(r.name) + (r.isMinor ? ' <span class="kbd" style="color:var(--minor);">MiL</span>' : '') + '</td>';
+      // Player (+ roster-kind badge)
+      const kindBadge = r.kind === "minor" ? ' <span class="kbd" style="color:var(--minor);" title="Minor leaguer">MiL</span>'
+        : r.kind === "callup" ? ' <span class="kbd" style="color:var(--minor);" title="Called up from minors">CU</span>' : '';
+      html += '<td>' + esc(r.name) + kindBadge + '</td>';
 
       // Pos
       html += '<td>' + esc(r.pos || "—") + '</td>';
@@ -314,8 +310,8 @@ function renderKeepers() {
     html += '</tbody></table></div>';
   }
 
-  if (!order.some(t => _teamCandidates(t, source, inflation).length)) {
-    html += '<div class="empty"><p>Nothing to show yet.</p><p class="small">Load ESPN rosters, or mark keepers on the league site.</p></div>';
+  if (!rostersLoaded && !order.some(t => _teamCandidates(t, source, inflation).length)) {
+    html += '<div class="empty"><p>Loading rosters from The League App…</p><p class="small">If this persists, click “Refresh from The League App”.</p></div>';
   }
 
   root.innerHTML = html;
@@ -340,15 +336,12 @@ function _eligibilityCell(teamId, r) {
   let out = "";
   if (r.myIneligible) {
     out += '<span class="kbd" style="color:var(--bad);" title="Manually marked ineligible">INELIGIBLE</span> ';
-  } else if (r.isMinor) {
-    out += '<span class="kbd" style="color:var(--minor);">MiL keeper</span> ';
   } else if (r.contract) {
     const c = r.contract;
-    if (!c.known) out += '<span class="kbd dim" title="No draft record">unknown</span> ';
-    else if (c.status === "final") out += '<span class="kbd" style="color:var(--bad);" title="Used all keeper years">' + esc(c.label) + '</span> ';
-    else if (c.status === "expiring") out += '<span class="kbd" style="color:var(--warn);">' + esc(c.label) + '</span> ';
-    else out += '<span class="kbd" style="color:var(--good);">' + esc(c.label) + '</span> ';
-    if (c.estimated) out += '<span class="kbd dim" title="Original price estimated (auction predates history)">est</span> ';
+    const color = c.status === "final" ? "var(--bad)" : c.status === "expiring" ? "var(--warn)" : "var(--good)";
+    out += '<span class="kbd" style="color:' + color + ';">' + esc(c.label) + '</span> ';
+  } else {
+    out += '<span class="kbd dim" title="No contract on file — likely a FA pickup (keepable at $6 the first year)">FA / unknown</span> ';
   }
   // Toggle link
   out += '<a href="#" class="kp-inelig" data-team="' + tid + '" data-player="' + pn + '" style="font-size:11px; color:var(--dim);">' +
@@ -382,18 +375,17 @@ function _wireKeepers() {
   const only = document.getElementById("kp-only");
   if (only) only.addEventListener("change", () => { _keepersState.onlyKeepers = only.checked; renderKeepers(); });
   const load = document.getElementById("kp-load");
-  if (load) load.addEventListener("click", _loadKeeperRosters);
+  if (load) load.addEventListener("click", () => _loadKeeperRosters(true));
 }
 
-async function _loadKeeperRosters() {
+async function _loadKeeperRosters(force) {
   if (_keepersState.loadingRosters) return;
+  if (typeof loadLeagueRosters !== "function") return;
   _keepersState.loadingRosters = true;
   _keepersState.rosterError = null;
-  renderKeepers();
+  if (force) renderKeepers();   // show "Refreshing…" only on explicit refresh
   try {
-    const res = await fetchEspnRosters(0);
-    _keepersState.rosters = res.rosters || {};
-    _keepersState.rosterMeta = { rawTeamCount: res.rawTeamCount, unmappedIds: res.unmappedIds || [] };
+    await loadLeagueRosters(!!force);
   } catch (e) {
     _keepersState.rosterError = e.message || String(e);
   } finally {

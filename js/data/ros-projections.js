@@ -254,24 +254,50 @@ function getRosLine(sourceId, name, type) {
     HBP: h.HBP || null, SF: h.SF || null };
 }
 
+// Import a standalone "Name, $" CSV of FanGraphs projected auction values for a
+// source — separate from the stats import, since FG publishes $ in the Auction
+// Calculator export. Stored as a name→$ map and merged at lookup time.
+function importRosDollars(sourceId, text) {
+  const rows = parseCSV(text);
+  const d = _ensureSource(sourceId);
+  d.dollarsByName = d.dollarsByName || {};
+  let n = 0;
+  for (const r of rows) {
+    const name = pickCol(r, ["Name", "Player", "PlayerName", "name"]);
+    const dol = _pickDollars(r);
+    if (name && dol != null) { d.dollarsByName[normalizePlayerName(name)] = dol; n++; }
+  }
+  _saveRos(sourceId);
+  fireData && fireData();
+  return n;
+}
+
 // Projected auction dollar value for a player in a given source. type "H"|"P"
-// (or omit to try both). Returns null when the source carries no dollar column
-// or the player isn't found.
+// (or omit to try both). Checks per-record dollars first, then a separately
+// uploaded name→$ map. Returns null when no $ is on file for the player.
 function getRosDollar(sourceId, name, type) {
-  if (!_ros.data[sourceId]) return null;
+  const d = _ros.data[sourceId];
+  if (!d) return null;
   const idx = _ros.index[sourceId] || _buildIndex(sourceId);
   const key = normalizePlayerName(name), ck = coreNameKey(name);
   let rec;
   if (type === "P") rec = idx.P.get(key) || idx.Pc.get(ck);
   else if (type === "H") rec = idx.H.get(key) || idx.Hc.get(ck);
   else rec = idx.H.get(key) || idx.P.get(key) || idx.Hc.get(ck) || idx.Pc.get(ck);
-  return rec && typeof rec.dollars === "number" ? rec.dollars : null;
+  if (rec && typeof rec.dollars === "number") return rec.dollars;
+  if (d.dollarsByName) {
+    const v = d.dollarsByName[key];
+    if (typeof v === "number") return v;
+  }
+  return null;
 }
 
-// True if this source includes any projected dollar values.
+// True if this source includes any projected dollar values (record-level or
+// separately uploaded).
 function rosHasDollars(sourceId) {
   const d = _ros.data[sourceId];
   if (!d) return false;
+  if (d.dollarsByName && Object.keys(d.dollarsByName).length) return true;
   return (d.hitters || []).some(h => typeof h.dollars === "number") ||
          (d.pitchers || []).some(p => typeof p.dollars === "number");
 }
