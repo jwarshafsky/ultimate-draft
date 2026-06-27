@@ -58,9 +58,27 @@ function renderOverview() {
     html += '</div>';
   }
 
+  // Per-team "Total Value" from the Keepers data: predicted $ of your kept
+  // players + (remaining cash ÷ inflation) — i.e. value locked in plus the value
+  // your remaining budget can still buy at inflated prices.
+  const tvSource = (typeof _currentKeeperSource === "function" && typeof _keeperSources === "function")
+    ? _currentKeeperSource(_keeperSources()) : null;
+  const tvInfl = (typeof computeKeeperInflation === "function") ? computeKeeperInflation() : 1;
+  const teamTotals = (t) => {
+    if (typeof _teamCandidates !== "function") return null;
+    let predVal = 0, cost = 0;
+    for (const r of _teamCandidates(t, tvSource)) {
+      if (r.myPicked && r.eligible) { predVal += (r.predValue || 0); cost += r.cost; }
+    }
+    const remainingCash = Math.max(0, LEAGUE.draftBudget - cost);
+    return { keeperValue: predVal, cost, remainingCash, total: predVal + remainingCash / (tvInfl > 0 ? tvInfl : 1) };
+  };
+
   // Teams table
-  html += '<div class="card"><h2>Teams</h2><table><thead><tr>';
-  html += '<th>Team</th><th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th>';
+  html += '<div class="card"><h2>Teams</h2>';
+  html += '<p class="muted small">Total Value = predicted $ of your kept players + (remaining cash ÷ inflation ' + (tvInfl ? tvInfl.toFixed(2) : '1.00') + '×). Keepers are your predictions on the Keepers tab.</p>';
+  html += '<table><thead><tr>';
+  html += '<th>Team</th><th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th><th class="num">Total Value</th>';
   html += '</tr></thead><tbody>';
   // Sort: me first, then alphabetical by owner
   const me = LEAGUE.teams.find(t => t.isMe);
@@ -68,9 +86,9 @@ function renderOverview() {
   const order = me ? [me, ...others] : others;
   for (const t of order) {
     const b = budgets[t.id] || { keepers: 0, remaining: LEAGUE.draftBudget, keeperCount: 0, minorCount: 0 };
-    const slotsToFill = LEAGUE.maxMlKeepers + 18 - b.keeperCount; // 8 keeper slots + remaining auction = 26 total
     const draftSpots = LEAGUE.rosterSize - b.keeperCount;
     const dollarsPerSpot = draftSpots > 0 ? b.remaining / draftSpots : 0;
+    const tv = teamTotals(t);
     html += '<tr' + (t.isMe ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
     html += '<td>' + esc(t.name) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
     html += '<td>' + esc(t.owner) + '</td>';
@@ -79,6 +97,7 @@ function renderOverview() {
     html += '<td class="num">$' + b.keepers + '</td>';
     html += '<td class="num">$' + b.remaining + '</td>';
     html += '<td class="num">$' + dollarsPerSpot.toFixed(1) + '</td>';
+    html += '<td class="num"><b>' + (tv ? '$' + Math.round(tv.total) : '—') + '</b></td>';
     html += '</tr>';
   }
   html += '</tbody></table></div>';
