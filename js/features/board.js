@@ -27,8 +27,10 @@ function renderBoard() {
   const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const keptNames = new Set(collectKeepers().map(k => nk(k.name)));
   const draftedNames = new Set([...((typeof getDraftedNames === "function") ? getDraftedNames() : [])].map(nk));
-  const positions = ["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"];
-  const depth = { C: 18, "1B": 22, "2B": 22, "3B": 22, "SS": 22, OF: 75, SP: 80, RP: 50 };
+  const positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
+  const depth = { C: 18, "1B": 22, "2B": 22, "3B": 22, "SS": 22, OF: 75, UTIL: 30, SP: 80, RP: 50 };
+  // Display label — UTIL holds DH-only / position-less players (e.g. Ohtani).
+  const posLabel = (p) => p === "UTIL" ? "DH/UT" : p;
   const isTaken = (p) => keptNames.has(nk(p.name)) || draftedNames.has(nk(p.name));
   // Players for a position, optionally hiding drafted/kept.
   const posPlayers = (pos) => getValues().filter(p => p.posKey === pos && (!_boardState.hideTaken || !isTaken(p)));
@@ -47,7 +49,7 @@ function renderBoard() {
     const all = posPlayers(pos);
     const buckets = { T1: [], T2: [], T3: [], T4: [], T5: [] };
     for (const p of all) buckets[tierForValue(p.value)].push(p);
-    html += '<tr><td><strong>' + pos + '</strong></td>';
+    html += '<tr><td><strong>' + posLabel(pos) + '</strong></td>';
     for (const tier of ["T1", "T2", "T3", "T4", "T5"]) {
       const b = buckets[tier];
       if (!b.length) { html += '<td class="dim">—</td>'; continue; }
@@ -71,7 +73,7 @@ function renderBoard() {
       if (prevInf - curInf >= 3) cliffs.add(i);
     }
     html += '<div class="card" style="padding: 10px 12px;">';
-    html += '<h3>' + pos + ' <span class="muted small">· ' + list.length + '</span></h3>';
+    html += '<h3>' + posLabel(pos) + ' <span class="muted small">· ' + list.length + '</span></h3>';
     html += '<table style="font-size: 12px;"><tbody>';
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
