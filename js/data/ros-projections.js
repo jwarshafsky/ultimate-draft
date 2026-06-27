@@ -72,9 +72,16 @@ function loadRosFromStorage() {
   for (const s of ROS_SOURCES) {
     try {
       const raw = JSON.parse(localStorage.getItem(_rosKey(s.id)) || "null");
-      if (raw && (raw.hitters || raw.pitchers)) {
-        _ros.data[s.id] = { hitters: raw.hitters || [], pitchers: raw.pitchers || [], importedAt: raw.importedAt || null };
-      }
+      if (!raw) continue;
+      // Restore the WHOLE stored object so uploaded Dollar Values (dollarsH /
+      // dollarsP / dollarsByName) and flags (manual / updated) survive reloads —
+      // not just the stat arrays.
+      _ros.data[s.id] = {
+        hitters: raw.hitters || [],
+        pitchers: raw.pitchers || [],
+        importedAt: raw.importedAt || null,
+        ...raw,
+      };
     } catch (e) { console.warn("ROS load failed for " + s.id, e); }
   }
 }
