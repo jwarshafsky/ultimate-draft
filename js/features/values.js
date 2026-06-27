@@ -119,7 +119,10 @@ function renderValues() {
   });
   document.getElementById("val-search").addEventListener("input", (e) => {
     _valuesState.search = e.target.value;
-    renderValues();
+    const caret = e.target.selectionStart;
+    renderValues();                         // rebuilds the DOM (new input)
+    const el = document.getElementById("val-search");
+    if (el) { el.focus(); try { el.setSelectionRange(caret, caret); } catch (_) {} }
   });
   document.getElementById("val-pos").addEventListener("change", (e) => {
     _valuesState.posFilter = e.target.value;

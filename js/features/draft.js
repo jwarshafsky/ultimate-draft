@@ -34,14 +34,15 @@ function getDraftedNames() {
 function computeLiveInflation() {
   const flat = computeFlatInflation();
   if (!flat) return null;
-  const draftedNames = new Set(_liveDraft.picks.map(p => p.player));
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const draftedNames = new Set(_liveDraft.picks.map(p => _nk(p.player)));
   const spent = _liveDraft.picks.reduce((s, p) => s + p.price, 0);
   const values = getValues();
   let remainingValue = 0;
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
   for (const p of values) {
     if (p.value <= 0) continue;
-    if (keptNames.has(p.name) || draftedNames.has(p.name)) continue;
+    if (keptNames.has(_nk(p.name)) || draftedNames.has(_nk(p.name))) continue;
     remainingValue += p.value;
   }
   const remaining = Math.max(0, flat.leagueRemaining - spent);
@@ -78,6 +79,9 @@ function renderDraft() {
   setStatus("draft", _liveDraft.picks.length + " picks", _liveDraft.picks.length > 0 ? "ok" : "");
 
   let html = '';
+
+  // === Draft controls (reset / undo) ===
+  html += renderDraftControls();
 
   // === ON THE CLOCK panel ===
   html += renderOnTheClockPanel();
@@ -125,6 +129,29 @@ function renderDraft() {
 
   root.innerHTML = html;
   wireDraftHandlers();
+}
+
+// Prominent reset / undo bar. The draft always starts from the current keeper
+// baseline (keepers are excluded from the pool and budgets), so "Reset draft"
+// returns to that keepers-only state.
+function renderDraftControls() {
+  const n = _liveDraft.picks.length;
+  let html = '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
+  html += '<b>Live Draft</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded</span>';
+  html += '<span style="flex:1;"></span>';
+  html += '<button class="btn ghost" id="draft-undo"' + (n ? '' : ' disabled') + '>↶ Undo last pick</button>';
+  html += '<button class="btn ghost danger" id="draft-reset"' + (n ? '' : ' disabled') + '>↺ Reset draft</button>';
+  html += '</div>';
+  return html;
+}
+
+// Revert to the state BEFORE pick #(index+1): drop that pick and all later ones.
+function revertToPick(index) {
+  if (index < 0 || index >= _liveDraft.picks.length) return;
+  _liveDraft.picks = _liveDraft.picks.slice(0, index);
+  _liveDraft.current = null; _liveDraft.highBid = 0; _liveDraft.highBidder = null;
+  saveLiveDraft();
+  renderDraft();
 }
 
 function renderOnTheClockPanel() {
@@ -188,9 +215,10 @@ function renderPickRecorder() {
 }
 
 function renderPlayerPool(inflation) {
-  const draftedNames = new Set(_liveDraft.picks.map(p => p.player));
-  const keptNames = new Set(collectKeepers().map(k => k.name));
-  let players = getValues().filter(p => !draftedNames.has(p.name) && !keptNames.has(p.name));
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const draftedNames = new Set(_liveDraft.picks.map(p => _nk(p.player)));
+  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  let players = getValues().filter(p => !draftedNames.has(_nk(p.name)) && !keptNames.has(_nk(p.name)));
   if (_liveDraft.poolFilter.pos !== "ALL") {
     players = players.filter(p => p.posKey === _liveDraft.poolFilter.pos);
   }
@@ -240,21 +268,24 @@ function renderRecentPicks() {
     return '<div class="card"><h3>Recent Picks</h3><p class="muted small">No picks recorded yet.</p></div>';
   }
   let html = '<div class="card"><h3>Recent Picks (last 12)</h3>';
-  html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Team</th><th class="num">$</th><th class="num">vs Val</th></tr></thead><tbody>';
+  html += '<p class="muted small" style="margin:0 0 6px;">↶ reverts the draft to just before that pick.</p>';
+  html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Team</th><th class="num">$</th><th class="num">vs Val</th><th></th></tr></thead><tbody>';
   const recent = _liveDraft.picks.slice(-12).reverse();
   const myId = getMyTeam()?.id;
   for (let i = 0; i < recent.length; i++) {
     const pk = recent[i];
+    const origIndex = _liveDraft.picks.length - 1 - i;   // index in _liveDraft.picks
     const val = getPlayerValue(pk.player);
     const v = val ? val.value : 0;
     const surplus = v - pk.price;
     const isMine = pk.team === myId;
     html += '<tr' + (isMine ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
-    html += '<td class="num dim">' + (_liveDraft.picks.length - i) + '</td>';
+    html += '<td class="num dim">' + (origIndex + 1) + '</td>';
     html += '<td>' + esc(pk.player) + '</td>';
     html += '<td>' + esc(getTeam(pk.team)?.owner || pk.team) + '</td>';
     html += '<td class="num">$' + pk.price + '</td>';
     html += '<td class="num ' + (surplus > 0 ? 'good' : 'bad') + '">' + (val ? (surplus > 0 ? '+' : '') + '$' + surplus.toFixed(0) : '—') + '</td>';
+    html += '<td><button class="btn ghost live-revert" data-idx="' + origIndex + '" title="Revert to before this pick" style="padding:1px 7px;">↶</button></td>';
     html += '</tr>';
   }
   html += '</tbody></table></div>';
@@ -293,7 +324,10 @@ function wireDraftHandlers() {
   // Pool filters
   document.getElementById("pool-search")?.addEventListener("input", (e) => {
     _liveDraft.poolFilter.search = e.target.value;
-    renderDraft();
+    const caret = e.target.selectionStart;
+    renderDraft();                          // rebuilds the DOM (new input)
+    const el = document.getElementById("pool-search");
+    if (el) { el.focus(); try { el.setSelectionRange(caret, caret); } catch (_) {} }
   });
   document.getElementById("pool-pos")?.addEventListener("change", (e) => {
     _liveDraft.poolFilter.pos = e.target.value;
@@ -329,6 +363,24 @@ function wireDraftHandlers() {
   document.getElementById("otc-team")?.addEventListener("change", (e) => {
     _liveDraft.highBidder = e.target.value;
   });
+  // Prominent draft controls
+  document.getElementById("draft-undo")?.addEventListener("click", () => {
+    if (_liveDraft.picks.length) { _liveDraft.picks.pop(); saveLiveDraft(); renderDraft(); }
+  });
+  document.getElementById("draft-reset")?.addEventListener("click", () => {
+    const n = _liveDraft.picks.length;
+    if (n && confirm("Reset the draft? Clears all " + n + " recorded picks and returns to the keeper baseline.")) {
+      _liveDraft.picks = []; _liveDraft.current = null; _liveDraft.highBid = 0; _liveDraft.highBidder = null;
+      saveLiveDraft(); renderDraft();
+    }
+  });
+  document.querySelectorAll(".live-revert").forEach(b => b.addEventListener("click", () => {
+    const idx = parseInt(b.dataset.idx, 10);
+    const removed = _liveDraft.picks.length - idx;
+    if (confirm("Revert to before pick #" + (idx + 1) + "? Removes " + removed + " pick" + (removed === 1 ? "" : "s") + ".")) {
+      revertToPick(idx);
+    }
+  }));
   document.getElementById("otc-sold")?.addEventListener("click", soldCurrent);
   document.getElementById("otc-cancel")?.addEventListener("click", () => {
     _liveDraft.current = null;
