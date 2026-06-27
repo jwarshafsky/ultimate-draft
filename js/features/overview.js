@@ -70,7 +70,8 @@ function renderOverview() {
     for (const r of _teamCandidates(t, tvSource)) {
       if (r.myPicked && r.eligible) { predVal += (r.predValue || 0); cost += r.cost; }
     }
-    const remainingCash = Math.max(0, LEAGUE.draftBudget - cost);
+    const adj = (typeof getDraftDollarAdjustment === "function") ? getDraftDollarAdjustment(t.id) : 0;
+    const remainingCash = Math.max(0, LEAGUE.draftBudget + adj - cost);
     return { keeperValue: predVal, cost, remainingCash, total: predVal + remainingCash / (tvInfl > 0 ? tvInfl : 1) };
   };
 
@@ -78,22 +79,24 @@ function renderOverview() {
   html += '<div class="card"><h2>Teams</h2>';
   html += '<p class="muted small">Total Value = predicted $ of your kept players + (remaining cash ÷ inflation ' + (tvInfl ? tvInfl.toFixed(2) : '1.00') + '×). Keepers are your predictions on the Keepers tab.</p>';
   html += '<table><thead><tr>';
-  html += '<th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th><th class="num">Total Value</th>';
+  html += '<th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Draft $±</th><th class="num">Remaining $</th><th class="num">$/Slot</th><th class="num">Total Value</th>';
   html += '</tr></thead><tbody>';
-  // Sort: me first, then alphabetical by owner
-  const me = LEAGUE.teams.find(t => t.isMe);
-  const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
-  const order = me ? [me, ...others] : others;
-  for (const t of order) {
-    const b = budgets[t.id] || { keepers: 0, remaining: LEAGUE.draftBudget, keeperCount: 0, minorCount: 0 };
+  // Build rows then sort by Total Value (desc).
+  const rows = LEAGUE.teams.map(t => {
+    const b = budgets[t.id] || { keepers: 0, remaining: LEAGUE.draftBudget, keeperCount: 0, minorCount: 0, draftDollarAdj: 0 };
+    return { t, b, tv: teamTotals(t) };
+  });
+  rows.sort((a, b) => (b.tv ? b.tv.total : 0) - (a.tv ? a.tv.total : 0));
+  for (const { t, b, tv } of rows) {
     const draftSpots = LEAGUE.rosterSize - b.keeperCount;
     const dollarsPerSpot = draftSpots > 0 ? b.remaining / draftSpots : 0;
-    const tv = teamTotals(t);
+    const adj = b.draftDollarAdj || 0;
     html += '<tr' + (t.isMe ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
     html += '<td>' + esc(t.owner) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
     html += '<td class="num">' + b.keeperCount + '</td>';
     html += '<td class="num minor">' + b.minorCount + '</td>';
     html += '<td class="num">$' + b.keepers + '</td>';
+    html += '<td class="num ' + (adj > 0 ? 'good' : adj < 0 ? 'bad' : 'dim') + '">' + (adj > 0 ? '+$' + adj : adj < 0 ? '−$' + Math.abs(adj) : '$0') + '</td>';
     html += '<td class="num">$' + b.remaining + '</td>';
     html += '<td class="num">$' + dollarsPerSpot.toFixed(1) + '</td>';
     html += '<td class="num"><b>' + (tv ? '$' + Math.round(tv.total) : '—') + '</b></td>';

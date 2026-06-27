@@ -47,12 +47,13 @@ function collectKeepers() {
   return out;
 }
 
-// Computes per-team remaining budget after keepers. Also accounts for traded
-// draft dollars (settings.draftDollarAdjustments if present).
+// Computes per-team remaining budget after keepers. Base budget includes traded
+// draft dollars (from the published sheet via getDraftDollarAdjustment).
 function computeTeamBudgets() {
   const map = {};
   for (const t of LEAGUE.teams) {
-    map[t.id] = { teamId: t.id, base: LEAGUE.draftBudget, keepers: 0, spent: 0, remaining: 0, keeperCount: 0, minorCount: 0 };
+    const adj = (typeof getDraftDollarAdjustment === "function") ? getDraftDollarAdjustment(t.id) : 0;
+    map[t.id] = { teamId: t.id, base: LEAGUE.draftBudget + adj, draftDollarAdj: adj, keepers: 0, spent: 0, remaining: 0, keeperCount: 0, minorCount: 0 };
   }
   const keepers = collectKeepers();
   for (const k of keepers) {

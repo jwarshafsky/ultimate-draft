@@ -88,6 +88,11 @@ function initApp() {
   if (typeof autoloadHostedRos === "function") {
     autoloadHostedRos().then((changed) => { if (changed) rerender(); }).catch(() => {});
   }
+
+  // Pull traded draft-dollar adjustments from the published sheet.
+  if (typeof loadDraftDollars === "function") {
+    loadDraftDollars().then(() => rerender()).catch(() => {});
+  }
 }
 
 document.addEventListener("DOMContentLoaded", initApp);
