@@ -192,6 +192,12 @@ function renderInteractiveMock() {
     html += '<div class="card"><p>SOLD: <strong>' + esc(last.player) + '</strong> to <strong>' + esc(last.winnerOwner) + '</strong> for <strong>$' + last.price + '</strong></p></div>';
   }
 
+  // Your roster + a live Board of remaining players, for bid decisions.
+  html += '<div class="grid cols-2">';
+  html += renderMockRoster(myState);
+  html += renderMockBoard(s);
+  html += '</div>';
+
   // Team strip (compact)
   html += '<div class="card" style="padding: 8px;">';
   html += '<h3 style="margin: 0 0 6px;">Teams</h3>';
@@ -235,6 +241,60 @@ function renderInteractiveMock() {
     html += '<div class="card"><h2>Mock Complete</h2><p>All rosters filled. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
   }
 
+  return html;
+}
+
+// Your roster during the mock: keepers + everything you've drafted so far.
+function renderMockRoster(myState) {
+  if (!myState) return '<div class="card"><h3>Your Roster</h3><p class="muted small">—</p></div>';
+  let html = '<div class="card"><h3>Your Roster <span class="muted small">· $' + myState.budget + ' left · ' + myState.slotsRemaining + ' open</span></h3>';
+  html += '<div class="muted small" style="margin-top:4px;">Keepers (' + (myState.kept ? myState.kept.length : 0) + ')</div>';
+  if (myState.kept && myState.kept.length) {
+    html += '<table style="font-size:12px;"><tbody>';
+    for (const k of myState.kept) html += '<tr><td>' + esc(k.name) + '</td><td class="dim">' + esc(k.pos) + '</td><td class="num">$' + k.price + '</td></tr>';
+    html += '</tbody></table>';
+  } else html += '<div class="dim small">none</div>';
+  html += '<div class="muted small" style="margin-top:8px;">Drafted (' + myState.drafted.length + ')</div>';
+  if (myState.drafted.length) {
+    html += '<table style="font-size:12px;"><tbody>';
+    for (const d of myState.drafted) {
+      const surp = (d.value || 0) - d.price;
+      html += '<tr><td>' + esc(d.name) + '</td><td class="dim">' + esc(d.pos) + '</td><td class="num">$' + d.price +
+        '</td><td class="num ' + (surp > 0 ? 'good' : 'bad') + '">' + (surp > 0 ? '+' : '') + '$' + surp.toFixed(0) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  } else html += '<div class="dim small">none yet</div>';
+  html += '</div>';
+  return html;
+}
+
+// A Board of players still available, by position, priced at the current mock
+// inflation — so you can judge scarcity before bidding. Names are click-to-
+// nominate when it's your turn.
+function renderMockBoard(s) {
+  const positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
+  const myTurn = s.phase === "nominating" && getCurrentNominatorId() === getMyTeam()?.id;
+  const infMult = s.inflation && s.inflation.multiplier ? s.inflation.multiplier.toFixed(2) : "1.00";
+  let html = '<div class="card"><h3>Board — available (' + s.pool.length + ')</h3>';
+  html += '<p class="muted small">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + '</p>';
+  html += '<div class="grid cols-3">';
+  for (const pos of positions) {
+    const list = s.pool.filter(p => p.posKey === pos).slice(0, 8);
+    if (!list.length) continue;
+    html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + list.length + '</span></h4>';
+    html += '<table style="font-size:11px;"><tbody>';
+    for (const p of list) {
+      const inf = inflatedValue(p, s.inflation);
+      const tier = (typeof tierForValue === "function") ? tierForValue(p.value) : "T3";
+      const color = (typeof TIER_COLORS !== "undefined" && TIER_COLORS[tier]) ? TIER_COLORS[tier] : "var(--text)";
+      const nameCell = myTurn
+        ? '<a href="#" class="mock-nom" data-name="' + esc(p.name) + '">' + esc(p.name) + '</a>'
+        : esc(p.name);
+      html += '<tr><td><span style="color:' + color + '; font-size:9px;">' + tier + '</span> ' + nameCell + '</td><td class="num">$' + inf.toFixed(0) + '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+  html += '</div></div>';
   return html;
 }
 
@@ -302,6 +362,14 @@ function wireMockControls() {
     if (!r.ok) alert(r.error);
   });
   document.getElementById("im-pass")?.addEventListener("click", () => userPass());
+  // Click a board player to nominate (when it's your turn).
+  document.querySelectorAll(".mock-nom").forEach(a => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const r = userNominate(a.dataset.name, 1);
+      if (!r.ok) alert(r.error);
+    });
+  });
 }
 
 function runMC(n) {

@@ -36,7 +36,8 @@ const DEFAULT_PROFILE = {
 // opts.profiles[teamId] overrides.
 function buildMockTeamStates(opts) {
   const states = {};
-  const selections = getKeeperSelections();
+  // Keepers come from the Keepers tab (predicted keepers), not league-site marks.
+  const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
   // Pre-compute history-derived profiles if available
   const historyProfiles = (typeof computeAllOwnerProfiles === "function") ? computeAllOwnerProfiles() : {};
   for (const t of LEAGUE.teams) {
@@ -46,7 +47,8 @@ function buildMockTeamStates(opts) {
     for (const [name, flags] of Object.entries(teamSel)) {
       if (flags.minorKeeper) continue;
       if (flags.keeper) {
-        const price = getCurrentKeeperSalary(name) ?? 0;
+        const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
+        const price = ci ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
         const pv = getPlayerValue(name);
         kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
         keptCost += price;
