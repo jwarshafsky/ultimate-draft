@@ -1173,7 +1173,7 @@ function renderTradePanel(myId) {
   html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">Trade with' +
     '<select id="tr-partner" style="min-width:170px;">';
   for (const t of teams) {
-    html += '<option value="' + t.id + '"' + (t.id === partner ? ' selected' : '') + '>' + esc(t.owner) + ' — ' + esc(t.name) + '</option>';
+    html += '<option value="' + t.id + '"' + (t.id === partner ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
   }
   html += '</select></label>';
 

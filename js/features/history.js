@@ -79,7 +79,7 @@ function renderHistory() {
         const autoFromName = o.teamNames.find(n => currentOwners.includes(n));
         const autoMatch = autoFromTeam || autoFromName;
         const recentLabel = (o.mostRecentEspnTeamId != null ? "Team " + o.mostRecentEspnTeamId : "?") +
-          (o.currentTeam ? ' <span class="muted">(' + esc(o.currentTeam.name) + " · " + esc(o.currentTeam.owner) + ')</span>' : "");
+          (o.currentTeam ? ' <span class="muted">(' + esc(o.currentTeam.owner) + ')</span>' : "");
         html += '<tr' + (excluded ? ' style="opacity: 0.45;"' : '') + '>';
         html += '<td>' + o.teamNames.map(esc).join(", ") + (autoMatch && !aliased && !excluded ? ' <span class="kbd" style="color: var(--good); font-size: 10px;">AUTO</span>' : '') + '</td>';
         html += '<td class="small muted">' + o.years.join(", ") + '</td>';

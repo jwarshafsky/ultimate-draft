@@ -36,6 +36,11 @@ const LEAGUE = {
   pitCats: ["QS", "K", "SV_HLD", "ERA", "WHIP"],
 };
 
+// Display owner names only — team names are not used anywhere in the UI.
+// Make every team's display name its owner so all `t.name` displays show the
+// owner (matching/logic is by `id`, never by name).
+LEAGUE.teams.forEach(t => { t.name = t.owner; });
+
 function getMyTeam() { return LEAGUE.teams.find(t => t.isMe); }
 function getTeam(id) { return LEAGUE.teams.find(t => t.id === id); }
 

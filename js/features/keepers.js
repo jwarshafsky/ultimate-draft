@@ -316,8 +316,8 @@ function renderKeepers() {
     const totalValue = picks.reduce((s, r) => s + (r.value || 0), 0);
 
     html += '<div class="card"' + (t.isMe ? ' style="border-color: rgba(79,142,247,.4);"' : '') + '>';
-    html += '<h2>' + esc(t.name) + ' <span class="muted small">· ' + esc(t.owner) +
-      (rostersLoaded ? ' · ' + rosterCount + ' rostered' : '') + '</span></h2>';
+    html += '<h2>' + esc(t.owner) +
+      (rostersLoaded ? ' <span class="muted small">· ' + rosterCount + ' rostered</span>' : '') + '</h2>';
     // Pick summary + cap status
     const mlOver = mlPicks.length > LEAGUE.maxMlKeepers;
     const milOver = milPicks.length > LEAGUE.maxMilKeepers;

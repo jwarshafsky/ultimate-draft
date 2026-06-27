@@ -82,7 +82,7 @@ function renderTradeSide(side) {
   html += '<h3>' + (side === "team1" ? "Team A gives" : "Team B gives") + '</h3>';
   html += '<select class="trade-team-select" data-side="' + side + '" style="width: 100%; margin-bottom: 10px;">';
   for (const t of LEAGUE.teams) {
-    html += '<option value="' + t.id + '"' + (t.id === teamId ? ' selected' : '') + '>' + esc(t.name) + ' · ' + esc(t.owner) + '</option>';
+    html += '<option value="' + t.id + '"' + (t.id === teamId ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
   }
   html += '</select>';
 
@@ -257,7 +257,7 @@ function renderTradeVerdict() {
   ]) {
     const owner = getTeam(ownerId);
     html += '<div style="padding: 8px;">';
-    html += '<div class="muted small">' + esc(owner.owner) + ' (' + esc(owner.name) + ')</div>';
+    html += '<div class="muted small">' + esc(owner.owner) + '</div>';
     html += '<div style="font-size: 22px; font-family: var(--mono); margin: 4px 0;" class="' + (yr1Delta > 0 ? "good" : yr1Delta < 0 ? "bad" : "") + '">';
     html += (yr1Delta > 0 ? "+" : "") + "$" + yr1Delta.toFixed(0) + ' <span class="muted small" style="font-size: 12px;">Yr1 surplus</span></div>';
     html += '<div style="font-family: var(--mono); font-size: 14px;" class="' + (lifeDelta > 0 ? "good" : lifeDelta < 0 ? "bad" : "") + '">';

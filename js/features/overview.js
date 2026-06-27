@@ -78,7 +78,7 @@ function renderOverview() {
   html += '<div class="card"><h2>Teams</h2>';
   html += '<p class="muted small">Total Value = predicted $ of your kept players + (remaining cash ÷ inflation ' + (tvInfl ? tvInfl.toFixed(2) : '1.00') + '×). Keepers are your predictions on the Keepers tab.</p>';
   html += '<table><thead><tr>';
-  html += '<th>Team</th><th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th><th class="num">Total Value</th>';
+  html += '<th>Owner</th><th class="num">Keepers</th><th class="num">Minors</th><th class="num">Kept $</th><th class="num">Remaining $</th><th class="num">$/Slot</th><th class="num">Total Value</th>';
   html += '</tr></thead><tbody>';
   // Sort: me first, then alphabetical by owner
   const me = LEAGUE.teams.find(t => t.isMe);
@@ -90,8 +90,7 @@ function renderOverview() {
     const dollarsPerSpot = draftSpots > 0 ? b.remaining / draftSpots : 0;
     const tv = teamTotals(t);
     html += '<tr' + (t.isMe ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
-    html += '<td>' + esc(t.name) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
-    html += '<td>' + esc(t.owner) + '</td>';
+    html += '<td>' + esc(t.owner) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
     html += '<td class="num">' + b.keeperCount + '</td>';
     html += '<td class="num minor">' + b.minorCount + '</td>';
     html += '<td class="num">$' + b.keepers + '</td>';
