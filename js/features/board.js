@@ -13,6 +13,8 @@ const TIER_COLORS = {
   T5: "var(--good)",
 };
 
+const _boardState = { hideTaken: false };
+
 function renderBoard() {
   const root = document.getElementById("view-root");
   if (getValues().length === 0) {
@@ -27,14 +29,22 @@ function renderBoard() {
   const draftedNames = new Set([...((typeof getDraftedNames === "function") ? getDraftedNames() : [])].map(nk));
   const positions = ["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"];
   const depth = { C: 18, "1B": 22, "2B": 22, "3B": 22, "SS": 22, OF: 75, SP: 80, RP: 50 };
+  const isTaken = (p) => keptNames.has(nk(p.name)) || draftedNames.has(nk(p.name));
+  // Players for a position, optionally hiding drafted/kept.
+  const posPlayers = (pos) => getValues().filter(p => p.posKey === pos && (!_boardState.hideTaken || !isTaken(p)));
+
+  // Controls
+  let html = '<div class="card" style="margin-bottom: 8px;">';
+  html += '<label style="display:inline-flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" id="board-hide-taken"' + (_boardState.hideTaken ? " checked" : "") + '> Hide drafted / kept players</label>';
+  html += '</div>';
 
   // Per-position tier breakdown panel at top
-  let html = '<div class="card"><h2>Tier Map</h2>';
+  html += '<div class="card"><h2>Tier Map</h2>';
   html += '<p class="muted small">Color = tier (T1 red elite → T5 green endgame). Max bid = highest inflated value in tier (you want to buy at or below).</p>';
   html += '<table style="font-size: 12px;"><thead><tr>';
   html += '<th>Pos</th><th>T1 $35+</th><th>T2 $20-34</th><th>T3 $10-19</th><th>T4 $5-9</th><th>T5 $1-4</th></tr></thead><tbody>';
   for (const pos of positions) {
-    const all = getValues().filter(p => p.posKey === pos);
+    const all = posPlayers(pos);
     const buckets = { T1: [], T2: [], T3: [], T4: [], T5: [] };
     for (const p of all) buckets[tierForValue(p.value)].push(p);
     html += '<tr><td><strong>' + pos + '</strong></td>';
@@ -51,7 +61,7 @@ function renderBoard() {
   // Side-by-side position lists
   html += '<div class="grid cols-4">';
   for (const pos of positions) {
-    const all = getValues().filter(p => p.posKey === pos);
+    const all = posPlayers(pos);
     const list = all.slice(0, depth[pos] || 30);
     // Tier cliffs: gap >= $3 between consecutive inflated values
     const cliffs = new Set();
@@ -87,4 +97,9 @@ function renderBoard() {
   html += '</div>';
 
   root.innerHTML = html;
+
+  document.getElementById("board-hide-taken")?.addEventListener("change", (e) => {
+    _boardState.hideTaken = e.target.checked;
+    renderBoard();
+  });
 }
