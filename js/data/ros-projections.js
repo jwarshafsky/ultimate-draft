@@ -22,6 +22,30 @@ const _ros = {
 
 function _rosKey(sourceId) { return "ud_ros_" + sourceId + "_v1"; }
 
+// Pull a projected auction dollar value from a parsed CSV row, if the source
+// includes one (FanGraphs Auction Calculator ROS exports do). Returns null when
+// absent so the keepers page can fall back to the preseason valuation.
+const _DOLLAR_COLS = ["Dollars", "$", "Auction $", "Value", "Dollar Value", "PV", "ProjValue"];
+function _pickDollars(row) {
+  const raw = pickCol(row, _DOLLAR_COLS);
+  if (raw == null || raw === "") return null;
+  const n = parseFloat(String(raw).replace(/[$,]/g, ""));
+  return isFinite(n) ? n : null;
+}
+// Same, for a FanGraphs API JSON object (numeric fields).
+const _DOLLAR_KEYS = ["Dollars", "mDollars", "auctionDollars", "PlayerDollars", "$"];
+function _pickDollarsJSON(o) {
+  for (const k of _DOLLAR_KEYS) {
+    const v = o[k];
+    if (typeof v === "number" && isFinite(v)) return v;
+    if (typeof v === "string" && v !== "") {
+      const n = parseFloat(v.replace(/[$,]/g, ""));
+      if (isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+
 // Name normalizer for matching ESPN fullName ↔ projection Name. Strips accents,
 // punctuation, and common suffixes so "José Ramírez" == "Jose Ramirez" and
 // "Ronald Acuna Jr." == "Ronald Acuna".
@@ -80,6 +104,7 @@ function importRosHitters(sourceId, text) {
       PA: toNum(pickCol(r, ["PA"])), AB: toNum(pickCol(r, ["AB"])),
       H: toNum(pickCol(r, ["H"])), BB: toNum(pickCol(r, ["BB"])),
       HBP: toNum(pickCol(r, ["HBP"])), SF: toNum(pickCol(r, ["SF"])),
+      dollars: _pickDollars(r),
     });
   }
   const d = _ensureSource(sourceId);
@@ -103,6 +128,7 @@ function importRosPitchers(sourceId, text) {
       SV: toNum(pickCol(r, ["SV", "S"])), HLD: toNum(pickCol(r, ["HLD", "HD"])), GS: toNum(pickCol(r, ["GS"])),
       IP: toNum(pickCol(r, ["IP"])), ERA: toNum(pickCol(r, ["ERA"])), WHIP: toNum(pickCol(r, ["WHIP"])),
       ER: toNum(pickCol(r, ["ER"])), HA: toNum(pickCol(r, ["H"])), BBA: toNum(pickCol(r, ["BB"])),
+      dollars: _pickDollars(r),
     });
   }
   const d = _ensureSource(sourceId);
@@ -150,11 +176,13 @@ function importRosJSON(sourceId, kind, text) {
     d.pitchers = arr.filter(nm).map(o => ({
       name: nm(o), K: n(o, "SO"), QS: n(o, "QS"), SV: n(o, "SV"), HLD: n(o, "HLD"), GS: n(o, "GS"),
       IP: n(o, "IP"), ERA: n(o, "ERA"), WHIP: n(o, "WHIP"), ER: n(o, "ER"), HA: n(o, "H"), BBA: n(o, "BB"),
+      dollars: _pickDollarsJSON(o),
     }));
   } else {
     d.hitters = arr.filter(nm).map(o => ({
       name: nm(o), R: n(o, "R"), HR: n(o, "HR"), RBI: n(o, "RBI"), SB: n(o, "SB"), OBP: n(o, "OBP"),
       PA: n(o, "PA"), AB: n(o, "AB"), H: n(o, "H"), BB: n(o, "BB"), HBP: n(o, "HBP"), SF: n(o, "SF"),
+      dollars: _pickDollarsJSON(o),
     }));
   }
   d.importedAt = new Date().toISOString();
@@ -224,6 +252,28 @@ function getRosLine(sourceId, name, type) {
   return { name: h.name, type: "H", R: h.R, HR: h.HR, RBI: h.RBI, SB: h.SB,
     OBP: h.OBP, PA: h.PA, AB: h.AB || null, H: h.H || null, BB: h.BB || null,
     HBP: h.HBP || null, SF: h.SF || null };
+}
+
+// Projected auction dollar value for a player in a given source. type "H"|"P"
+// (or omit to try both). Returns null when the source carries no dollar column
+// or the player isn't found.
+function getRosDollar(sourceId, name, type) {
+  if (!_ros.data[sourceId]) return null;
+  const idx = _ros.index[sourceId] || _buildIndex(sourceId);
+  const key = normalizePlayerName(name), ck = coreNameKey(name);
+  let rec;
+  if (type === "P") rec = idx.P.get(key) || idx.Pc.get(ck);
+  else if (type === "H") rec = idx.H.get(key) || idx.Hc.get(ck);
+  else rec = idx.H.get(key) || idx.P.get(key) || idx.Hc.get(ck) || idx.Pc.get(ck);
+  return rec && typeof rec.dollars === "number" ? rec.dollars : null;
+}
+
+// True if this source includes any projected dollar values.
+function rosHasDollars(sourceId) {
+  const d = _ros.data[sourceId];
+  if (!d) return false;
+  return (d.hitters || []).some(h => typeof h.dollars === "number") ||
+         (d.pitchers || []).some(p => typeof p.dollars === "number");
 }
 
 function rosHasData(sourceId) {

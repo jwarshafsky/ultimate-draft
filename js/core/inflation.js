@@ -6,11 +6,20 @@
 // Input: a value list (from valuation.js) plus keepers (with cost). Output:
 //   { multiplier, hitMultiplier, pitMultiplier, perPlayer: {name -> infl$} }
 
+// Keeper source for inflation/budget math. Uses Jeff's PREDICTED keepers
+// (treated as the actual keepers); see getEffectiveKeeperSelections. Falls back
+// to the raw league-site marks if that helper isn't loaded.
+function _inflationKeeperSelections() {
+  return (typeof getEffectiveKeeperSelections === "function")
+    ? getEffectiveKeeperSelections()
+    : getKeeperSelections();
+}
+
 // Returns the kept-player cost for a player (if marked keeper or minorKeeper).
 // Minor leaguers keep at $0; ML keepers keep at their salary (from ESPN
 // current-year keeper pick price, or manual override).
 function getKeptCost(playerName, teamId) {
-  const sel = (getKeeperSelections()[teamId] || {})[playerName];
+  const sel = (_inflationKeeperSelections()[teamId] || {})[playerName];
   if (!sel) return null;
   if (sel.minorKeeper) return { cost: 0, kind: "minor" };
   if (sel.keeper) {
@@ -24,7 +33,7 @@ function getKeptCost(playerName, teamId) {
 // salaries come from the current-year ESPN keeper pick price (or override).
 function collectKeepers() {
   const out = [];
-  const selections = getKeeperSelections();
+  const selections = _inflationKeeperSelections();
   for (const [teamId, players] of Object.entries(selections)) {
     for (const [name, flags] of Object.entries(players)) {
       if (flags.minorKeeper) {

@@ -4,7 +4,7 @@
     {
       "name": "ultimate-draft",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8765"],
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/jwars/Desktop/Claude/ultimate-draft"],
       "port": 8765
     }
   ]

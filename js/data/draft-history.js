@@ -260,6 +260,59 @@ function isKeeperSalaryEstimated(playerName) {
   return (upcomingYear - mostRecent.year) > 1;
 }
 
+// --- Keeper contract eligibility -----------------------------------------
+// Ported from The League App's getContractStatus (js/app.js). Determines how
+// many keeper years a player has left and whether they can be kept next season,
+// derived from this tool's ESPN draft history. Constitution §2:
+//   drafted ≤$40 → 3 additional keeper years; >$40 → 2; >$50 → 1.
+//   A player past their final contract year cannot be kept.
+// NOTE: This covers the "expiring contract" case. The "added via FA after the
+// trade deadline" case is a transaction-level event we can't see from draft
+// history — flag those manually (setMyIneligible) on the Keepers page.
+function _maxKeepYears(originalPrice, fromMinors) {
+  if (fromMinors) return 3;
+  if (originalPrice > 50) return 1;
+  if (originalPrice > 40) return 2;
+  return 3;
+}
+
+// Returns contract status for an ML player by name, or { known:false } when we
+// have no draft record (e.g. a recent FA pickup never seen in an auction).
+function getKeeperContractStatus(playerName) {
+  if (!playerName) return { known: false, canKeepNextSeason: true, status: "unknown", label: "no record" };
+  const picks = _history.picks
+    .filter(p => p.player === playerName)
+    .sort((a, b) => a.year - b.year);
+  if (!picks.length) {
+    return { known: false, canKeepNextSeason: true, status: "unknown", label: "no record",
+      yearsKept: null, yearsRemaining: null, originalPrice: null };
+  }
+  const currentSeason = getUpcomingDraftYear() - 1;   // the season just played
+  // The current contract begins at the most recent auction (non-keeper) pick.
+  // If we only ever see keeper picks (auction predates our history window), fall
+  // back to the earliest pick and flag the original price as estimated.
+  const auctions = picks.filter(p => !p.keeper);
+  const acq = auctions.length ? auctions[auctions.length - 1] : picks[0];
+  const estimated = !auctions.length;
+  const acquisitionYear = acq.year;
+  const originalPrice = Math.max(1, acq.price || 1);
+  const fromMinors = false;   // not derivable from auction history; ML default
+  const maxYears = _maxKeepYears(originalPrice, fromMinors);
+  const yearsKept = Math.max(0, currentSeason - acquisitionYear);
+  const yearsRemaining = maxYears - yearsKept;
+  const canKeepNextSeason = yearsRemaining > 0;
+
+  let status, label;
+  if (yearsRemaining <= 0) { status = "final"; label = "Final year — can't keep " + (currentSeason + 1); }
+  else if (yearsRemaining === 1) { status = "expiring"; label = "1 keeper yr left"; }
+  else { status = "ok"; label = yearsRemaining + " keeper yrs left"; }
+
+  return {
+    known: true, estimated, canKeepNextSeason, status, label,
+    yearsKept, yearsRemaining, maxYears, originalPrice, acquisitionYear,
+  };
+}
+
 // Compute behavior profile for one owner across all years. Applies owner
 // aliases (GUID-first, name fallback) so historical team names roll up
 // under the current owner. Skips picks from excluded GUIDs (former owners).
