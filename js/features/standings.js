@@ -23,6 +23,7 @@ const _standings = {
   whatIfTab: "addrop",                       // "addrop" | "trade" | "pickups"
   trade: { partner: null, send: [], recv: [] },
   pickups: null,                             // cached best-pickups result
+  tradeFinder: { results: null, winWinOnly: false },      // trade-finder results + filter
   lineupOverride: { start: new Set(), sit: new Set() },   // your manual force-start/bench
   derivOpen: false,                          // keep the breakdown open across re-renders
   derivTeam: null,                           // which team's breakdown to view (null = mine)
@@ -112,6 +113,7 @@ function recomputeStandings() {
   _standings.computed = computeStandings(built.rosters);
   _standings.odds = simulateTitleOdds(built.rosters, { sims: 3000, fracRemaining: seasonFractionRemaining() });
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
+  _standings.tradeFinder.results = null;   // and trade-finder results
 }
 
 // --- Optimal lineup -----------------------------------------------------
@@ -791,11 +793,142 @@ function _oddsFor(rosters) {
   return simulateTitleOdds(rosters, { sims: 1500, fracRemaining: seasonFractionRemaining() });
 }
 
+// --- Trade Finder --------------------------------------------------------
+// Combined value of a player to a team (sums both sides of a two-way player).
+function _playerValue(tid, name) {
+  let v = 0;
+  for (const p of (_standings.pool[tid] || [])) {
+    if (p.name === name && p.ros) v += (p.type === "P" ? _pitValue(p.ros) : _hitValue(p.ros));
+  }
+  return v;
+}
+// Roto-point each player is worth to their OWN team (drop + re-optimize). Low =
+// expendable (surplus category/position); high = needed.
+function _marginalRoto(tid) {
+  const base = _standings.computed.teams.find(t => t.teamId === tid).rotoPoints;
+  const out = {};
+  for (const nm of _teamPlayerNames(tid)) {
+    const after = _afterLines({ [tid]: (_standings.pool[tid] || []).filter(p => p.name !== nm) });
+    out[nm] = base - computeStandings(after).teams.find(t => t.teamId === tid).rotoPoints;
+  }
+  return out;
+}
+// All non-empty subsets of `arr` up to size maxK.
+function _subsets(arr, maxK) {
+  const out = [];
+  const rec = (start, cur) => {
+    if (cur.length) out.push(cur.slice());
+    if (cur.length === maxK) return;
+    for (let i = start; i < arr.length; i++) { cur.push(arr[i]); rec(i + 1, cur); cur.pop(); }
+  };
+  rec(0, []);
+  return out;
+}
+
+// Find mutually-sensible trades up to 2-for-2: each side gives from its most
+// expendable players, value-balanced, that raise your roto. Two-stage — screen
+// by roto then title odds on the best — and flag win-win (both teams gain roto).
+function findTrades(myId) {
+  const POOL = 6, MAXK = 2;
+  const baseRoto = {}, basePlace = {};
+  for (const t of _standings.computed.teams) { baseRoto[t.teamId] = t.rotoPoints; basePlace[t.teamId] = t.place; }
+  const myMarg = _marginalRoto(myId);
+  const myGiv = _teamPlayerNames(myId).filter(n => _playerValue(myId, n) > 0)
+    .sort((a, b) => myMarg[a] - myMarg[b]).slice(0, POOL);
+  const myGiveSubs = _subsets(myGiv, MAXK).map(g => ({ names: g, val: g.reduce((s, n) => s + _playerValue(myId, n), 0) }));
+
+  const cands = [];
+  for (const opp of LEAGUE.teams) {
+    if (opp.id === myId) continue;
+    const oMarg = _marginalRoto(opp.id);
+    const oGiv = _teamPlayerNames(opp.id).filter(n => _playerValue(opp.id, n) > 0)
+      .sort((a, b) => oMarg[a] - oMarg[b]).slice(0, POOL);
+    const oSubs = _subsets(oGiv, MAXK).map(g => ({ names: g, val: g.reduce((s, n) => s + _playerValue(opp.id, n), 0) }));
+    for (const give of myGiveSubs) {
+      for (const get of oSubs) {
+        // value-balanced (within ~45%), no 2-for-0 weirdness
+        const hi = Math.max(give.val, get.val), lo = Math.min(give.val, get.val);
+        if (hi > 4 && lo / hi < 0.55) continue;
+        const after = _afterLines(_poolsAfterTrade(myId, opp.id, give.names, get.names));
+        const cs = computeStandings(after);
+        const csMe = cs.teams.find(t => t.teamId === myId), csOpp = cs.teams.find(t => t.teamId === opp.id);
+        const myD = csMe.rotoPoints - baseRoto[myId];
+        if (myD <= 0.5) continue;                       // must clearly help me
+        const oppD = csOpp.rotoPoints - baseRoto[opp.id];
+        cands.push({ partner: opp.id, give: give.names, get: get.names, myD, oppD,
+          oppRotoB: baseRoto[opp.id], oppRotoA: csOpp.rotoPoints, oppPlaceB: basePlace[opp.id], oppPlaceA: csOpp.place,
+          myPlaceB: basePlace[myId], myPlaceA: csMe.place });
+      }
+    }
+  }
+  // Best by my roto gain; de-dup identical player sets; cap before the costly odds pass.
+  cands.sort((a, b) => b.myD - a.myD);
+  const seen = new Set(), top = [];
+  for (const c of cands) {
+    const k = c.partner + "|" + c.give.slice().sort() + "|" + c.get.slice().sort();
+    if (seen.has(k)) continue; seen.add(k);
+    top.push(c); if (top.length >= 24) break;
+  }
+  const frac = seasonFractionRemaining();
+  const baseOdds = simulateTitleOdds(_standings.built, { sims: 1500, fracRemaining: frac });
+  for (const c of top) {
+    const after = _afterLines(_poolsAfterTrade(myId, c.partner, c.give, c.get));
+    const od = simulateTitleOdds(after, { sims: 1500, fracRemaining: frac });
+    c.myPB = baseOdds.byTeam[myId]?.pFirst || 0; c.myPA = od.byTeam[myId]?.pFirst || 0;
+    c.oppPB = baseOdds.byTeam[c.partner]?.pFirst || 0; c.oppPA = od.byTeam[c.partner]?.pFirst || 0;
+    // Win-win = partner is also better off: they don't lose a spot in the
+    // standings (move up, or hold with a clear roto gain). A trade that drops
+    // their place — even with more roto — wouldn't get accepted.
+    c.winWin = c.oppPlaceA < c.oppPlaceB || (c.oppPlaceA === c.oppPlaceB && c.oppD > 0.5);
+  }
+  top.sort((a, b) => (b.myPA - b.myPB) - (a.myPA - a.myPB) || b.myD - a.myD);
+  return top;
+}
+
+function renderTradeFinderPanel(myId) {
+  let html = '<p class="muted small">Scans all 11 opponents for value-balanced swaps (up to 2-for-2) that raise your title odds — pairing your expendable players (surplus categories/positions) with players who fill your needs. <b>Win-win</b> = the other team’s roto also improves (the deals that actually get accepted).</p>';
+
+  const tf = _standings.tradeFinder;
+  html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">';
+  html += '<button class="btn primary" id="tf-run">' + (tf.results ? '↻ Re-scan' : '🔎 Find trades') + '</button>';
+  if (tf.results) html += '<label class="small muted" style="display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" id="tf-winwin"' + (tf.winWinOnly ? ' checked' : '') + '> win-win only</label>';
+  html += ' <span class="muted small">' + (_standings.faPool ? '' : '') + (tf.results ? tf.results.length + ' found · ranked by your title-odds gain' : 'Takes a few seconds.') + '</span>';
+  html += '</div>';
+
+  if (tf.results) {
+    let rows = tf.results;
+    if (tf.winWinOnly) rows = rows.filter(r => r.winWin);
+    if (!rows.length) {
+      html += '<p class="small muted" style="margin-top:10px;">No ' + (tf.winWinOnly ? 'win-win ' : '') + 'trades found that improve your odds. Try toggling win-win off, or your roster may already be well-balanced.</p>';
+    } else {
+      tf._displayed = rows;   // for the Open buttons
+      html += '<div style="overflow-x:auto;margin-top:10px;"><table style="font-size:12px;"><thead><tr>' +
+        '<th>With</th><th>You give</th><th>You get</th><th class="num">Your title odds</th><th class="num">You</th><th class="num">Them (roto)</th><th></th></tr></thead><tbody>';
+      rows.forEach((r, i) => {
+        const myDelta = r.myPA - r.myPB;
+        const placeStr = (b, a) => b === a ? ordinal(b) : ordinal(b) + '→' + ordinal(a);
+        html += '<tr>';
+        html += '<td>' + esc(_teamLabel(r.partner)) + (r.winWin ? ' <span class="good small">win-win</span>' : '') + '</td>';
+        html += '<td class="bad small">' + r.give.map(esc).join(", ") + '</td>';
+        html += '<td class="good small">' + r.get.map(esc).join(", ") + '</td>';
+        html += '<td class="num">' + _pct(r.myPB) + '→' + _pct(r.myPA) + ' <span class="' + (myDelta > 0.0005 ? 'good' : 'muted') + '">(' + (myDelta > 0 ? '+' : '') + Math.round(myDelta * 100) + 'pp)</span></td>';
+        html += '<td class="num"><span class="good">+' + (Math.round(r.myD * 10) / 10) + '</span> · ' + placeStr(r.myPlaceB, r.myPlaceA) + '</td>';
+        html += '<td class="num"><span class="' + (r.oppD > 0 ? 'good' : 'bad') + '">' + (r.oppD > 0 ? '+' : '') + (Math.round(r.oppD * 10) / 10) + '</span> · ' + placeStr(r.oppPlaceB, r.oppPlaceA) + '</td>';
+        html += '<td><button class="btn ghost" data-tf-open="' + i + '" style="padding:2px 8px;">Open</button></td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      html += '<p class="muted small" style="margin-top:6px;">“Open” loads the deal into the Trade tab (full breakdown + shareable image).</p>';
+    }
+  }
+  return html;
+}
+
 function renderWhatIfCard(myId) {
   let html = '<div class="card"><h3>What-If</h3>';
   // Sub-tab: Add/Drop vs Trade
   html += '<div class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:10px;">';
-  for (const [val, lbl] of [["addrop", "Add / Drop"], ["trade", "Trade"], ["pickups", "Best Pickups"]]) {
+  for (const [val, lbl] of [["addrop", "Add / Drop"], ["trade", "Trade"], ["pickups", "Best Pickups"], ["finder", "Trade Finder"]]) {
     const active = _standings.whatIfTab === val;
     html += '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-witab="' + val +
       '" style="border:0; border-radius:0; padding:5px 12px;">' + lbl + '</button>';
@@ -803,6 +936,7 @@ function renderWhatIfCard(myId) {
   html += '</div>';
   html += _standings.whatIfTab === "trade" ? renderTradePanel(myId)
         : _standings.whatIfTab === "pickups" ? renderPickupsPanel(myId)
+        : _standings.whatIfTab === "finder" ? renderTradeFinderPanel(myId)
         : renderAddDropPanel(myId);
   html += '</div>';
   return html;
@@ -1314,6 +1448,26 @@ function wireStandings() {
       } catch (e) { if (status) status.textContent = "Image error: " + (e.message || e); }
     }, 20);
   });
+
+  // Trade Finder
+  const tfRun = document.getElementById("tf-run");
+  if (tfRun) tfRun.addEventListener("click", () => {
+    tfRun.textContent = "Scanning…"; tfRun.disabled = true;
+    setTimeout(() => {
+      try { _standings.tradeFinder.results = findTrades(getMyTeam().id); }
+      catch (e) { _standings.error = e.message || String(e); }
+      renderStandings();
+    }, 30);
+  });
+  const tfWW = document.getElementById("tf-winwin");
+  if (tfWW) tfWW.addEventListener("change", () => { _standings.tradeFinder.winWinOnly = tfWW.checked; renderStandings(); });
+  document.querySelectorAll("[data-tf-open]").forEach(b => b.addEventListener("click", () => {
+    const r = _standings.tradeFinder._displayed?.[+b.dataset.tfOpen];
+    if (!r) return;
+    _standings.trade = { partner: r.partner, send: r.give.slice(), recv: r.get.slice() };
+    _standings.whatIfTab = "trade";
+    renderStandings();
+  }));
 
   // Best Pickups
   const pkLoad = document.getElementById("pk-load");
