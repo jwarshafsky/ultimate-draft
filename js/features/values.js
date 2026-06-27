@@ -16,7 +16,8 @@ function renderValues() {
     return;
   }
   const inflation = computeTieredInflation();
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
 
   // Projection source toggle (shared app-wide with the Keepers tab).
   const sources = (typeof projectionSources === "function") ? projectionSources() : [];
@@ -50,7 +51,7 @@ function renderValues() {
   // Filter + sort
   let filtered = values.filter(p => {
     if (_valuesState.posFilter !== "ALL" && p.posKey !== _valuesState.posFilter && p.pos !== _valuesState.posFilter) return false;
-    if (!_valuesState.showKept && keptNames.has(p.name)) return false;
+    if (!_valuesState.showKept && keptNames.has(_nk(p.name))) return false;
     if (_valuesState.search && !p.name.toLowerCase().includes(_valuesState.search.toLowerCase())) return false;
     return true;
   });
@@ -81,7 +82,7 @@ function renderValues() {
   for (const p of filtered.slice(0, 400)) {
     const inflV = inflatedValue(p, inflation);
     const delta = inflV - p.value;
-    const isKept = keptNames.has(p.name);
+    const isKept = keptNames.has(_nk(p.name));
     const nfbc = getNfbc(p.name);
     const sc = getStatcast(p.name);
     const sig = statcastBuySell(p.name);

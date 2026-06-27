@@ -25,6 +25,11 @@ function getMyLiveDraftPicks() {
   return _liveDraft.picks.filter(p => p.team === me.id).map(p => p.player);
 }
 
+// Names of every player already drafted in the live draft (taken).
+function getDraftedNames() {
+  return new Set(_liveDraft.picks.map(p => p.player));
+}
+
 // Live inflation accounting for picks made so far.
 function computeLiveInflation() {
   const flat = computeFlatInflation();

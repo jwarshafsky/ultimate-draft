@@ -20,7 +20,11 @@ function renderBoard() {
     return;
   }
   const inflation = computeTieredInflation();
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  // Match keepers/drafted to the valuation list by NORMALIZED name, so accents
+  // ("Cristopher Sánchez" vs "Cristopher Sanchez") don't cause a miss.
+  const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = new Set(collectKeepers().map(k => nk(k.name)));
+  const draftedNames = new Set([...((typeof getDraftedNames === "function") ? getDraftedNames() : [])].map(nk));
   const positions = ["C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"];
   const depth = { C: 18, "1B": 22, "2B": 22, "3B": 22, "SS": 22, OF: 75, SP: 80, RP: 50 };
 
@@ -62,12 +66,17 @@ function renderBoard() {
     for (let i = 0; i < list.length; i++) {
       const p = list[i];
       const inf = inflatedValue(p, inflation);
-      const isKept = keptNames.has(p.name);
+      const isKept = keptNames.has(nk(p.name));
+      const isDrafted = draftedNames.has(nk(p.name));
+      const taken = isKept || isDrafted;
       const tier = tierForValue(p.value);
       const cliff = cliffs.has(i) ? ' style="border-top: 2px solid var(--accent);"' : '';
       html += '<tr' + cliff + (isKept ? ' class="kept"' : '') + '>';
       html += '<td style="padding: 3px 4px;"><span style="color: ' + TIER_COLORS[tier] + '; font-size: 10px;">' + tier + '</span></td>';
-      html += '<td style="padding: 3px 4px;">' + esc(p.name) + (isKept ? ' <span style="color: var(--keeper);">★</span>' : '') + '</td>';
+      const nameStyle = taken ? 'color: var(--dim); text-decoration: line-through;' : '';
+      html += '<td style="padding: 3px 4px;' + nameStyle + '">' + esc(p.name) +
+        (isKept ? ' <span style="color: var(--keeper);">★</span>' : '') +
+        (isDrafted && !isKept ? ' <span class="dim" style="font-size:10px;">taken</span>' : '') + '</td>';
       html += '<td class="num" style="padding: 3px 4px;">$' + p.value.toFixed(0) + '</td>';
       html += '<td class="num" style="padding: 3px 4px;' + (inf - p.value > 0 ? 'color: var(--good);' : '') + '">$' + inf.toFixed(0) + '</td>';
       html += '</tr>';

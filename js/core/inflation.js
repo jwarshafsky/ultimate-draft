@@ -78,7 +78,8 @@ function computeFlatInflation(opts) {
   const values = getValues();
   if (!values || !values.length) return null;
   const keepers = collectKeepers();
-  const keptNames = new Set(keepers.map(k => k.name));
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = new Set(keepers.map(k => _nk(k.name)));
 
   // Total league budget minus what's locked up in keepers
   const budgets = computeTeamBudgets();
@@ -93,7 +94,7 @@ function computeFlatInflation(opts) {
     totalValue += p.value;
     if (p.type === "H") hitValue += p.value;
     else pitValue += p.value;
-    if (keptNames.has(p.name)) {
+    if (keptNames.has(_nk(p.name))) {
       keptValue += p.value;
     } else {
       remainingValue += p.value;
@@ -107,7 +108,7 @@ function computeFlatInflation(opts) {
   // Kept H/P value
   let keptHit = 0, keptPit = 0;
   for (const p of values) {
-    if (keptNames.has(p.name) && p.value > 0) {
+    if (keptNames.has(_nk(p.name)) && p.value > 0) {
       if (p.type === "H") keptHit += p.value;
       else keptPit += p.value;
     }
@@ -183,12 +184,13 @@ function computeTieredInflation() {
   const flat = computeFlatInflation();
   if (!flat) return null;
   const values = getValues();
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
 
   // Bucket remaining (non-kept positive-value) players by tier
   const tierValue = { T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 };
   for (const p of values) {
-    if (keptNames.has(p.name) || p.value <= 0) continue;
+    if (keptNames.has(_nk(p.name)) || p.value <= 0) continue;
     tierValue[tierForValue(p.value)] += p.value;
   }
 
@@ -210,7 +212,7 @@ function computeTieredInflation() {
   for (const p of values) {
     if (p.value <= 0) continue;
     posValue[p.posKey] = (posValue[p.posKey] || 0) + p.value;
-    if (keptNames.has(p.name)) posKept[p.posKey] = (posKept[p.posKey] || 0) + p.value;
+    if (keptNames.has(_nk(p.name))) posKept[p.posKey] = (posKept[p.posKey] || 0) + p.value;
   }
   const posMult = {};
   for (const k of Object.keys(posValue)) {
