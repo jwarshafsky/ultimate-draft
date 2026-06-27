@@ -34,8 +34,9 @@ function getInteractiveState() { return _interactive; }
 
 function startInteractiveMock() {
   _interactive.states = buildMockTeamStates({});
-  const keptNames = new Set(collectKeepers().map(k => k.name));
-  _interactive.pool = getValues().filter(p => p.value > 0 && !keptNames.has(p.name)).slice();
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  _interactive.pool = getValues().filter(p => p.value > 0 && !keptNames.has(_nk(p.name))).slice();
   _interactive.pool.sort((a, b) => b.value - a.value);
   _interactive.picks = [];
   _interactive.nominationOrder = Object.keys(_interactive.states);

@@ -9,6 +9,7 @@ const _mockState = {
   running: false,
   view: "single",
   lastBacktest: null,
+  boardExpanded: false, // interactive Board: compact (top per pos) vs full
 };
 
 function renderMock() {
@@ -193,10 +194,15 @@ function renderInteractiveMock() {
   }
 
   // Your roster + a live Board of remaining players, for bid decisions.
-  html += '<div class="grid cols-2">';
-  html += renderMockRoster(myState);
-  html += renderMockBoard(s);
-  html += '</div>';
+  if (_mockState.boardExpanded) {
+    html += renderMockRoster(myState);
+    html += renderMockBoard(s, true);   // full-width board
+  } else {
+    html += '<div class="grid cols-2">';
+    html += renderMockRoster(myState);
+    html += renderMockBoard(s, false);
+    html += '</div>';
+  }
 
   // Team strip (compact)
   html += '<div class="card" style="padding: 8px;">';
@@ -247,7 +253,16 @@ function renderInteractiveMock() {
 // Your roster during the mock: keepers + everything you've drafted so far.
 function renderMockRoster(myState) {
   if (!myState) return '<div class="card"><h3>Your Roster</h3><p class="muted small">—</p></div>';
-  let html = '<div class="card"><h3>Your Roster <span class="muted small">· $' + myState.budget + ' left · ' + myState.slotsRemaining + ' open</span></h3>';
+  const maxBid = Math.max(0, myState.budget - Math.max(0, myState.slotsRemaining - 1));
+  let html = '<div class="card"><h3>Your Roster <span class="muted small">· $' + myState.budget + ' left · ' + myState.slotsRemaining + ' open · max bid $' + maxBid + '</span></h3>';
+  // Open slots / positional needs.
+  const os = myState.openSlots || {};
+  const needBits = [];
+  for (const slot of ["C", "1B", "2B", "3B", "SS", "OF", "MI", "CI", "UTIL", "SP", "RP"]) {
+    const n = os[slot] || 0; if (n > 0) needBits.push(slot + (n > 1 ? "×" + n : ""));
+  }
+  if ((os.BENCH || 0) > 0) needBits.push("BN×" + os.BENCH);
+  html += '<div class="muted small" style="margin:2px 0 4px;">Needs: ' + (needBits.length ? needBits.join(", ") : "roster full") + '</div>';
   html += '<div class="muted small" style="margin-top:4px;">Keepers (' + (myState.kept ? myState.kept.length : 0) + ')</div>';
   if (myState.kept && myState.kept.length) {
     html += '<table style="font-size:12px;"><tbody>';
@@ -269,20 +284,24 @@ function renderMockRoster(myState) {
 }
 
 // A Board of players still available, by position, priced at the current mock
-// inflation — so you can judge scarcity before bidding. Names are click-to-
-// nominate when it's your turn.
-function renderMockBoard(s) {
+// inflation — so you can judge scarcity before bidding. Compact (top per pos) or
+// expanded (full, scrollable). Names are click-to-nominate when it's your turn.
+function renderMockBoard(s, expanded) {
   const positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
   const myTurn = s.phase === "nominating" && getCurrentNominatorId() === getMyTeam()?.id;
   const infMult = s.inflation && s.inflation.multiplier ? s.inflation.multiplier.toFixed(2) : "1.00";
-  let html = '<div class="card"><h3>Board — available (' + s.pool.length + ')</h3>';
-  html += '<p class="muted small">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + '</p>';
-  html += '<div class="grid cols-3">';
+  const perCol = expanded ? Infinity : 8;
+  let html = '<div class="card">';
+  html += '<div style="display:flex; align-items:center; gap:8px;"><h3 style="margin:0;">Board — available (' + s.pool.length + ')</h3>';
+  html += '<button class="btn ghost" id="mock-board-toggle" style="width:auto; padding:2px 10px; font-size:12px;">' + (expanded ? "▴ Collapse" : "▾ Expand full board") + '</button></div>';
+  html += '<p class="muted small">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + (expanded ? ' Scroll each column for the full list.' : '') + '</p>';
+  html += '<div class="grid ' + (expanded ? 'cols-5' : 'cols-3') + '">';
   for (const pos of positions) {
-    const list = s.pool.filter(p => p.posKey === pos).slice(0, 8);
-    if (!list.length) continue;
-    html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + list.length + '</span></h4>';
-    html += '<table style="font-size:11px;"><tbody>';
+    const all = s.pool.filter(p => p.posKey === pos);
+    if (!all.length) continue;
+    const list = perCol === Infinity ? all : all.slice(0, perCol);
+    html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + all.length + '</span></h4>';
+    html += '<div style="' + (expanded ? 'max-height:340px; overflow-y:auto;' : '') + '"><table style="font-size:11px; width:100%;"><tbody>';
     for (const p of list) {
       const inf = inflatedValue(p, s.inflation);
       const tier = (typeof tierForValue === "function") ? tierForValue(p.value) : "T3";
@@ -292,7 +311,7 @@ function renderMockBoard(s) {
         : esc(p.name);
       html += '<tr><td><span style="color:' + color + '; font-size:9px;">' + tier + '</span> ' + nameCell + '</td><td class="num">$' + inf.toFixed(0) + '</td></tr>';
     }
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div></div>';
   }
   html += '</div></div>';
   return html;
@@ -362,6 +381,10 @@ function wireMockControls() {
     if (!r.ok) alert(r.error);
   });
   document.getElementById("im-pass")?.addEventListener("click", () => userPass());
+  document.getElementById("mock-board-toggle")?.addEventListener("click", () => {
+    _mockState.boardExpanded = !_mockState.boardExpanded;
+    renderMock();
+  });
   // Click a board player to nominate (when it's your turn).
   document.querySelectorAll(".mock-nom").forEach(a => {
     a.addEventListener("click", (e) => {

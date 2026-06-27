@@ -185,95 +185,69 @@ function mustFillBoost(state, elig) {
   return boost;
 }
 
-// What's the most this team would bid for player p in the current state?
-// Returns an integer (auction prices are whole dollars).
+// Normalized-name helpers so keepers/drafted match the valuation list even when
+// names differ by accents / suffixes (e.g. "Iván Herrera" vs "Ivan Herrera").
+function _mockNk(s) { return (typeof normalizePlayerName === "function") ? normalizePlayerName(s) : String(s || "").toLowerCase(); }
+function _mockKeptSet() { return new Set(collectKeepers().map(k => _mockNk(k.name))); }
+
+// What's the most this team would bid for player p, in whole dollars?
 //
-// Real-world calibration:
-//   - Owners spend 95-99% of budgets every year. Force-spend at high $/slot.
-//   - Stars-and-scrubs drafters pay 10-20% over value for T1/T2; underpay T4/T5.
-//   - Spread drafters underpay T1, bid AT value for T3/T4.
-//   - Position need scales bid 0.4 (full position) → 1.0 (unfilled).
-//   - Owner-specific position biases (history-derived) tilt bids by position.
-//   - Auction natural inflation: even average bidders pay 3-5% over baseline.
+// Model (calibrated for realistic auction clearing):
+//   market = inflatedValue(p) — a BUDGET-CONSERVING price (value × inflation ×
+//     positional scarcity). Summed over a draft it ≈ total budget, so clearing
+//     near `market` keeps total spend right and star prices near projection.
+//   We tilt `market` by a few MODEST factors (need, owner tendency, cash on
+//     hand, forced-fill) to get this team's willingness-to-pay. The English
+//     auction in runBiddingRound then clears near the 2nd-highest WTP.
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
-  const baseValue = inflatedValue(p, inflation);
-  if (!isFinite(baseValue)) return 0;
+  const market = inflatedValue(p, inflation);
+  if (!isFinite(market) || market <= 0) return 0;
 
-  // Hard safety: reserve $1 per future slot.
-  const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - state.profile.safetyMargin;
+  // Hard safety: reserve $1 per remaining future slot.
+  const safetyCap = state.budget - Math.max(0, state.slotsRemaining - 1) - (state.profile.safetyMargin || 0);
   if (safetyCap <= 0) return 0;
 
   const profile = state.profile;
   const elig = p.elig && p.elig.length ? p.elig : [p.posKey];
   const need = positionNeedFor(state, elig);
-  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+  if (need <= 0) return 0;   // no slot to roster this player
 
-  // Tier classification
-  const tier = baseValue >= 35 ? "T1" : baseValue >= 20 ? "T2" : baseValue >= 10 ? "T3" : baseValue >= 5 ? "T4" : "T5";
+  // Need: pay full market for a real open need; discount flex/bench-only fits so
+  // teams don't overpay to stash players they can't start.
+  const needMult = need >= 0.85 ? 1.00 : need >= 0.65 ? 0.93 : need >= 0.5 ? 0.84 : 0.70;
 
-  // Tendency-driven tier aggression.
-  // Stars+scrubs profile (topTierAppetite >= 1.2) hits T1/T2 hard, saves on T4/T5.
-  // Spread profile (topTierAppetite < 1.0) underpays T1, pays at value for mid tiers.
-  let tierAgg = profile.aggression;
+  // Owner tendency tilt (MODEST). Stars+scrubs pay a little over for studs and
+  // under for filler; spread does the opposite. Tier by market price.
+  const tier = market >= 30 ? "T1" : market >= 18 ? "T2" : market >= 8 ? "T3" : market >= 4 ? "T4" : "T5";
   const tta = profile.topTierAppetite || 1;
-  if (tta >= 1.25) {
-    if (tier === "T1") tierAgg *= 1.18;
-    else if (tier === "T2") tierAgg *= 1.10;
-    else if (tier === "T4") tierAgg *= 0.85;
-    else if (tier === "T5") tierAgg *= 0.7;
-  } else if (tta < 1.05) {
-    if (tier === "T1") tierAgg *= 0.90;
-    else if (tier === "T3") tierAgg *= 1.05;
-    else if (tier === "T4") tierAgg *= 1.08;
+  let profMult = profile.aggression || 1;
+  if (tta >= 1.2) {
+    if (tier === "T1") profMult *= 1.10; else if (tier === "T2") profMult *= 1.05;
+    else if (tier === "T4") profMult *= 0.90; else if (tier === "T5") profMult *= 0.82;
+  } else if (tta < 0.95) {
+    if (tier === "T1") profMult *= 0.90; else if (tier === "T3" || tier === "T4") profMult *= 1.05;
   }
-
-  // Position bias from history (e.g., closer hoarder, SP-heavy)
-  const posMult = profile.posBias[p.posKey] || 1;
-
-  // Need factor scaled to the slot-weight range (0.3 bench … 1.0 catcher).
-  // need === 0 means the player fits NO open slot (not even bench) — don't bid,
-  // so a team can never buy a player it can't actually roster.
-  let needFactor;
-  if (need <= 0) return 0;
-  else if (need <= 0.35) needFactor = 0.55;   // bench-only fit
-  else if (need < 0.65) needFactor = 0.82;    // flex (MI/CI/UTIL)
-  else if (need < 0.85) needFactor = 0.95;    // OF / RP open
-  else needFactor = 1.00;                      // dedicated infield/C/SP open
-
-  // Forced-fill pressure: pay up to avoid an unfillable required slot.
-  const fillBoost = mustFillBoost(state, elig);
-
-  // Auction natural inflation — even neutral bidders pay slightly above raw value.
-  const auctionInflation = 1.03;
-
-  // Random per-pick noise (5-15% swing)
-  const noise = 1 + (Math.random() - 0.5) * profile.noise * 2;
-
-  // Owner loyalty: pay a premium for "their guys" (repeat draft targets).
+  const posMult = (profile.posBias && profile.posBias[p.posKey]) || 1;
   const targetMult = (profile.targets && profile.targets[p.name]) || 1;
 
-  let perceived = baseValue * tierAgg * posMult * needFactor * fillBoost * targetMult * auctionInflation * noise;
+  // Use-it-or-lose-it: a team with above-norm $/slot pays a bit over market to
+  // deploy cash; a tight team pulls back. Modest — real owners spend ~97% of
+  // budget across MANY picks, not by massively overpaying one.
+  const dps = state.budget / Math.max(1, state.slotsRemaining);
+  let cashMult = 1;
+  if (dps > 15) cashMult = 1.14; else if (dps > 11) cashMult = 1.07;
+  else if (dps < 6) cashMult = 0.90; else if (dps < 8) cashMult = 0.96;
 
-  // Graduated $/slot pressure: teams sitting on excess cash bid above value to
-  // avoid stranding money (owners spend 95-99% of budget every year), teams
-  // that are tight pull back. Scales with how hot their $/slot is.
-  let dpsPressure = 1;
-  if (dollarsPerSlot > 18) dpsPressure = 1.42;
-  else if (dollarsPerSlot > 13) dpsPressure = 1.28;
-  else if (dollarsPerSlot > 9) dpsPressure = 1.12;
-  else if (dollarsPerSlot < 4) dpsPressure = 0.82;
-  perceived *= dpsPressure;
+  // Forced-fill: pay up for the last open REQUIRED slot late (gated to low slack).
+  const fill = mustFillBoost(state, elig);
 
-  // Spread, don't dump: in the endgame, cap a single buy so a cash-rich team
-  // can't sink its whole wad into one player — real owners spread leftover
-  // money across several. (Doesn't bind early, where value/safetyCap govern.)
-  if (state.slotsRemaining <= 8) {
-    const spreadCap = Math.floor(dollarsPerSlot * (state.slotsRemaining <= 3 ? 4 : 2.6)) + 6;
-    perceived = Math.min(perceived, Math.max(baseValue * 1.3, spreadCap));
-  }
+  const noise = 1 + (Math.random() - 0.5) * 2 * (profile.noise || 0.07);
 
-  return Math.max(0, Math.floor(Math.min(perceived, safetyCap)));
+  let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise;
+  // No single buy goes wildly over market (prevents cash-dumping one player).
+  wtp = Math.min(wtp, market * 1.6);
+  return Math.max(0, Math.floor(Math.min(wtp, safetyCap)));
 }
 
 // Nomination logic — tendency-driven. Stars+scrubs owners drop big names
@@ -358,21 +332,9 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
     if (!anyBumped) break;
     activeIds = activeIds.filter(id => states[id].budget > currentBid);
   }
-  // Solo-buyer correction: if the winner has WAY more $/slot than league
-  // norm and nobody else challenged them seriously, real owners would have
-  // paid more to avoid stockpiling cash they can't use. Push the final price
-  // toward what equalizes their $/slot pace.
-  const winnerSlots = currentWinner.slotsRemaining;
-  const winnerDPerS = currentWinner.budget / Math.max(1, winnerSlots);
-  const targetDPerS = 10;  // league norm
-  if (winnerDPerS > targetDPerS * 1.4 && winnerSlots <= 12 && winnerSlots > 0) {
-    // What price would bring this winner closer to league $/slot pace?
-    const targetSpendThisPick = Math.max(currentBid, Math.floor(currentWinner.budget - (winnerSlots - 1) * targetDPerS));
-    const maxAllowed = computeMaxBid(currentWinner, player, inflation);
-    const newPrice = Math.min(targetSpendThisPick, maxAllowed);
-    if (newPrice > currentBid) currentBid = newPrice;
-  }
-
+  // (No artificial solo-buyer markup — an uncontested player clears cheap, which
+  // is realistic. Budget gets spent via the cash-on-hand tilt + inflation, which
+  // raise prices as teams accumulate unspent money over the draft.)
   if (currentWinner.budget < currentBid) {
     currentBid = Math.max(1, currentWinner.budget);
   }
@@ -384,11 +346,12 @@ function inflationForMockState(states) {
   const draftedNames = new Set();
   let spent = 0;
   for (const s of Object.values(states)) {
-    for (const d of s.drafted) { draftedNames.add(d.name); spent += d.price; }
+    for (const d of s.drafted) { draftedNames.add(_mockNk(d.name)); spent += d.price; }
   }
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const keptNames = _mockKeptSet();
   const values = getValues();
-  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams;
+  const totalBudget = (LEAGUE.draftBudget * LEAGUE.numTeams)
+    + (typeof getDraftDollarAdjustment === "function" ? LEAGUE.teams.reduce((s, t) => s + getDraftDollarAdjustment(t.id), 0) : 0);
   const totalKeptCost = Object.values(states).reduce((s, t) => s + (LEAGUE.draftBudget - t.budget - t.drafted.reduce((x, d) => x + d.price, 0)), 0);
   const remaining = Math.max(0, totalBudget - totalKeptCost - spent);
 
@@ -397,7 +360,7 @@ function inflationForMockState(states) {
   // would dilute the multiplier and make the AI chronically underbid.
   const openSlots = Object.values(states).reduce((n, s) => n + Math.max(0, s.slotsRemaining), 0);
   const avail = values
-    .filter(p => p.value > 0 && !keptNames.has(p.name) && !draftedNames.has(p.name))
+    .filter(p => p.value > 0 && !keptNames.has(_mockNk(p.name)) && !draftedNames.has(_mockNk(p.name)))
     .sort((a, b) => b.value - a.value);
   const rosterable = avail.slice(0, Math.max(1, openSlots));
   const remainingValue = rosterable.reduce((s, p) => s + p.value, 0);
@@ -412,7 +375,10 @@ function inflationForMockState(states) {
     multiplier: mult,
     hitMultiplier: mult,
     pitMultiplier: mult,
-    tierMult: { T1: mult * 1.15, T2: mult * 1.08, T3: mult, T4: mult * 0.9, T5: mult * 0.7 },
+    // Flat across tiers: the market price is value × inflation × positional
+    // scarcity. Stars-vs-scrubs spread comes from OWNER profiles (computeMaxBid),
+    // not a blanket tier premium that pushed star prices systematically high.
+    tierMult: { T1: mult, T2: mult, T3: mult, T4: mult, T5: mult },
     posScarcity: computePosScarcity(states, rosterable),
   };
 }
@@ -452,9 +418,9 @@ function computePosScarcity(states, rosterable) {
 function runMockDraft(opts) {
   opts = opts || {};
   const states = buildMockTeamStates(opts);
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const keptNames = _mockKeptSet();
   // Pool: positive-value, not kept players. Sort by value desc for nomination defaults.
-  let pool = getValues().filter(p => p.value > 0 && !keptNames.has(p.name)).slice();
+  let pool = getValues().filter(p => p.value > 0 && !keptNames.has(_mockNk(p.name))).slice();
   pool.sort((a, b) => b.value - a.value);
   const picks = [];
 
