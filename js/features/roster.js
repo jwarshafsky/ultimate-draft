@@ -80,7 +80,7 @@ function renderRoster() {
     root.innerHTML = '<div class="empty"><p>Set your team in league config to optimize a roster.</p></div>';
     return;
   }
-  const sel = getKeeperSelections()[me.id] || {};
+  const sel = getEffectiveKeeperSelections()[me.id] || {};
   const kept = Object.entries(sel).filter(([_, f]) => f.keeper).map(([n]) => n);
   const myPicks = (_liveDraft.picks || []).filter(p => p.team === me.id).map(p => p.player);
   const allPlayers = [...kept, ...myPicks];

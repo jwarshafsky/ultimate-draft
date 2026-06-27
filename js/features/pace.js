@@ -5,7 +5,7 @@ function renderSpendingPace() {
   const me = getMyTeam();
   if (!me) return '';
   const myPicks = _liveDraft.picks.filter(p => p.team === me.id);
-  const keeperSel = getKeeperSelections()[me.id] || {};
+  const keeperSel = getEffectiveKeeperSelections()[me.id] || {};
   const kept = Object.entries(keeperSel).filter(([_, f]) => f.keeper).map(([n]) => n);
   const keptCost = kept.reduce((s, n) => s + (getCurrentKeeperSalary(n) ?? 0), 0);
   const draftedSpent = myPicks.reduce((s, p) => s + p.price, 0);

@@ -91,7 +91,9 @@ function projectTeamCategories(playerNames) {
 function getMyRoster() {
   const me = getMyTeam();
   if (!me) return [];
-  const sel = getKeeperSelections()[me.id] || {};
+  // Keepers from the Keepers tab (your predicted keepers), not league-site marks.
+  const selAll = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
+  const sel = selAll[me.id] || {};
   const kept = Object.entries(sel)
     .filter(([_, f]) => f.keeper) // ML keepers only — minors don't contribute to ML cats this year
     .map(([n]) => n);

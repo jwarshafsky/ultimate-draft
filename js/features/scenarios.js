@@ -29,7 +29,7 @@ function saveScenariosToStorage() {
 function snapshotMyTeam(picks) {
   const me = getMyTeam();
   if (!me) return null;
-  const sel = getKeeperSelections()[me.id] || {};
+  const sel = getEffectiveKeeperSelections()[me.id] || {};
   const kept = Object.entries(sel)
     .filter(([_, f]) => f.keeper)
     .map(([n]) => n);
@@ -51,7 +51,7 @@ function snapshotMyTeam(picks) {
 function saveScenario(name) {
   const id = "sc_" + Date.now();
   const me = getMyTeam();
-  const sel = getKeeperSelections()[me?.id] || {};
+  const sel = getEffectiveKeeperSelections()[me?.id] || {};
   const scenario = {
     id,
     name: name || "Scenario " + (_scenarios.list.length + 1),

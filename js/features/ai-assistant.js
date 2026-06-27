@@ -36,12 +36,12 @@ function buildAiContext() {
     (typeof _liveDraft !== "undefined" ? _liveDraft.picks : [])
       .filter(p => p.team === me.id)
       .reduce((s, p) => s + p.price, 0)
-  ) - Object.entries(getKeeperSelections()[me.id] || {})
+  ) - Object.entries(getEffectiveKeeperSelections()[me.id] || {})
     .filter(([_, f]) => f.keeper)
     .reduce((s, [n]) => s + (getCurrentKeeperSalary(n) ?? 0), 0);
   const slotsFilled = myRoster.length;
   const slotsRemaining = LEAGUE.rosterSize - slotsFilled - (
-    Object.values(getKeeperSelections()[me.id] || {}).filter(f => f.minorKeeper).length
+    Object.values(getEffectiveKeeperSelections()[me.id] || {}).filter(f => f.minorKeeper).length
   );
 
   // Top remaining undrafted players (by inflated value), capped to ~30

@@ -18,13 +18,18 @@
 // + keepers to figure out remaining budget, slots, and position needs.
 function computeLiveTeamStates() {
   const states = {};
-  const selections = getKeeperSelections();
+  // Keepers come from the Keepers tab (your predicted keepers), not the
+  // league-site marks. Major keepers (keeper=true) fill ML draft slots.
+  const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
   for (const t of LEAGUE.teams) {
     const teamSel = selections[t.id] || {};
     const kept = Object.entries(teamSel)
       .filter(([_, f]) => f.keeper)
       .map(([name]) => name);
-    const keptCost = kept.reduce((s, n) => s + (getCurrentKeeperSalary(n) ?? 0), 0);
+    const keptCost = kept.reduce((s, n) => {
+      const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(n) : null;
+      return s + (ci ? ci.cost : (getCurrentKeeperSalary(n) ?? 0));
+    }, 0);
     // Live picks for this team
     const picks = (typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).filter(p => p.team === t.id);
     const spent = picks.reduce((s, p) => s + p.price, 0);

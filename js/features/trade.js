@@ -127,7 +127,7 @@ function renderTradeSide(side) {
 
 function addTradeAsset(side) {
   const teamId = _tradeState[side];
-  const sel = getKeeperSelections()[teamId] || {};
+  const sel = getEffectiveKeeperSelections()[teamId] || {};
   const owned = Object.entries(sel)
     .filter(([_, f]) => f.keeper || f.minorKeeper)
     .map(([n]) => n);
