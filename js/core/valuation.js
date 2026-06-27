@@ -184,26 +184,30 @@ function computeReplacementLevels(players) {
 //      use them directly — Jeff's saved FG settings already encode the league rules.
 //   2. Otherwise, run the SGP engine to compute values from raw projections.
 function computeValues() {
+  // App-wide valuation is driven by the ACTIVE projection source's Dollar Values
+  // (the same source the Keepers tab uses) so every tab agrees. Positions come
+  // from the FG export's POS column; two-way players (Ohtani) are summed.
+  // Falls back to the legacy preseason store only when no $ source is active.
+  const src = (typeof activeProjSource === "function") ? activeProjSource() : null;
+  if (src && src !== "preseason" && typeof rosHasDollars === "function" && rosHasDollars(src) && typeof rosValueList === "function") {
+    const list = rosValueList(src);
+    if (list.length) {
+      const out = list.map(p => {
+        let posKey = (p.pos && typeof normalizePos === "function") ? normalizePos(p.pos) : (p.type === "P" ? "SP" : "UTIL");
+        if (posKey === "DH") posKey = "UTIL";
+        const pos = p.pos || posKey;
+        return { name: p.name, team: "", pos, type: p.type, posKey,
+          value: p.value, fgDollars: p.value, sgpAbove: 0, replacementSGP: 0, totalSGP: 0,
+          proj: {}, elig: (typeof eligibleSlots === "function") ? eligibleSlots(p.pos, p.type, posKey) : [posKey] };
+      });
+      out.sort((a, b) => b.value - a.value);
+      return out;
+    }
+  }
+
   const hitters = getHitterProjections();
   const pitchers = getPitcherProjections();
-  // No preseason projections loaded → drive app-wide valuation from the active
-  // source's uploaded Dollar Values (FanGraphs auction $). Positions aren't in
-  // that feed, so they default to UTIL/SP, but $ + H/P type (what inflation and
-  // the Values $ list need) are exact.
-  if (!hitters.length && !pitchers.length) {
-    const src = (typeof getKeeperProjSource === "function" && getKeeperProjSource()) ||
-                (typeof firstLoadedRosSource === "function" && firstLoadedRosSource()) || null;
-    const list = (src && typeof rosValueList === "function") ? rosValueList(src) : [];
-    if (!list.length) return [];
-    const out = list.map(p => {
-      const posKey = p.type === "P" ? "SP" : "UTIL";
-      return { name: p.name, team: "", pos: posKey, type: p.type, posKey,
-        value: p.value, fgDollars: p.value, sgpAbove: 0, replacementSGP: 0, totalSGP: 0,
-        proj: {}, elig: [posKey] };
-    });
-    out.sort((a, b) => b.value - a.value);
-    return out;
-  }
+  if (!hitters.length && !pitchers.length) return [];
 
   // Detect whether we're in FG-dollars mode (any player has fgDollars set).
   const fgMode = hitters.some(h => h.fgDollars != null) || pitchers.some(p => p.fgDollars != null);

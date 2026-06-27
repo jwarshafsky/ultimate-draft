@@ -10,16 +10,33 @@ let _valuesState = {
 
 function renderValues() {
   const root = document.getElementById("view-root");
-  const meta = getProjectionMeta();
-  if (meta.hitterCount + meta.pitcherCount === 0) {
-    root.innerHTML = '<div class="empty"><p>No projections loaded yet.</p><p class="small">Go to Data tab to import a FanGraphs CSV.</p></div>';
+  const values = getValues();
+  if (!values.length) {
+    root.innerHTML = '<div class="empty"><p>No values yet.</p><p class="small">Upload Dollar Values (or Stat Projections) on the Data tab.</p></div>';
     return;
   }
-  const values = getValues();
   const inflation = computeTieredInflation();
   const keptNames = new Set(collectKeepers().map(k => k.name));
 
+  // Projection source toggle (shared app-wide with the Keepers tab).
+  const sources = (typeof projectionSources === "function") ? projectionSources() : [];
+  const activeSrc = (typeof activeProjSource === "function") ? activeProjSource() : null;
+
   let html = '<div class="card" style="margin-bottom: 8px;">';
+  html += '<div style="display:flex; align-items:center; gap:8px; margin:0 0 8px;">';
+  html += '<span class="small muted">Projection $</span>';
+  if (sources.length) {
+    html += '<select id="val-source">';
+    for (const s of sources) {
+      const tag = s.id === "preseason" ? "" : (s.hasDollars ? " · $" : " · no $");
+      html += '<option value="' + esc(s.id) + '"' + (s.id === activeSrc ? " selected" : "") + '>' + esc(s.label) + tag + '</option>';
+    }
+    html += '</select>';
+    html += '<span class="small dim">· shared with Keepers tab</span>';
+  } else {
+    html += '<span class="dim small">none loaded</span>';
+  }
+  html += '</div>';
   html += '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">';
   html += '<input id="val-search" type="search" placeholder="Search player…" style="flex: 1; min-width: 200px;" value="' + esc(_valuesState.search) + '">';
   html += '<select id="val-pos">';
@@ -90,6 +107,12 @@ function renderValues() {
   root.innerHTML = html;
 
   // Wire interactions
+  const srcSel = document.getElementById("val-source");
+  if (srcSel) srcSel.addEventListener("change", (e) => {
+    if (typeof setKeeperProjSource === "function") setKeeperProjSource(e.target.value);
+    if (typeof refreshValues === "function") refreshValues();
+    renderValues();
+  });
   document.getElementById("val-search").addEventListener("input", (e) => {
     _valuesState.search = e.target.value;
     renderValues();

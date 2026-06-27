@@ -70,32 +70,18 @@ function _poolInflation(source, keptCost, keptValue) {
   return infl > 0 && isFinite(infl) ? infl : 1;
 }
 
-// Which projection sources are available to choose from.
+// Projection sources + active source — shared app-wide (same as the Values tab)
+// so the two tabs always agree on which $ data they're showing.
 function _keeperSources() {
-  const out = [];
-  if (typeof ROS_SOURCES !== "undefined") {
-    for (const s of ROS_SOURCES) {
-      // Selectable if it has stats OR just uploaded $ values (the latter is
-      // enough to drive the keeper Predicted $).
-      if (rosHasData(s.id) || rosHasDollars(s.id)) {
-        out.push({ id: s.id, label: s.label, hasDollars: rosHasDollars(s.id) });
-      }
-    }
-  }
-  const meta = getProjectionMeta();
-  if ((meta.hitterCount || 0) + (meta.pitcherCount || 0) > 0) {
-    out.push({ id: "preseason", label: "Preseason — " + (meta.source || "FanGraphs"), hasDollars: true });
-  }
-  return out;
+  return (typeof projectionSources === "function") ? projectionSources() : [];
 }
 
 function _currentKeeperSource(sources) {
+  if (typeof activeProjSource === "function") return activeProjSource() || "preseason";
   const pref = (typeof getKeeperProjSource === "function") ? getKeeperProjSource() : null;
   if (pref && sources.some(s => s.id === pref)) return pref;
-  // Prefer an in-season ROS source that actually carries dollar values.
   const withDollars = sources.find(s => s.id !== "preseason" && s.hasDollars);
-  if (withDollars) return withDollars.id;
-  return sources.length ? sources[0].id : "preseason";
+  return withDollars ? withDollars.id : (sources.length ? sources[0].id : "preseason");
 }
 
 // Build one team's candidate list. Membership comes from the LIVE ESPN roster

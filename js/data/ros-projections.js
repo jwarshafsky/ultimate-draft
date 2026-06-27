@@ -18,6 +18,8 @@ const _ros = {
   data: {},
   // sourceId -> { H: Map(normName->line), P: Map(...) } built lazily
   index: {},
+  // sourceId -> { H: {coreKey->$}, P: {...}, L: {...} } for fuzzy $ matching
+  dollarIdx: {},
 };
 
 function _rosKey(sourceId) { return "ud_ros_" + sourceId + "_v1"; }
@@ -80,7 +82,30 @@ function loadRosFromStorage() {
 function _saveRos(sourceId) {
   const d = _ros.data[sourceId];
   if (d) localStorage.setItem(_rosKey(sourceId), JSON.stringify(d));
-  delete _ros.index[sourceId]; // invalidate
+  delete _ros.index[sourceId];     // invalidate
+  delete _ros.dollarIdx[sourceId];
+}
+
+// Core-name-keyed ($) index for a source's dollar maps, built lazily. Lets a
+// dollar lookup fall back when middle initials / suffixes differ (e.g. ESPN
+// "Miguel Vargas" vs a "Miguel A. Vargas" $ row) — mirrors the stat-line match.
+function _dollarCoreIndex(sourceId) {
+  if (_ros.dollarIdx[sourceId]) return _ros.dollarIdx[sourceId];
+  const d = _ros.data[sourceId] || {};
+  const build = (map) => {
+    const out = {};
+    if (map) for (const k in map) {
+      const e = map[k];
+      const nm = (e && e.name) ? e.name : k;
+      const ck = coreNameKey(nm);
+      const v = _dolVal(map, k);
+      if (ck && v != null && !(ck in out)) out[ck] = v;
+    }
+    return out;
+  };
+  const idx = { H: build(d.dollarsH), P: build(d.dollarsP), L: build(d.dollarsByName) };
+  _ros.dollarIdx[sourceId] = idx;
+  return idx;
 }
 
 function _ensureSource(sourceId) {
@@ -279,7 +304,8 @@ function importRosDollars(sourceId, kind, text) {
   for (const r of rows) {
     const name = pickCol(r, ["Name", "Player", "PlayerName", "name"]);
     const dol = _pickDollars(r);
-    if (name && dol != null) { d[k][normalizePlayerName(name)] = { v: dol, name }; n++; }
+    const pos = pickCol(r, ["POS", "Pos", "Position", "pos"]) || "";
+    if (name && dol != null) { d[k][normalizePlayerName(name)] = { v: dol, name, pos }; n++; }
   }
   _saveRos(sourceId);
   fireData && fireData();
@@ -304,7 +330,9 @@ function getRosDollar(sourceId, name, type) {
   const d = _ros.data[sourceId];
   if (!d) return null;
   const key = normalizePlayerName(name), ck = coreNameKey(name);
-  const h = _dolVal(d.dollarsH, key), p = _dolVal(d.dollarsP, key);
+  const ci = _dollarCoreIndex(sourceId);
+  const h = _dolVal(d.dollarsH, key) ?? (ck in ci.H ? ci.H[ck] : null);
+  const p = _dolVal(d.dollarsP, key) ?? (ck in ci.P ? ci.P[ck] : null);
   if (h != null && p != null) return h + p;            // two-way → combined $
   if (h != null && (type === "H" || type == null)) return h;
   if (p != null && (type === "P" || type == null)) return p;
@@ -318,7 +346,7 @@ function getRosDollar(sourceId, name, type) {
   // single uploaded $ regardless of requested type, then legacy map
   if (h != null) return h;
   if (p != null) return p;
-  const lv = _dolVal(d.dollarsByName, key);
+  const lv = _dolVal(d.dollarsByName, key) ?? (ck in ci.L ? ci.L[ck] : null);
   return lv != null ? lv : null;
 }
 
@@ -329,26 +357,52 @@ function getRosDollar(sourceId, name, type) {
 function rosValueList(sourceId) {
   const d = _ros.data[sourceId];
   if (!d) return [];
-  const acc = {};   // normKey -> { name, h, p }
-  const bump = (rawName, field, v) => {
+  const acc = {};   // normKey -> { name, h, p, pos }
+  const bump = (rawName, field, v, pos) => {
     if (v == null || !rawName) return;
     const k = normalizePlayerName(rawName);
-    if (!acc[k]) acc[k] = { name: rawName, h: null, p: null };
+    if (!acc[k]) acc[k] = { name: rawName, h: null, p: null, pos: "" };
     if (acc[k][field] == null) acc[k][field] = v;
+    if (!acc[k].pos && pos) acc[k].pos = pos;
   };
-  if (d.dollarsH) for (const k in d.dollarsH) { const e = d.dollarsH[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsH, k)); }
-  if (d.dollarsP) for (const k in d.dollarsP) { const e = d.dollarsP[k]; bump(e && e.name ? e.name : k, "p", _dolVal(d.dollarsP, k)); }
-  for (const h of (d.hitters || [])) if (typeof h.dollars === "number") bump(h.name, "h", h.dollars);
-  for (const p of (d.pitchers || [])) if (typeof p.dollars === "number") bump(p.name, "p", p.dollars);
-  if (d.dollarsByName) for (const k in d.dollarsByName) { const e = d.dollarsByName[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsByName, k)); }
+  if (d.dollarsH) for (const k in d.dollarsH) { const e = d.dollarsH[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsH, k), e && e.pos); }
+  if (d.dollarsP) for (const k in d.dollarsP) { const e = d.dollarsP[k]; bump(e && e.name ? e.name : k, "p", _dolVal(d.dollarsP, k), e && e.pos); }
+  for (const h of (d.hitters || [])) if (typeof h.dollars === "number") bump(h.name, "h", h.dollars, h.pos);
+  for (const p of (d.pitchers || [])) if (typeof p.dollars === "number") bump(p.name, "p", p.dollars, p.pos);
+  if (d.dollarsByName) for (const k in d.dollarsByName) { const e = d.dollarsByName[k]; bump(e && e.name ? e.name : k, "h", _dolVal(d.dollarsByName, k), e && e.pos); }
   const out = [];
   for (const k in acc) {
     const a = acc[k];
-    if (a.h != null && a.p != null) out.push({ name: a.name, value: a.h + a.p, type: "H", twoWay: true });
-    else if (a.p != null) out.push({ name: a.name, value: a.p, type: "P" });
-    else if (a.h != null) out.push({ name: a.name, value: a.h, type: "H" });
+    if (a.h != null && a.p != null) out.push({ name: a.name, value: a.h + a.p, type: "H", pos: a.pos, twoWay: true });
+    else if (a.p != null) out.push({ name: a.name, value: a.p, type: "P", pos: a.pos });
+    else if (a.h != null) out.push({ name: a.name, value: a.h, type: "H", pos: a.pos });
   }
   return out;
+}
+
+// Sources available to pick from (those with stats or uploaded $), plus the
+// legacy preseason store if present. Shared by the Keepers and Values tabs.
+function projectionSources() {
+  const out = [];
+  for (const s of ROS_SOURCES) {
+    if (rosHasData(s.id) || rosHasDollars(s.id)) out.push({ id: s.id, label: s.label, hasDollars: rosHasDollars(s.id) });
+  }
+  if (typeof getProjectionMeta === "function") {
+    const m = getProjectionMeta();
+    if ((m.hitterCount || 0) + (m.pitcherCount || 0) > 0) out.push({ id: "preseason", label: "Preseason — " + (m.source || "FanGraphs"), hasDollars: true });
+  }
+  return out;
+}
+
+// The active projection source used app-wide (Keepers + Values + valuation).
+// User preference if set, else the first source with $, else first available.
+function activeProjSource() {
+  const pref = (typeof getKeeperProjSource === "function") ? getKeeperProjSource() : null;
+  const srcs = projectionSources();
+  if (pref && srcs.some(s => s.id === pref)) return pref;
+  const wd = srcs.find(s => s.id !== "preseason" && s.hasDollars);
+  if (wd) return wd.id;
+  return srcs.length ? srcs[0].id : null;
 }
 
 // Full name→$ map (two-way summed, deduped). Sizes the keeper-inflation pool.
