@@ -123,15 +123,29 @@ function computeFlatInflation(opts) {
   const hitRemaining = Math.max(0, hitBudget - keptTotalCost * hitShareOfKept);
   const pitRemaining = Math.max(0, pitBudget - keptTotalCost * pitShareOfKept);
 
-  const multiplier = remainingValue > 0 ? leagueRemaining / remainingValue : 1;
-  const hitMult = remainingHit > 0 ? hitRemaining / remainingHit : 1;
-  const pitMult = remainingPit > 0 ? pitRemaining / remainingPit : 1;
+  // Normalize so the NO-KEEPER baseline is exactly 1.00. Raw remaining$/remaining
+  // value only equals 1 if the projection pool happens to sum to the budget, so
+  // we divide by that baseline ratio. Result: 0 keepers → 1.00, and keepers
+  // (typically bargains) push it above 1. Inflation is purely the keeper premium.
+  const totalBudget = LEAGUE.draftBudget * LEAGUE.numTeams;
+  const totalValAll = remainingValue + keptValue;
+  const baselineMultiplier = totalValAll > 0 ? totalBudget / totalValAll : 1;
+  const norm = (rawNum, rawDen, base) => {
+    if (rawDen <= 0 || base <= 0) return 1;
+    return (rawNum / rawDen) / base;
+  };
+  const hitValAll = remainingHit + keptHit;
+  const pitValAll = remainingPit + keptPit;
+  const multiplier = norm(leagueRemaining, remainingValue, baselineMultiplier);
+  const hitMult = norm(hitRemaining, remainingHit, hitValAll > 0 ? hitBudget / hitValAll : 1);
+  const pitMult = norm(pitRemaining, remainingPit, pitValAll > 0 ? pitBudget / pitValAll : 1);
 
   return {
     mode: "flat",
     multiplier,
     hitMultiplier: hitMult,
     pitMultiplier: pitMult,
+    baselineMultiplier,
     leagueRemaining,
     remainingValue,
     keptValue,

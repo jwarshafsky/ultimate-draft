@@ -128,14 +128,15 @@ function _teamCandidates(team, source, inflation) {
     const cost = rawCost == null ? 0 : rawCost;
     const costMissing = !c.isMinor && rawCost == null;
     const predValue = _keeperPredValue(c.name, type, source);
-    const value = predValue != null ? predValue - cost / inflation : null;
+    const surplus = predValue != null ? predValue - cost : null;            // plain
+    const value = predValue != null ? predValue - cost / inflation : null;  // inflation-adjusted
     const contract = c.isMinor ? null : getKeeperContractStatus(c.name);
     const eligible = c.isMinor ? !myIneligible : (!!contract && contract.canKeepNextSeason && !myIneligible);
 
     rows.push({
       name: c.name, pos, type, isMinor: c.isMinor, onRoster: !!c.onRoster,
       leagueSel, myPicked, myIneligible,
-      cost, costMissing, predValue, value, contract, eligible,
+      cost, costMissing, predValue, surplus, value, contract, eligible,
     });
   }
 
@@ -189,12 +190,23 @@ function renderKeepers() {
     '<input type="checkbox" id="kp-only"' + (_keepersState.onlyKeepers ? " checked" : "") + '> Only keepers</label>';
   html += '</div>';
 
-  html += '<p class="small muted" style="margin-top:6px;">Inflation reflects your <b>predicted keepers</b> app-wide (per team; falls back to league marks where you haven’t predicted; flagged-ineligible picks excluded). Checking keepers updates Values, Board &amp; Overview too.</p>';
+  html += '<p class="small muted" style="margin-top:6px;">Inflation starts at <b>1.00</b> with no keepers and rises as you check players — driven only by your predicted keepers (flagged-ineligible picks excluded). Updates Values, Board &amp; Overview app-wide.</p>';
   if (_keepersState.rosterError) {
     html += '<p class="small" style="color:var(--bad); margin-top:6px;">Roster load failed: ' + esc(_keepersState.rosterError) + '</p>';
   }
   if (!_keepersState.rosters) {
     html += '<p class="small muted" style="margin-top:6px;">Load ESPN rosters to predict keepers from each team’s full roster. Until then, only flagged + your picks show.</p>';
+  } else {
+    const teamCt = Object.values(_keepersState.rosters).filter(a => a && a.length).length;
+    const playerCt = Object.values(_keepersState.rosters).reduce((s, a) => s + (a ? a.length : 0), 0);
+    const lowWarn = teamCt < LEAGUE.teams.length || playerCt < LEAGUE.teams.length * 15;
+    const rm = _keepersState.rosterMeta || {};
+    const unmapped = (rm.unmappedIds && rm.unmappedIds.length) ? rm.unmappedIds.join(", ") : "";
+    html += '<p class="small ' + (lowWarn ? "" : "muted") + '" style="margin-top:6px;' + (lowWarn ? "color:var(--warn);" : "") + '">' +
+      'Loaded <b>' + teamCt + '/' + LEAGUE.teams.length + '</b> teams · <b>' + playerCt + '</b> rostered players' +
+      (rm.rawTeamCount != null ? ' · ESPN returned ' + rm.rawTeamCount + ' teams' : '') +
+      (unmapped ? ' · <b style="color:var(--bad);">unmapped ESPN team ids: ' + esc(unmapped) + '</b> (team-id map needs updating)' : '') +
+      (lowWarn && !unmapped ? ' — that looks low; try “Refresh rosters”. Minor leaguers are stashed off ESPN rosters and come from league MiL marks.' : '') + '</p>';
   }
   if (source && source !== "preseason" && !rosHasDollars(source)) {
     html += '<p class="small" style="color:var(--warn); margin-top:6px;">This ROS source has no projected $ — Predicted $ falls back to preseason values. Import a FanGraphs export with a Dollars column (Data tab) for ROS pricing.</p>';
@@ -209,21 +221,27 @@ function renderKeepers() {
   const others = LEAGUE.teams.filter(t => !t.isMe).slice().sort((a, b) => a.owner.localeCompare(b.owner));
   const order = me ? [me, ...others] : others;
 
+  const rostersLoaded = !!_keepersState.rosters;
   for (const t of order) {
     let rows = _teamCandidates(t, source, inflation);
+    const rosterCount = (rostersLoaded && _keepersState.rosters[t.id]) ? _keepersState.rosters[t.id].length : 0;
     if (_keepersState.onlyKeepers) {
       rows = rows.filter(r => r.myPicked || (r.leagueSel && (r.leagueSel.keeper || r.leagueSel.minorKeeper)));
     }
-    if (!rows.length) continue;
+    // When rosters are loaded, always render every team (so a team that came
+    // back empty is visible, not silently dropped). Otherwise skip empty teams.
+    if (!rows.length && !rostersLoaded) continue;
 
     const picks = rows.filter(r => r.myPicked);
     const mlPicks = picks.filter(r => !r.isMinor);
     const milPicks = picks.filter(r => r.isMinor);
     const totalCost = mlPicks.reduce((s, r) => s + r.cost, 0);
+    const totalSurplus = picks.reduce((s, r) => s + (r.surplus || 0), 0);
     const totalValue = picks.reduce((s, r) => s + (r.value || 0), 0);
 
     html += '<div class="card"' + (t.isMe ? ' style="border-color: rgba(79,142,247,.4);"' : '') + '>';
-    html += '<h2>' + esc(t.name) + ' <span class="muted small">· ' + esc(t.owner) + '</span></h2>';
+    html += '<h2>' + esc(t.name) + ' <span class="muted small">· ' + esc(t.owner) +
+      (rostersLoaded ? ' · ' + rosterCount + ' rostered' : '') + '</span></h2>';
     // Pick summary + cap status
     const mlOver = mlPicks.length > LEAGUE.maxMlKeepers;
     const milOver = milPicks.length > LEAGUE.maxMilKeepers;
@@ -231,12 +249,19 @@ function renderKeepers() {
     html += 'My keepers: <b>' + picks.length + '</b> · ' +
       'ML <b style="color:' + (mlOver ? "var(--bad)" : "inherit") + '">' + mlPicks.length + '/' + LEAGUE.maxMlKeepers + '</b> · ' +
       'MiL <b style="color:' + (milOver ? "var(--bad)" : "inherit") + '">' + milPicks.length + '/' + LEAGUE.maxMilKeepers + '</b> · ' +
-      'Cost <b>$' + totalCost + '</b> · Total Value <b style="color:' + (totalValue > 0 ? "var(--good)" : totalValue < 0 ? "var(--bad)" : "inherit") + '">' + _fmtSurplus(totalValue) + '</b>';
+      'Cost <b>$' + totalCost + '</b> · Surplus <b style="color:' + (totalSurplus > 0 ? "var(--good)" : totalSurplus < 0 ? "var(--bad)" : "inherit") + '">' + _fmtSurplus(totalSurplus) + '</b>' +
+      ' · Value <b style="color:' + (totalValue > 0 ? "var(--good)" : totalValue < 0 ? "var(--bad)" : "inherit") + '">' + _fmtSurplus(totalValue) + '</b>';
     html += '</div>';
+
+    if (!rows.length) {
+      html += '<p class="small dim">No roster players loaded for this team.</p></div>';
+      continue;
+    }
 
     html += '<table><thead><tr>';
     html += '<th style="width:34px;">Keep</th><th>Player</th><th>Pos</th><th>League</th>' +
-      '<th class="num">Cost</th><th class="num">Pred $</th><th class="num">Value</th><th>Eligibility</th>';
+      '<th class="num">Cost</th><th class="num">Pred $</th><th class="num" title="Predicted $ − Cost">Surplus</th>' +
+      '<th class="num" title="Predicted $ − (Cost ÷ Inflation)">Value</th><th>Eligibility</th>';
     html += '</tr></thead><tbody>';
 
     for (const r of rows) {
@@ -271,7 +296,12 @@ function renderKeepers() {
       // Predicted $
       html += '<td class="num">' + (r.predValue != null ? '$' + r.predValue.toFixed(0) : '<span class="dim">—</span>') + '</td>';
 
-      // Value (surplus)
+      // Surplus = Predicted $ − Cost
+      const sp = r.surplus;
+      html += '<td class="num ' + (sp != null ? (sp > 0 ? "good" : sp < 0 ? "bad" : "") : "") + '">' +
+        (sp != null ? _fmtSurplus(sp) : '<span class="dim">—</span>') + '</td>';
+
+      // Value = Predicted $ − (Cost ÷ Inflation)
       const v = r.value;
       html += '<td class="num ' + (v != null ? (v > 0 ? "good" : v < 0 ? "bad" : "") : "") + '">' +
         (v != null ? _fmtSurplus(v) : '<span class="dim">—</span>') + '</td>';
@@ -363,6 +393,7 @@ async function _loadKeeperRosters() {
   try {
     const res = await fetchEspnRosters(0);
     _keepersState.rosters = res.rosters || {};
+    _keepersState.rosterMeta = { rawTeamCount: res.rawTeamCount, unmappedIds: res.unmappedIds || [] };
   } catch (e) {
     _keepersState.rosterError = e.message || String(e);
   } finally {

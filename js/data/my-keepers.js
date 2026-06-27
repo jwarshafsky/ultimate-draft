@@ -72,31 +72,25 @@ function setMyIneligible(teamId, name, ineligible) {
   saveMyKeepers();
 }
 
-// Effective keeper set for the whole app's inflation/budget math: treat Jeff's
-// PREDICTED keepers as the actual keepers. Per team, his predictions win; for a
-// team he hasn't predicted, fall back to that team's league-site marks. A pick
-// he flagged ineligible (won't really be kept) is excluded. Shape matches
-// getKeeperSelections(): { teamId: { name: { keeper, minorKeeper, ... } } }.
+// Effective keeper set for the whole app's inflation/budget math: ONLY Jeff's
+// PREDICTED keepers count (the players he's checked off), excluding any he
+// flagged ineligible. This is deliberately NOT backfilled from the league-site
+// marks — so before he checks anyone, the set is empty and inflation reads 1.00,
+// then rises as he adds keepers. (The league-site marks still show, for
+// reference, in the Keepers page "League" column via getKeeperSelections.)
+// Shape matches getKeeperSelections(): { teamId: { name: { keeper, minorKeeper } } }.
 function getEffectiveKeeperSelections() {
   const league = (typeof getKeeperSelections === "function") ? getKeeperSelections() : {};
-  const teamIds = new Set();
-  if (typeof LEAGUE !== "undefined" && LEAGUE.teams) LEAGUE.teams.forEach(t => teamIds.add(t.id));
-  Object.keys(league).forEach(id => teamIds.add(id));
-  Object.keys(_myKeepers.teams).forEach(id => teamIds.add(id));
-
   const out = {};
-  for (const tid of teamIds) {
+  for (const tid of Object.keys(_myKeepers.teams)) {
     const lg = league[tid] || {};
     const picks = getMyTeamPicks(tid).filter(n => !isMyIneligible(tid, n));
-    if (picks.length) {
-      out[tid] = {};
-      for (const name of picks) {
-        // Minor (cost $0) if the league site flags it minor; else a major keeper.
-        const minor = !!(lg[name] && lg[name].minorKeeper);
-        out[tid][name] = { keeper: !minor, minorKeeper: minor, rule5: false, tradeBlock: false };
-      }
-    } else {
-      out[tid] = lg;  // no predictions for this team → use league-site marks
+    if (!picks.length) continue;
+    out[tid] = {};
+    for (const name of picks) {
+      // Minor (cost $0) if the league site flags it minor; else a major keeper.
+      const minor = !!(lg[name] && lg[name].minorKeeper);
+      out[tid][name] = { keeper: !minor, minorKeeper: minor, rule5: false, tradeBlock: false };
     }
   }
   return out;

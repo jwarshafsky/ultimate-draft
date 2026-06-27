@@ -242,9 +242,10 @@ function parseEspnRosters(data, sourceId) {
   const ytdTeam = {};
   const espnPoints = {};
   const gsUsed = {};     // team's games-started used this season (for the 200 GS cap)
+  const unmappedIds = []; // ESPN team ids we couldn't map to an owner (diagnostic)
   for (const t of (data.teams || [])) {
     const ourId = espnTeamIdToOwnerId(t.id);
-    if (!ourId) continue;
+    if (!ourId) { unmappedIds.push(t.id); continue; }
     const entries = t.roster?.entries || [];
     rosters[ourId] = entries
       .map(e => _normalizeEspnPlayer(e, season, sourceId))
@@ -261,7 +262,8 @@ function parseEspnRosters(data, sourceId) {
       playerCount: rosters[ourId].length,
     };
   }
-  return { rosters, teamMeta, ytdTeam, espnPoints, gsUsed, season, sourceId };
+  return { rosters, teamMeta, ytdTeam, espnPoints, gsUsed, season, sourceId,
+    rawTeamCount: (data.teams || []).length, unmappedIds };
 }
 
 // Fetch the available-player pool (kona_player_info) for what-if "add" moves,

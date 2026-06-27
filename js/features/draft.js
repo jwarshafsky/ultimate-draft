@@ -40,7 +40,10 @@ function computeLiveInflation() {
     remainingValue += p.value;
   }
   const remaining = Math.max(0, flat.leagueRemaining - spent);
-  const mult = remainingValue > 0 ? remaining / remainingValue : 1;
+  // Normalize against the no-keeper baseline so values start at face (×1) and
+  // inflate only from keepers + draft spending (matches computeFlatInflation).
+  const base = flat.baselineMultiplier || 1;
+  const mult = remainingValue > 0 ? (remaining / remainingValue) / base : 1;
   return {
     ...flat,
     mode: "live",
