@@ -164,17 +164,28 @@ function renderInteractiveMock() {
     if (sc?.xwOBA) html += ' · <span class="muted">xwOBA</span> ' + sc.xwOBA.toFixed(3);
     html += '</div>';
     html += '</div>';
+    // Value verdict vs the current bid — the price-discipline signal.
+    const myMax = myState ? Math.max(0, myState.budget - Math.max(0, myState.slotsRemaining - 1)) : 0;
+    let verdict = "";
+    if (s.currentBid <= inflV * 0.85) verdict = '<div class="otc-signal buy">VALUE · $' + Math.round(inflV - s.currentBid) + ' under par</div>';
+    else if (s.currentBid >= inflV * 1.10) verdict = '<div class="otc-signal sell">OVERPAY · $' + Math.round(s.currentBid - inflV) + ' over par</div>';
+    else verdict = '<div class="otc-signal" style="opacity:.8;">FAIR · ~par ($' + inflV.toFixed(0) + ')</div>';
+
     html += '<div class="otc-bid">';
     html += '<div class="otc-bid-label">Current bid · ' + esc(winnerTeam.ownerName) + (isMyBid ? ' (you)' : '') + '</div>';
     html += '<div class="otc-bid-amt">$' + s.currentBid + '</div>';
+    html += verdict;
+    html += '<div class="muted small" style="margin-top:4px;">Your max bid: $' + myMax + (myMax < inflV ? ' <span style="color:var(--bad);">(can\'t reach par)</span>' : '') + '</div>';
     if (!isMyBid && !iHavePassed) {
       html += '<div class="otc-bid-controls" style="margin-top: 6px;">';
-      const next = s.currentBid + 1;
       for (const inc of [1, 2, 5]) {
-        const targetBid = s.currentBid + inc;
-        html += '<button class="btn primary im-bid" data-bid="' + targetBid + '" style="width:auto; padding: 6px 12px;">$' + targetBid + '</button>';
+        html += '<button class="btn primary im-bid" data-inc="' + inc + '" style="width:auto; padding: 6px 12px;">+$' + inc + '</button>';
       }
-      html += '<input id="im-custom-bid" type="number" placeholder="$" style="width: 70px;">';
+      // Jump straight to par (fair value) — one click on a star.
+      if (Math.round(inflV) > s.currentBid && Math.round(inflV) <= myMax) {
+        html += '<button class="btn im-bid" data-to="' + Math.round(inflV) + '" style="width:auto; padding: 6px 10px;" title="Bid to par/fair value">→ $' + Math.round(inflV) + '</button>';
+      }
+      html += '<input id="im-custom-bid" type="number" min="' + (s.currentBid + 1) + '" placeholder="$" style="width: 70px;">';
       html += '<button class="btn im-bid-custom" style="width:auto; padding: 6px 10px;">Bid</button>';
       html += '</div>';
       html += '<div style="margin-top: 6px;"><button class="btn ghost" id="im-pass">Pass</button></div>';
@@ -244,7 +255,12 @@ function renderInteractiveMock() {
   }
 
   if (s.phase === "done") {
-    html += '<div class="card"><h2>Mock Complete</h2><p>All rosters filled. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
+    const openLeft = Object.values(s.states).reduce((n, t) => n + Math.max(0, t.slotsRemaining), 0);
+    if (s.pool.length === 0 && openLeft > 0) {
+      html += '<div class="card"><h2>Pool Exhausted</h2><p class="muted">Ran out of valued players with <b>' + openLeft + '</b> roster slot' + (openLeft === 1 ? '' : 's') + ' still open. Load more projections / Dollar Values (Data tab) for a complete draft. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
+    } else {
+      html += '<div class="card"><h2>Mock Complete</h2><p>All rosters filled. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
+    }
   }
 
   return html;
@@ -370,7 +386,11 @@ function wireMockControls() {
   });
   document.querySelectorAll(".im-bid").forEach(b => {
     b.addEventListener("click", () => {
-      const r = userBid(parseInt(b.dataset.bid, 10));
+      // Resolve against the LIVE current bid at click time (the rendered value
+      // may be stale after an AI bump), so a valid click is never rejected.
+      const cur = (typeof getInteractiveState === "function") ? getInteractiveState().currentBid : 0;
+      const target = b.dataset.to ? parseInt(b.dataset.to, 10) : cur + (parseInt(b.dataset.inc, 10) || 1);
+      const r = userBid(Math.max(cur + 1, target));
       if (!r.ok) alert(r.error);
     });
   });

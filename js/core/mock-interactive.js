@@ -19,7 +19,16 @@ const _interactive = {
   phase: "idle",     // idle | nominating | bidding | sold | done
   inflation: null,
   listeners: [],
+  gen: 0,            // bumped on start/stop; queued timers from an old gen are ignored
 };
+
+// Schedule a callback that only runs if the mock is still on the SAME generation
+// and active — so a stopped/restarted/backgrounded mock can't keep mutating
+// state when its old setTimeouts fire.
+function _later(fn, ms) {
+  const g = _interactive.gen;
+  setTimeout(() => { if (_interactive.gen === g && _interactive.active) fn(); }, ms);
+}
 
 function onInteractiveChange(fn) {
   _interactive.listeners.push(fn);
@@ -33,6 +42,7 @@ function _fireChange() {
 function getInteractiveState() { return _interactive; }
 
 function startInteractiveMock() {
+  _interactive.gen++;   // invalidate any timers from a prior session
   _interactive.states = buildMockTeamStates({});
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
@@ -58,6 +68,7 @@ function startInteractiveMock() {
 
 function stopInteractiveMock() {
   _interactive.active = false;
+  _interactive.gen++;   // invalidate in-flight timers
   _interactive.phase = "idle";
   _fireChange();
 }
@@ -72,7 +83,7 @@ function _advanceToNominatingTeam() {
       _fireChange();
       // If it's an AI team's turn, auto-nominate
       if (!_interactive.states[id].isMe) {
-        setTimeout(() => _aiAutoNominate(id), 400);
+        _later(() => _aiAutoNominate(id), 400);
       }
       return;
     }
@@ -111,7 +122,10 @@ function userNominate(playerName, opening) {
   if (!me || getCurrentNominatorId() !== me.id) return { ok: false, error: "Not your turn to nominate." };
   const myState = _interactive.states[me.id];
   if (myState.slotsRemaining <= 0) return { ok: false, error: "Your roster is full." };
-  const player = _interactive.pool.find(p => p.name.toLowerCase() === playerName.toLowerCase());
+  const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const q = nk(playerName);
+  const player = _interactive.pool.find(p => p.name.toLowerCase() === playerName.toLowerCase()) ||
+                 _interactive.pool.find(p => nk(p.name) === q);
   if (!player) return { ok: false, error: "Player not in pool: " + playerName };
   const openingBid = Math.max(1, Math.min(opening || 1, myState.budget - Math.max(0, myState.slotsRemaining - 1)));
   _startAuction(player, me.id, openingBid);
@@ -126,7 +140,7 @@ function _startAuction(player, nominatorId, opening) {
   _interactive.phase = "bidding";
   _fireChange();
   // AI gets first crack at responding
-  setTimeout(() => _runAiBidsUntilUserTurn(), 400);
+  _later(() => _runAiBidsUntilUserTurn(), 400);
 }
 
 // Have ALL AI teams check if they want to bid above currentBid. First one
@@ -216,7 +230,7 @@ function userBid(amount) {
   _interactive.passedTeams.delete(me.id);
   _fireChange();
   // AI responds
-  setTimeout(() => _runAiBidsUntilUserTurn(), 400);
+  _later(() => _runAiBidsUntilUserTurn(), 400);
   return { ok: true };
 }
 
@@ -227,7 +241,7 @@ function userPass() {
   if (_interactive.phase !== "bidding") return;
   _interactive.passedTeams.add(me.id);
   _fireChange();
-  setTimeout(() => _runAiBidsUntilUserTurn(), 400);
+  _later(() => _runAiBidsUntilUserTurn(), 400);
 }
 
 function _completeSale() {
@@ -240,8 +254,24 @@ function _completeSale() {
   const price = Math.min(rawPrice, winnerMaxPrice);
   const player = _interactive.current;
 
-  winner.budget = Math.max(0, winner.budget - price);
+  // Guard (parity with the headless engine): if the winner has no slot for this
+  // player, void the sale rather than charge them / burn a slot for someone they
+  // can't roster (only happens on an uncontested nomination of an unrosterable
+  // player). Remove from pool and move on.
   const filledSlot = assignToSlot(winner.openSlots, player.elig || [player.posKey]);
+  if (!filledSlot) {
+    _interactive.pool = _interactive.pool.filter(p => p.name !== player.name);
+    _interactive.current = null; _interactive.currentBid = 0; _interactive.currentWinner = null;
+    _interactive.passedTeams = new Set();
+    _interactive.phase = "sold";
+    _interactive.inflation = inflationForMockState(_interactive.states);
+    _fireChange();
+    _interactive.currentNominator++;
+    _later(() => _advanceToNominatingTeam(), 500);
+    return;
+  }
+
+  winner.budget = Math.max(0, winner.budget - price);
   winner.drafted.push({ name: player.name, pos: player.posKey, slot: filledSlot, price, value: player.value, type: player.type });
   winner.slotsByPos[filledSlot || player.posKey] = (winner.slotsByPos[filledSlot || player.posKey] || 0) + 1;
   winner.slotsRemaining -= 1;
@@ -271,7 +301,7 @@ function _completeSale() {
   _fireChange();
   // Advance to next nominator
   _interactive.currentNominator++;
-  setTimeout(() => _advanceToNominatingTeam(), 700);
+  _later(() => _advanceToNominatingTeam(), 700);
 }
 
 // Interactive inflation now uses the shared inflationForMockState() so the

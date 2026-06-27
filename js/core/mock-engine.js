@@ -49,7 +49,7 @@ function buildMockTeamStates(opts) {
       if (flags.keeper) {
         const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
         const price = ci ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
-        const pv = getPlayerValue(name);
+        const pv = _mockPlayerValue(name);
         kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
         keptCost += price;
       }
@@ -77,6 +77,7 @@ function buildMockTeamStates(opts) {
       isMe: !!t.isMe,
       profile,
       budget: safeBudget,
+      keptCost,            // true keeper spend (for accurate inflation)
       kept,
       drafted: [],
       slotsByPos: countSlotsByPos(kept),
@@ -189,6 +190,22 @@ function mustFillBoost(state, elig) {
 // names differ by accents / suffixes (e.g. "Iván Herrera" vs "Ivan Herrera").
 function _mockNk(s) { return (typeof normalizePlayerName === "function") ? normalizePlayerName(s) : String(s || "").toLowerCase(); }
 function _mockKeptSet() { return new Set(collectKeepers().map(k => _mockNk(k.name))); }
+
+// Player value looked up by EXACT then NORMALIZED name, so an accented keeper
+// (e.g. "José Ramírez") resolves to the value row "Jose Ramirez" and gets its
+// real position/eligibility — otherwise it falls back to UTIL and corrupts the
+// team's open-slot/needs model.
+let _mockValIdx = null, _mockValIdxLen = -1;
+function _mockPlayerValue(name) {
+  const direct = (typeof getPlayerValue === "function") ? getPlayerValue(name) : null;
+  if (direct) return direct;
+  const vals = getValues();
+  if (_mockValIdx === null || _mockValIdxLen !== vals.length) {
+    _mockValIdx = {}; _mockValIdxLen = vals.length;
+    for (const p of vals) { const k = _mockNk(p.name); if (!(k in _mockValIdx)) _mockValIdx[k] = p; }
+  }
+  return _mockValIdx[_mockNk(name)] || null;
+}
 
 // What's the most this team would bid for player p, in whole dollars?
 //
@@ -352,7 +369,9 @@ function inflationForMockState(states) {
   const values = getValues();
   const totalBudget = (LEAGUE.draftBudget * LEAGUE.numTeams)
     + (typeof getDraftDollarAdjustment === "function" ? LEAGUE.teams.reduce((s, t) => s + getDraftDollarAdjustment(t.id), 0) : 0);
-  const totalKeptCost = Object.values(states).reduce((s, t) => s + (LEAGUE.draftBudget - t.budget - t.drafted.reduce((x, d) => x + d.price, 0)), 0);
+  // Use the TRUE keeper spend stored on each state (back-computing it from a
+  // floored budget understated it for over-keepered teams and inflated the mult).
+  const totalKeptCost = Object.values(states).reduce((s, t) => s + (t.keptCost || 0), 0);
   const remaining = Math.max(0, totalBudget - totalKeptCost - spent);
 
   // Only the players who will actually be rostered carry the remaining money —
@@ -370,15 +389,28 @@ function inflationForMockState(states) {
   // Clamp to a sane range so noise doesn't explode at end-of-draft
   mult = Math.max(0.3, Math.min(3.0, mult));
 
+  // MILD star concentration (keeper-league realism): cheap keepers are off the
+  // board, so surplus money chases the remaining elite tier harder than the $1
+  // tail. Weights are NORMALIZED over the rosterable pool so the overall level
+  // (total spend) is unchanged — it only REDISTRIBUTES toward stars. Tame
+  // weights keep stars ~10-15% over value, not the old 1.4x overpricing.
+  const W = { T1: 1.08, T2: 1.04, T3: 1.00, T4: 0.94, T5: 0.86 };
+  // Use the SAME tier thresholds inflatedValue applies (tierForValue), so the
+  // normalization exactly conserves total spend.
+  const tierOf = (typeof tierForValue === "function") ? tierForValue
+    : (v => v >= 35 ? "T1" : v >= 20 ? "T2" : v >= 10 ? "T3" : v >= 5 ? "T4" : "T5");
+  let s0 = 0, s1 = 0;
+  for (const p of rosterable) { s0 += p.value; s1 += p.value * W[tierOf(p.value)]; }
+  const norm = s1 > 0 ? s0 / s1 : 1;   // keeps Σ(value × tierMult) == remaining
+  const tierMult = {};
+  for (const t of ["T1", "T2", "T3", "T4", "T5"]) tierMult[t] = mult * W[t] * norm;
+
   return {
     mode: "tiered",
     multiplier: mult,
     hitMultiplier: mult,
     pitMultiplier: mult,
-    // Flat across tiers: the market price is value × inflation × positional
-    // scarcity. Stars-vs-scrubs spread comes from OWNER profiles (computeMaxBid),
-    // not a blanket tier premium that pushed star prices systematically high.
-    tierMult: { T1: mult, T2: mult, T3: mult, T4: mult, T5: mult },
+    tierMult,
     posScarcity: computePosScarcity(states, rosterable),
   };
 }
@@ -512,9 +544,16 @@ function runMockDraftMonteCarlo(n, opts) {
   for (const [name, s] of Object.entries(playerStats)) {
     s.prices.sort((a, b) => a - b);
     const mean = s.prices.reduce((a, b) => a + b, 0) / s.prices.length;
-    const median = s.prices[Math.floor(s.prices.length / 2)];
-    const p10 = s.prices[Math.floor(s.prices.length * 0.1)];
-    const p90 = s.prices[Math.floor(s.prices.length * 0.9)];
+    // Linear-interpolated percentile (the old floor() indexing skewed bands,
+    // and for tiny samples reported the max as the "median").
+    const pct = (arr, q) => {
+      if (!arr.length) return 0;
+      const idx = (arr.length - 1) * q, lo = Math.floor(idx), hi = Math.ceil(idx);
+      return lo === hi ? arr[lo] : arr[lo] + (arr[hi] - arr[lo]) * (idx - lo);
+    };
+    const median = Math.round(pct(s.prices, 0.5));
+    const p10 = Math.round(pct(s.prices, 0.1));
+    const p90 = Math.round(pct(s.prices, 0.9));
     const topTeam = Object.entries(s.teams).sort((a, b) => b[1] - a[1])[0];
     out.push({
       name, pos: s.pos, value: s.value,
