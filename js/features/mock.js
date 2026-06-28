@@ -10,6 +10,8 @@ const _mockState = {
   view: "single",
   lastBacktest: null,
   boardExpanded: false, // interactive Board: compact (top per pos) vs full
+  boardSearch: "",       // interactive Board: filter remaining players by name
+  boardNeedsOnly: false, // interactive Board: only positions you still need
 };
 
 function renderMock() {
@@ -18,6 +20,14 @@ function renderMock() {
     root.innerHTML = '<div class="empty"><p>Mock requires projections.</p><p class="small">Import a FanGraphs CSV on the Data tab.</p></div>';
     return;
   }
+
+  // Preserve text-field focus + caret across re-renders (the live mock re-renders
+  // on every AI bump and every timer tick — without this, typing in the custom-bid
+  // / search / nominate fields would be interrupted once a second).
+  const ae = document.activeElement;
+  const focusId = ae && /^(im-custom-bid|im-nominate-name|im-nominate-open|mock-board-search)$/.test(ae.id) ? ae.id : null;
+  const focusCaret = focusId ? ae.selectionStart : null;
+  const focusVal = focusId ? ae.value : null;
 
   let html = '';
   html += '<div class="card"><h2>Mock Draft Simulator</h2>';
@@ -40,6 +50,16 @@ function renderMock() {
 
   root.innerHTML = html;
   wireMockControls();
+
+  // Restore focus + caret to whichever text field had it.
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      if (focusVal != null && el.value !== focusVal) el.value = focusVal;
+      el.focus();
+      try { el.setSelectionRange(focusCaret, focusCaret); } catch (_) {}
+    }
+  }
 }
 
 function renderAutoMockControls() {
@@ -100,6 +120,8 @@ function renderInteractiveMock() {
     html += '<div class="card"><h3>Start a Live Mock</h3>';
     html += '<p class="muted small">You\'ll nominate when it\'s your turn (random order). For other teams, the AI uses each owner\'s historical tendency profile to bid. Press start when ready.</p>';
     html += '<button class="btn primary" id="interactive-start" style="width:auto; padding: 10px 22px;">Start Interactive Mock</button>';
+    html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:12px;" title="A 12-second clock runs when it\'s your turn to act; time out = auto-pass. Adds real draft-day pressure.">';
+    html += '<input type="checkbox" id="im-timer-toggle"' + (s.useTimer ? ' checked' : '') + '> Draft-day clock (' + s.timerSecs + 's to act, auto-pass on timeout)</label>';
     html += '</div>';
     return html;
   }
@@ -176,7 +198,19 @@ function renderInteractiveMock() {
     html += '<div class="otc-bid-amt">$' + s.currentBid + '</div>';
     html += verdict;
     html += '<div class="muted small" style="margin-top:4px;">Your max bid: $' + myMax + (myMax < inflV ? ' <span style="color:var(--bad);">(can\'t reach par)</span>' : '') + '</div>';
-    if (!isMyBid && !iHavePassed) {
+    const pricedOut = myMax <= s.currentBid;
+    if (!isMyBid && !iHavePassed && pricedOut) {
+      html += '<p class="small bad" style="margin-top: 8px;">Priced out (max $' + myMax + ') — passing.</p>';
+    } else if (!isMyBid && !iHavePassed) {
+      // Draft-day clock: a shrinking bar + seconds while it's your turn to act.
+      if (s.useTimer && s.secondsLeft > 0) {
+        const pct = Math.max(0, Math.min(100, (s.secondsLeft / s.timerSecs) * 100));
+        const urgent = s.secondsLeft <= 4;
+        html += '<div style="margin-top:8px;">';
+        html += '<div style="display:flex; justify-content:space-between; font-size:11px;" class="muted"><span>Your turn</span><span style="color:' + (urgent ? 'var(--bad)' : 'var(--muted)') + '; font-weight:600;">' + s.secondsLeft + 's</span></div>';
+        html += '<div style="height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:2px;"><div style="height:100%; width:' + pct + '%; background:' + (urgent ? 'var(--bad)' : 'var(--accent)') + '; transition:width .9s linear;"></div></div>';
+        html += '</div>';
+      }
       html += '<div class="otc-bid-controls" style="margin-top: 6px;">';
       for (const inc of [1, 2, 5]) {
         html += '<button class="btn primary im-bid" data-inc="' + inc + '" style="width:auto; padding: 6px 12px;">+$' + inc + '</button>';
@@ -188,21 +222,44 @@ function renderInteractiveMock() {
       html += '<input id="im-custom-bid" type="number" min="' + (s.currentBid + 1) + '" placeholder="$" style="width: 70px;">';
       html += '<button class="btn im-bid-custom" style="width:auto; padding: 6px 10px;">Bid</button>';
       html += '</div>';
-      html += '<div style="margin-top: 6px;"><button class="btn ghost" id="im-pass">Pass</button></div>';
+      html += '<div style="margin-top: 6px; display:flex; align-items:center; gap:8px;"><button class="btn ghost" id="im-pass">Pass</button><span class="muted" style="font-size:10px;">Enter = bid · P/Esc = pass</span></div>';
     } else if (isMyBid) {
       html += '<p class="small good" style="margin-top: 8px;">Highest bidder. AI is responding…</p>';
     } else {
       html += '<p class="small muted" style="margin-top: 8px;">You passed on this auction.</p>';
     }
     html += '</div></div>';
+    // Escalation ticker — the live "who bid what" feed for this lot.
+    if (s.bidLog && s.bidLog.length > 1) {
+      const recent = s.bidLog.slice(-7);
+      html += '<div class="mock-ticker" style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">';
+      html += '<span class="muted small">Bids:</span>';
+      recent.forEach((b, i) => {
+        const isLast = i === recent.length - 1;
+        html += '<span class="kbd" style="font-size:11px;' + (b.mine ? 'color:var(--accent);' : '') + (isLast ? 'font-weight:700;' : 'opacity:.7;') + '">' + esc(b.owner) + ' $' + b.bid + '</span>';
+        if (!isLast) html += '<span class="muted" style="font-size:10px;">→</span>';
+      });
+      html += '</div>';
+    }
     html += '</div>';
   }
 
-  // === Phase: sold (transient) ===
-  if (s.phase === "sold" && s.picks.length) {
-    const last = s.picks[s.picks.length - 1];
-    html += '<div class="card"><p>SOLD: <strong>' + esc(last.player) + '</strong> to <strong>' + esc(last.winnerOwner) + '</strong> for <strong>$' + last.price + '</strong></p></div>';
+  // === Phase: sold — prominent SOLD banner (win/lose + your surplus) ===
+  if (s.phase === "sold" && s.lastSale) {
+    const ls = s.lastSale;
+    const surp = (ls.value || 0) - ls.price;
+    const tone = ls.mine ? "rgba(40,180,99,.45)" : "rgba(255,255,255,.12)";
+    const bg = ls.mine ? "rgba(40,180,99,.10)" : "transparent";
+    html += '<div class="card sold-banner" style="border-color:' + tone + '; background:' + bg + '; text-align:center; padding:14px;">';
+    html += '<div style="font-size:13px; letter-spacing:2px; font-weight:700; color:var(--good);">SOLD</div>';
+    html += '<div style="font-size:20px; font-weight:700; margin:2px 0;">' + esc(ls.player) + ' <span class="muted" style="font-size:13px;">' + esc(ls.pos === "UTIL" ? "DH/UT" : ls.pos) + '</span></div>';
+    html += '<div style="font-size:15px;">$' + ls.price + ' → <strong>' + esc(ls.mine ? "You" : ls.owner) + '</strong>';
+    if (ls.mine) html += ' <span class="' + (surp >= 0 ? 'good' : 'bad') + '" style="font-size:13px;">(' + (surp >= 0 ? '+' : '') + '$' + surp.toFixed(0) + ' vs value)</span>';
+    html += '</div></div>';
   }
+
+  // Live roto-category pace read (light on power/saves?) — drives bid priorities.
+  html += renderMockCategoryRead(myState);
 
   // Your roster + a live Board of remaining players, for bid decisions.
   if (_mockState.boardExpanded) {
@@ -266,6 +323,60 @@ function renderInteractiveMock() {
   return html;
 }
 
+// Live roto-category read of your in-progress mock roster (keepers + drafted),
+// pace-aware: counting cats are compared to a pro-rated mid-pack target so the
+// signal means "ahead/behind pace," not "you haven't finished your roster."
+// Surfaces "you're light on power/saves" the way a commercial tool would.
+function renderMockCategoryRead(myState) {
+  if (!myState || typeof aggregateCats !== "function" || typeof CAT_TARGETS === "undefined") return '';
+  const names = [];
+  if (myState.kept) for (const k of myState.kept) names.push(k.name);
+  for (const d of myState.drafted) names.push(d.name);
+  if (names.length < 2) return '';   // too early to be meaningful
+  const totals = aggregateCats(names);
+  const filled = names.length;
+  const total = filled + (myState.slotsRemaining || 0);
+  const frac = total > 0 ? Math.max(0.08, filled / total) : 0.08;
+
+  const cats = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
+  const labels = { R: "R", HR: "HR", RBI: "RBI", SB: "SB", OBP: "OBP", QS: "QS", K: "K", SV_HLD: "SV+HLD", ERA: "ERA", WHIP: "WHIP" };
+  const counting = { R: 1, HR: 1, RBI: 1, SB: 1, QS: 1, K: 1, SV_HLD: 1 };
+  const score = {};   // >1 ahead of mid-pack pace, <1 behind, null if no data yet
+  for (const c of cats) {
+    const t = CAT_TARGETS[c]; if (!t) { score[c] = null; continue; }
+    if (counting[c]) {
+      const val = c === "SV_HLD" ? totals.SV_HLD : (totals[c] || 0);
+      score[c] = val / Math.max(1, t.p6 * frac);
+    } else if (c === "OBP") {
+      score[c] = totals.OBP > 0 ? totals.OBP / t.p6 : null;
+    } else { // ERA / WHIP — lower is better
+      const v = c === "ERA" ? totals.ERA : totals.WHIP;
+      score[c] = v > 0 ? t.p6 / v : null;
+    }
+  }
+  const col = (sc) => sc == null ? "var(--muted)" : sc >= 1.08 ? "var(--good)" : sc <= 0.85 ? "var(--bad)" : "var(--text)";
+  const weak = cats.filter(c => counting[c] && score[c] != null && score[c] < 0.9).sort((a, b) => score[a] - score[b]).slice(0, 3).map(c => labels[c]);
+  const strong = cats.filter(c => counting[c] && score[c] != null && score[c] >= 1.15).sort((a, b) => score[b] - score[a]).slice(0, 2).map(c => labels[c]);
+
+  let html = '<div class="card" style="padding:10px;"><h3 style="margin:0 0 6px;">Category Pace <span class="muted small">· ' + filled + '/' + total + ' filled</span></h3>';
+  html += '<div style="display:flex; gap:5px; flex-wrap:wrap;">';
+  for (const c of cats) {
+    const sc = score[c];
+    const pct = sc == null ? "—" : Math.round(sc * 100) + "%";
+    html += '<span class="kbd" style="font-size:10px; color:' + col(sc) + '; border-color:' + col(sc) + ';" title="' + (counting[c] ? "vs pro-rated mid-pack pace" : "vs mid-pack target") + '">' + labels[c] + ' ' + pct + '</span>';
+  }
+  html += '</div>';
+  if (weak.length || strong.length) {
+    html += '<div class="small" style="margin-top:6px;">';
+    if (weak.length) html += '<span class="bad">Light on: ' + weak.join(", ") + '</span>';
+    if (weak.length && strong.length) html += ' · ';
+    if (strong.length) html += '<span class="good">Strong: ' + strong.join(", ") + '</span>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
 // Your roster during the mock: keepers + everything you've drafted so far.
 function renderMockRoster(myState) {
   if (!myState) return '<div class="card"><h3>Your Roster</h3><p class="muted small">—</p></div>';
@@ -303,25 +414,63 @@ function renderMockRoster(myState) {
 // inflation — so you can judge scarcity before bidding. Compact (top per pos) or
 // expanded (full, scrollable). Names are click-to-nominate when it's your turn.
 function renderMockBoard(s, expanded) {
-  const positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
+  let positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
   const myTurn = s.phase === "nominating" && getCurrentNominatorId() === getMyTeam()?.id;
   const infMult = s.inflation && s.inflation.multiplier ? s.inflation.multiplier.toFixed(2) : "1.00";
   const perCol = expanded ? Infinity : 8;
+
+  // Needs-only: restrict to positions you still have an open hard slot for
+  // (flex slots MI/CI/UTIL count toward their component positions).
+  const myState = s.states[getMyTeam()?.id];
+  const os = (myState && myState.openSlots) || {};
+  const needPos = new Set();
+  if (myState) {
+    const has = (k) => (os[k] || 0) > 0;
+    if (has("C")) needPos.add("C");
+    if (has("1B") || has("CI")) needPos.add("1B");
+    if (has("3B") || has("CI")) needPos.add("3B");
+    if (has("2B") || has("MI")) needPos.add("2B");
+    if (has("SS") || has("MI")) needPos.add("SS");
+    if (has("OF")) needPos.add("OF");
+    if (has("SP")) needPos.add("SP");
+    if (has("RP")) needPos.add("RP");
+    // UTIL / BENCH take anyone — if either is open, all positions qualify.
+    if (has("UTIL") || (os.BENCH || 0) > 0) positions.forEach(p => needPos.add(p));
+  }
+  const needsOnly = _mockState.boardNeedsOnly && myState;
+  if (needsOnly) positions = positions.filter(p => needPos.has(p) || p === "UTIL" && needPos.has("UTIL"));
+
+  const q = (_mockState.boardSearch || "").trim().toLowerCase();
+  const matchSearch = (p) => !q || p.name.toLowerCase().includes(q);
+
   let html = '<div class="card">';
-  html += '<div style="display:flex; align-items:center; gap:8px;"><h3 style="margin:0;">Board — available (' + s.pool.length + ')</h3>';
+  html += '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"><h3 style="margin:0;">Board — available (' + s.pool.length + ')</h3>';
   html += '<button class="btn ghost" id="mock-board-toggle" style="width:auto; padding:2px 10px; font-size:12px;">' + (expanded ? "▴ Collapse" : "▾ Expand full board") + '</button></div>';
-  html += '<p class="muted small">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + (expanded ? ' Scroll each column for the full list.' : '') + '</p>';
+  html += '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0;">';
+  html += '<input id="mock-board-search" type="search" placeholder="Filter players…" value="' + esc(_mockState.boardSearch || "") + '" style="flex:1; min-width:160px; font-size:13px;">';
+  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" title="Only show positions you still have an open slot for"><input type="checkbox" id="mock-board-needs"' + (_mockState.boardNeedsOnly ? ' checked' : '') + '> My needs only</label>';
+  html += '</div>';
+  html += '<p class="muted small" style="margin-top:0;">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + (expanded ? ' Scroll each column for the full list.' : '') + ' <span style="opacity:.7;">— line = tier cliff</span></p>';
   html += '<div class="grid ' + (expanded ? 'cols-5' : 'cols-3') + '">';
+  let shown = 0;
   for (const pos of positions) {
-    const all = s.pool.filter(p => p.posKey === pos);
+    const all = s.pool.filter(p => p.posKey === pos && matchSearch(p));
     if (!all.length) continue;
     const list = perCol === Infinity ? all : all.slice(0, perCol);
-    html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + all.length + '</span></h4>';
+    const needBadge = needPos.has(pos) ? ' <span class="kbd" style="font-size:8px; color:var(--accent);" title="open slot">need</span>' : '';
+    html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + all.length + '</span>' + needBadge + '</h4>';
     html += '<div style="' + (expanded ? 'max-height:340px; overflow-y:auto;' : '') + '"><table style="font-size:11px; width:100%;"><tbody>';
+    let prevTier = null;
     for (const p of list) {
+      shown++;
       const inf = inflatedValue(p, s.inflation);
       const tier = (typeof tierForValue === "function") ? tierForValue(p.value) : "T3";
       const color = (typeof TIER_COLORS !== "undefined" && TIER_COLORS[tier]) ? TIER_COLORS[tier] : "var(--text)";
+      // Tier cliff: a thin divider where the talent tier steps down within a column.
+      if (prevTier && tier !== prevTier) {
+        html += '<tr class="tier-cliff"><td colspan="2" style="border-top:1px dashed rgba(255,255,255,.18); height:0; padding:0; line-height:0;"></td></tr>';
+      }
+      prevTier = tier;
       const nameCell = myTurn
         ? '<a href="#" class="mock-nom" data-name="' + esc(p.name) + '">' + esc(p.name) + '</a>'
         : esc(p.name);
@@ -329,7 +478,9 @@ function renderMockBoard(s, expanded) {
     }
     html += '</tbody></table></div></div>';
   }
-  html += '</div></div>';
+  html += '</div>';
+  if (!shown) html += '<p class="muted small">No available players match' + (q ? ' "' + esc(q) + '"' : '') + (needsOnly ? ' your open positions' : '') + '.</p>';
+  html += '</div>';
   return html;
 }
 
@@ -394,15 +545,32 @@ function wireMockControls() {
       if (!r.ok) alert(r.error);
     });
   });
-  document.querySelector(".im-bid-custom")?.addEventListener("click", () => {
+  const submitCustom = () => {
     const v = parseInt(document.getElementById("im-custom-bid").value, 10);
     if (!v) return;
     const r = userBid(v);
     if (!r.ok) alert(r.error);
+  };
+  document.querySelector(".im-bid-custom")?.addEventListener("click", submitCustom);
+  document.getElementById("im-custom-bid")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); submitCustom(); }
   });
   document.getElementById("im-pass")?.addEventListener("click", () => userPass());
+  document.getElementById("im-timer-toggle")?.addEventListener("change", (e) => {
+    if (typeof setMockTimerEnabled === "function") setMockTimerEnabled(e.target.checked);
+    renderMock();
+  });
   document.getElementById("mock-board-toggle")?.addEventListener("click", () => {
     _mockState.boardExpanded = !_mockState.boardExpanded;
+    renderMock();
+  });
+  // Board filters — re-render on input (focus is preserved by renderMock).
+  document.getElementById("mock-board-search")?.addEventListener("input", (e) => {
+    _mockState.boardSearch = e.target.value;
+    renderMock();
+  });
+  document.getElementById("mock-board-needs")?.addEventListener("change", (e) => {
+    _mockState.boardNeedsOnly = e.target.checked;
     renderMock();
   });
   // Click a board player to nominate (when it's your turn).
@@ -429,6 +597,24 @@ function runMC(n) {
 if (typeof onInteractiveChange === "function") {
   onInteractiveChange(() => {
     if (currentView === "mock" && _mockState.mode === "interactive") renderMock();
+  });
+}
+
+// Quick keyboard pass during a live mock: "p" or Esc when it's your turn to act.
+// Registered once (not per-render). Ignored while typing in a field.
+if (!window._mockKeysWired) {
+  window._mockKeysWired = true;
+  document.addEventListener("keydown", (e) => {
+    if (currentView !== "mock" || _mockState.mode !== "interactive") return;
+    const t = e.target;
+    if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;   // don't hijack typing
+    if (e.key !== "p" && e.key !== "P" && e.key !== "Escape") return;
+    const s = (typeof getInteractiveState === "function") ? getInteractiveState() : null;
+    const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+    if (!s || s.phase !== "bidding" || !me) return;
+    const isMyBid = s.currentWinner === me.id;
+    const passed = s.passedTeams && s.passedTeams.has(me.id);
+    if (!isMyBid && !passed) { e.preventDefault(); userPass(); }
   });
 }
 

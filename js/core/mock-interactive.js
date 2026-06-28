@@ -20,6 +20,11 @@ const _interactive = {
   inflation: null,
   listeners: [],
   gen: 0,            // bumped on start/stop; queued timers from an old gen are ignored
+  bidLog: [],        // [{owner, bid}] for the CURRENT auction (escalation ticker)
+  lastSale: null,    // {player, price, owner, mine} — for the SOLD banner
+  useTimer: true,    // draft-day countdown pressure when it's your turn to act
+  timerSecs: 12,
+  secondsLeft: 0,    // live countdown while waiting on the user
 };
 
 // Schedule a callback that only runs if the mock is still on the SAME generation
@@ -40,6 +45,11 @@ function _fireChange() {
 }
 
 function getInteractiveState() { return _interactive; }
+function setMockTimerEnabled(on) {
+  _interactive.useTimer = !!on;
+  if (!on) _clearMockTimer();
+  _fireChange();
+}
 
 function startInteractiveMock() {
   _interactive.gen++;   // invalidate any timers from a prior session
@@ -62,11 +72,15 @@ function startInteractiveMock() {
   _interactive.currentBid = 0;
   _interactive.currentWinner = null;
   _interactive.passedTeams = new Set();
+  _interactive.bidLog = [];
+  _interactive.lastSale = null;
+  _interactive.secondsLeft = 0;
   _interactive.inflation = inflationForMockState(_interactive.states);
   _advanceToNominatingTeam();
 }
 
 function stopInteractiveMock() {
+  _clearMockTimer();
   _interactive.active = false;
   _interactive.gen++;   // invalidate in-flight timers
   _interactive.phase = "idle";
@@ -133,23 +147,58 @@ function userNominate(playerName, opening) {
 }
 
 function _startAuction(player, nominatorId, opening) {
+  _clearMockTimer();
   _interactive.current = player;
   _interactive.currentBid = opening;
   _interactive.currentWinner = nominatorId;
   _interactive.passedTeams = new Set();
   _interactive.phase = "bidding";
+  _interactive.lastSale = null;     // clear the SOLD banner once a new lot opens
+  // Seed the escalation ticker with the opening (nominating) bid.
+  const nom = _interactive.states[nominatorId];
+  _interactive.bidLog = [{ owner: nom ? (nom.isMe ? "You" : nom.ownerName) : "—", bid: opening, mine: !!(nom && nom.isMe) }];
   _fireChange();
-  // AI gets first crack at responding
-  _later(() => _runAiBidsUntilUserTurn(), 400);
+  // AI gets first crack at responding (one step at a time, so the price climbs visibly).
+  _later(() => _runAiBidsUntilUserTurn(), 450);
 }
 
-// Have ALL AI teams check if they want to bid above currentBid. First one
-// that wants to bid bumps the price. Returns true if any AI bid.
+// ----- draft-day countdown -----
+// While it's the user's turn to act (an AI is winning), a soft timer adds
+// real auction pressure. On expiry the user auto-passes.
+function _clearMockTimer() {
+  if (_interactive._timerId) { clearTimeout(_interactive._timerId); _interactive._timerId = null; }
+  _interactive.secondsLeft = 0;
+}
+function _startMockTimer() {
+  _clearMockTimer();
+  if (!_interactive.useTimer) return;
+  _interactive.secondsLeft = _interactive.timerSecs;
+  const myGen = _interactive.gen;
+  const tick = () => {
+    if (_interactive.gen !== myGen || _interactive.phase !== "bidding") return;
+    _interactive.secondsLeft -= 1;
+    if (_interactive.secondsLeft <= 0) {
+      _interactive.secondsLeft = 0;
+      _interactive._timerId = null;
+      _fireChange();
+      userPass();           // time's up — auto-pass
+      return;
+    }
+    _fireChange();
+    _interactive._timerId = setTimeout(tick, 1000);
+  };
+  _interactive._timerId = setTimeout(tick, 1000);
+}
+
+// One AI bump: the first willing team (random order) raises the price by one
+// increment. AI teams are RE-EVALUATED every step (no permanent pass) so their
+// willingness tracks the headless engine — fresh noise each call gives a team
+// that just declined another shot, exactly like a live room. Returns the
+// bumping owner's display name, or null if no AI wants the lot at this price.
 function _aiBidsOnce() {
-  // Shuffle so it's not deterministic which AI bids first
+  const me = getMyTeam();
   const aiIds = Object.keys(_interactive.states).filter(id =>
     !_interactive.states[id].isMe &&
-    !_interactive.passedTeams.has(id) &&
     _interactive.states[id].slotsRemaining > 0 &&
     _interactive.states[id].budget > _interactive.currentBid &&
     id !== _interactive.currentWinner
@@ -162,55 +211,66 @@ function _aiBidsOnce() {
     const state = _interactive.states[id];
     const max = computeMaxBid(state, _interactive.current, _interactive.inflation);
     if (max > _interactive.currentBid) {
-      const inc = _interactive.currentBid < 5 ? 1 : _interactive.currentBid < 12 ? 1 : _interactive.currentBid < 25 ? 2 : _interactive.currentBid < 40 ? 3 : 4;
+      const inc = _interactive.currentBid < 12 ? 1 : _interactive.currentBid < 25 ? 2 : _interactive.currentBid < 40 ? 3 : 4;
       const newBid = Math.min(max, _interactive.currentBid + inc);
       if (newBid > _interactive.currentBid) {
         _interactive.currentBid = newBid;
         _interactive.currentWinner = id;
-        return true;
+        _interactive.bidLog.push({ owner: state.ownerName, bid: newBid, mine: false });
+        if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
+        return state.ownerName;
       }
-    } else {
-      _interactive.passedTeams.add(id);
     }
   }
-  return false;
+  return null;
 }
 
-// Run AI bidding rounds until either (a) user is winning and AI all pass
-// (sold to user), (b) AI is winning and user needs to decide, or
-// (c) max iterations reached.
+// Step-wise bidding: ONE AI bump per tick (the price climbs visibly with a
+// live "X bid $Y" feel), pausing whenever it becomes the user's turn to act.
+//   (a) user is winning + no AI bumps  -> SOLD to user
+//   (b) user passed   + no AI bumps    -> SOLD to current (AI) winner
+//   (c) AI is winning + user can still act -> stop, start the user's timer
+//   (d) AI bumped but user is winner/passed -> keep stepping after a beat
 function _runAiBidsUntilUserTurn() {
+  if (_interactive.phase !== "bidding") return;
   const me = getMyTeam();
-  let safety = 0;
-  while (safety < 100) {
-    safety++;
-    const aiBid = _aiBidsOnce();
-    _fireChange();
-    if (!aiBid) {
-      // No AI wants to bump. If user is winning, sold!
-      if (_interactive.currentWinner === me?.id) {
-        _completeSale();
-        return;
-      }
-      // If user has passed, AI keeps fighting amongst themselves... but
-      // we already iterated. Actually if AI didn't bump and user passed,
-      // then current winner wins.
-      if (_interactive.passedTeams.has(me?.id)) {
-        _completeSale();
-        return;
-      }
-      // Otherwise: AI is winning, user needs to act
+  const bumpedBy = _aiBidsOnce();
+  _fireChange();
+  if (!bumpedBy) {
+    // No AI wanted the lot at this price.
+    if (_interactive.currentWinner === me?.id || _interactive.passedTeams.has(me?.id)) {
+      _completeSale();
       return;
     }
-    // AI bumped. If user is now NOT the winner and hasn't passed, give user a chance.
-    if (_interactive.currentWinner !== me?.id && !_interactive.passedTeams.has(me?.id)) {
-      // Wait for user to respond
-      return;
-    }
-    // If user passed, keep iterating AI bidding amongst themselves
+    // AI is winning and the user hasn't acted -> their turn (or auto-pass if priced out).
+    _giveUserTheClock();
+    return;
   }
-  // Safety bailout
-  _completeSale();
+  // An AI just bumped.
+  if (_interactive.currentWinner !== me?.id && !_interactive.passedTeams.has(me?.id)) {
+    // The user is now outbid and still live -> their turn (or auto-pass if priced out).
+    _giveUserTheClock();
+    return;
+  }
+  // User is winning or has passed -> let the AI keep fighting, one beat at a time.
+  // Snappier once the user has bowed out (they're just watching price discovery);
+  // a touch slower while the user is still the high bidder and could be re-engaged.
+  const delay = _interactive.passedTeams.has(me?.id) ? 150 : 550;
+  _later(() => _runAiBidsUntilUserTurn(), delay);
+}
+
+// Hand the user the decision — but if they literally can't outbid the current
+// price (max affordable <= current bid, or roster full), auto-pass so they
+// aren't prompted on lots they can't win. Keeps a fast draft moving.
+function _giveUserTheClock() {
+  const me = getMyTeam();
+  const st = me ? _interactive.states[me.id] : null;
+  const myMax = st ? (st.budget - Math.max(0, st.slotsRemaining - 1)) : 0;
+  if (!st || st.slotsRemaining <= 0 || myMax <= _interactive.currentBid) {
+    _later(() => userPass(), 180);   // priced out / roster full -> auto-pass
+    return;
+  }
+  _startMockTimer();
 }
 
 // User clicks "Bid +$X" or enters a specific amount.
@@ -224,13 +284,14 @@ function userBid(amount) {
   const bid = Math.min(amount, maxAffordable);
   if (bid <= _interactive.currentBid) return { ok: false, error: "Bid must exceed $" + _interactive.currentBid };
   if (bid > maxAffordable) return { ok: false, error: "Max affordable: $" + maxAffordable };
+  _clearMockTimer();
   _interactive.currentBid = bid;
   _interactive.currentWinner = me.id;
-  // Remove user from passed (in case they bid after passing earlier)
-  _interactive.passedTeams.delete(me.id);
+  _interactive.passedTeams.delete(me.id);   // re-enter if they'd passed earlier
+  _interactive.bidLog.push({ owner: "You", bid, mine: true });
+  if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
   _fireChange();
-  // AI responds
-  _later(() => _runAiBidsUntilUserTurn(), 400);
+  _later(() => _runAiBidsUntilUserTurn(), 450);
   return { ok: true };
 }
 
@@ -239,13 +300,15 @@ function userPass() {
   const me = getMyTeam();
   if (!me) return;
   if (_interactive.phase !== "bidding") return;
+  _clearMockTimer();
   _interactive.passedTeams.add(me.id);
   _fireChange();
-  _later(() => _runAiBidsUntilUserTurn(), 400);
+  _later(() => _runAiBidsUntilUserTurn(), 350);
 }
 
 function _completeSale() {
   if (!_interactive.current) return;
+  _clearMockTimer();
   const winnerId = _interactive.currentWinner;
   const winner = _interactive.states[winnerId];
   const rawPrice = _interactive.currentBid;
@@ -292,6 +355,11 @@ function _completeSale() {
 
   // Remove from pool
   _interactive.pool = _interactive.pool.filter(p => p.name !== player.name);
+  _interactive.lastSale = {
+    player: player.name, pos: player.posKey, price,
+    owner: winner.ownerName, mine: !!winner.isMe,
+    value: player.value,
+  };
   _interactive.current = null;
   _interactive.currentBid = 0;
   _interactive.currentWinner = null;

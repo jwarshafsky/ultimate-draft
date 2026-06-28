@@ -255,6 +255,12 @@ function computeMaxBid(state, p, inflation) {
   let cashMult = 1;
   if (dps > 15) cashMult = 1.14; else if (dps > 11) cashMult = 1.07;
   else if (dps < 6) cashMult = 0.90; else if (dps < 8) cashMult = 0.96;
+  // ENDGAME scramble: a cash-rich team with few slots left MUST deploy money or
+  // strand it — so it pays well above market for the last good players (real
+  // owners would rather overpay than leave $20 unspent). This is what stops
+  // stars from "falling" to a hoarder for $1 late, and lets a team get squeezed.
+  if (state.slotsRemaining <= 6 && dps > 16) cashMult = Math.max(cashMult, 1.45);
+  else if (state.slotsRemaining <= 8 && dps > 12) cashMult = Math.max(cashMult, 1.22);
 
   // Forced-fill: pay up for the last open REQUIRED slot late (gated to low slack).
   const fill = mustFillBoost(state, elig);
@@ -262,59 +268,77 @@ function computeMaxBid(state, p, inflation) {
   const noise = 1 + (Math.random() - 0.5) * 2 * (profile.noise || 0.07);
 
   let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise;
-  // No single buy goes wildly over market (prevents cash-dumping one player).
-  wtp = Math.min(wtp, market * 1.6);
+  // Cap a single buy so it can't dump the whole wad early; loosen the cap in the
+  // endgame so cash-rich teams can actually deploy money on the last good players.
+  const overCap = state.slotsRemaining <= 6 ? 2.4 : state.slotsRemaining <= 10 ? 1.9 : 1.6;
+  wtp = Math.min(wtp, market * overCap);
   return Math.max(0, Math.floor(Math.min(wtp, safetyCap)));
 }
 
-// Nomination logic — tendency-driven. Stars+scrubs owners drop big names
-// early to drain opponents. Spread owners nominate mid-tier value plays.
-// Endgame: everyone nominates pricier players to burn budgets.
+function _weightedPick(weights) {
+  const entries = Object.entries(weights || {});
+  const sum = entries.reduce((s, [, w]) => s + (w > 0 ? w : 0), 0);
+  if (sum <= 0) return entries.length ? entries[0][0] : null;
+  let r = Math.random() * sum;
+  for (const [k, w] of entries) { r -= (w > 0 ? w : 0); if (r <= 0) return k; }
+  return entries[entries.length - 1][0];
+}
+
+// Nomination logic — strategy chosen from each owner's nomMix, and reactive to
+// positional scarcity so realistic RUNS emerge (a hot position keeps getting
+// nominated → drafted → scarcer → hotter). Strategies:
+//   target — a player at a position I need, in my tier band (grab hot ones early)
+//   drain  — a big-ticket player to drain rivals' budgets (stars+scrubs love this)
+//   dump   — a pricey player at a position I'm FULL on (others pay, I don't)
+//   blocker— a player at a HOT (drying-up) position to force rivals to pay the premium
 function chooseNomination(state, pool, inflation) {
   if (!pool.length) return null;
   const profile = state.profile;
   const tta = profile.topTierAppetite || 1;
-  const dollarsPerSlot = state.budget / Math.max(1, state.slotsRemaining);
+  const dps = state.budget / Math.max(1, state.slotsRemaining);
+  const scar = (inflation && inflation.posScarcity) || {};
+  const isHot = p => (scar[p.posKey] || 1) >= 1.12;
+  const need = p => positionNeedFor(state, p.elig || [p.posKey]);
+  const rnd = arr => arr[Math.floor(Math.random() * arr.length)];
+  const pick = (arr, k) => arr.length ? rnd(arr.slice(0, Math.min(k || 6, arr.length))) : null;
 
-  // Loyalty: with budget to spend, owners often nominate a repeat target early
-  // to lock in "their guy".
+  // ENDGAME (slots low + cash hot): burn budget on the biggest remaining.
+  if (state.slotsRemaining <= 8 && dps > 9) {
+    const splashy = pool.filter(p => p.value > 6).sort((a, b) => b.value - a.value);
+    if (splashy.length) return pick(splashy, 6);
+  }
+
+  // Loyalty: lock in a repeat target early.
   if (profile.targets && state.budget > 30) {
-    const mine = pool.filter(p => profile.targets[p.name] && positionNeedFor(state, p.elig || [p.posKey]) > 0.3);
-    if (mine.length && Math.random() < 0.45) return mine[Math.floor(Math.random() * Math.min(3, mine.length))];
+    const mine = pool.filter(p => profile.targets[p.name] && need(p) > 0.3);
+    if (mine.length && Math.random() < 0.4) return pick(mine, 3);
   }
 
-  // ENDGAME (slots low + budget hot): nominate biggest remaining to burn cash
-  if (state.slotsRemaining <= 8 && dollarsPerSlot > 9) {
-    const splashy = pool.filter(p => p.value > 6);
-    if (splashy.length) return splashy[Math.floor(Math.random() * Math.min(6, splashy.length))];
-  }
+  const sortDesc = arr => arr.sort((a, b) => b.value - a.value);
+  const strat = _weightedPick(profile.nomMix || { target: 0.35, dump: 0.25, drain: 0.25, blocker: 0.15 });
 
-  // EARLY (lots of budget): stars+scrubs hammers T1/T2 to drain or grab.
-  // Spread drafters nominate mid-tier they actually want.
-  if (state.budget > 180) {
-    if (tta >= 1.2) {
-      const big = pool.filter(p => p.value > 28);
-      if (big.length && Math.random() < 0.5) return big[Math.floor(Math.random() * Math.min(5, big.length))];
-    }
-    // Standard target: a player in a position I need, in my tier preference
-    const targetTier = tta >= 1.2 ? 25 : tta < 1.05 ? 10 : 15;
-    const targets = pool.filter(p => p.value >= targetTier && positionNeedFor(state, p.elig || [p.posKey]) > 0.4);
-    if (targets.length) return targets[Math.floor(Math.random() * Math.min(8, targets.length))];
+  if (strat === "drain") {
+    const floor = tta >= 1.2 ? 25 : 18;
+    const big = sortDesc(pool.filter(p => p.value > floor));
+    if (big.length) return pick(big, 6);
   }
-
-  // MID: position-need targets, with some random dumps
-  if (Math.random() < 0.6) {
-    const need = pool.filter(p => positionNeedFor(state, p.elig || [p.posKey]) > 0.4 && p.value > 5);
-    if (need.length) return need[Math.floor(Math.random() * Math.min(8, need.length))];
+  if (strat === "dump") {
+    const dumps = sortDesc(pool.filter(p => p.value > 15 && need(p) <= 0.45));
+    if (dumps.length) return pick(dumps, 5);
   }
-  // Dump: nominate a buzzy player at a position I'm full on
-  const dumpCandidates = pool.filter(p => p.value > 20 && positionNeedFor(state, p.elig || [p.posKey]) <= 0.45);
-  if (dumpCandidates.length) return dumpCandidates[Math.floor(Math.random() * Math.min(4, dumpCandidates.length))];
-
-  // Default: cheap value play
-  const cheap = pool.filter(p => p.value > 1 && p.value < 10);
-  if (cheap.length) return cheap[Math.floor(Math.random() * cheap.length)];
-  return pool[0];
+  if (strat === "blocker") {
+    const hot = sortDesc(pool.filter(p => isHot(p) && p.value > 5));
+    if (hot.length) return pick(hot, 5);
+  }
+  // target (default): prefer a HOT position I need (grab before the run).
+  const hotNeed = sortDesc(pool.filter(p => need(p) > 0.5 && isHot(p)));
+  if (hotNeed.length && Math.random() < 0.55) return pick(hotNeed, 5);
+  const tierFloor = tta >= 1.2 ? 22 : tta < 0.95 ? 8 : 14;
+  const targets = pool.filter(p => need(p) > 0.4 && p.value >= tierFloor);
+  if (targets.length) return pick(targets, 8);
+  const anyNeed = pool.filter(p => need(p) > 0.4 && p.value > 3);
+  if (anyNeed.length) return pick(anyNeed, 8);
+  return pick(pool.filter(p => p.value > 1), 10) || pool[0];
 }
 
 // Simulate the bidding war for one nomination. Returns {winner: teamState, price}.
@@ -427,8 +451,15 @@ function computePosScarcity(states, rosterable) {
   for (const s of Object.values(states)) {
     for (const pos of HARD) demand[pos] += Math.max(0, s.openSlots?.[pos] || 0);
   }
+  // Count supply against EVERY hard slot a player qualifies for (fractionally),
+  // matching how demand is summed across flex slots — otherwise a multi-eligible
+  // player (2B/SS/OF) counts as supply for one slot but demand for several,
+  // overstating scarcity.
   for (const p of rosterable) {
-    if (supply[p.posKey] != null) supply[p.posKey] += 1;
+    const hardElig = (p.elig || [p.posKey]).filter(s => supply[s] != null);
+    if (!hardElig.length) { if (supply[p.posKey] != null) supply[p.posKey] += 1; continue; }
+    const share = 1 / hardElig.length;
+    for (const slot of hardElig) supply[slot] += share;
   }
   // Raw scarcity = demand/supply, dampened by sqrt; clamp per-position.
   const raw = {};
