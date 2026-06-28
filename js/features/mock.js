@@ -154,9 +154,9 @@ function renderInteractiveMock() {
 
   // Status header
   html += '<div class="card" style="border-color: rgba(79,142,247,.4);">';
-  html += '<div style="display: flex; justify-content: space-between; align-items: center;">';
+  html += '<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">';
   html += '<h2 style="margin: 0;">Live Mock <span class="muted small">· ' + s.picks.length + ' picks done</span></h2>';
-  html += '<div style="display:flex; align-items:center; gap:10px;">';
+  html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">';
   html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Pacing of AI bids / draft advance">speed <select id="im-bidspeed">';
   for (const [v, lbl] of [["realistic", "Realistic"], ["fast", "Fast"], ["instant", "Instant"]]) {
     html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
@@ -299,7 +299,9 @@ function renderInteractiveMock() {
     html += '<div style="font-size:20px; font-weight:700; margin:2px 0;">' + esc(ls.player) + ' <span class="muted" style="font-size:13px;">' + esc(ls.pos === "UTIL" ? "DH/UT" : ls.pos) + '</span></div>';
     html += '<div style="font-size:15px;">$' + ls.price + ' → <strong>' + esc(ls.mine ? "You" : ls.owner) + '</strong>';
     if (ls.mine) html += ' <span class="' + (surp >= 0 ? 'good' : 'bad') + '" style="font-size:13px;">(' + (surp >= 0 ? '+' : '') + '$' + surp.toFixed(0) + ' vs value)</span>';
-    html += '</div></div>';
+    html += '</div>';
+    if (s.bidSpeed !== "instant") html += '<div class="muted small" style="margin-top:6px;">Next nomination in a moment…</div>';
+    html += '</div>';
   }
 
   // Live roto-category pace read (light on power/saves?) — drives bid priorities.

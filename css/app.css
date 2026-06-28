@@ -185,6 +185,7 @@ body {
 .grid.cols-2 { grid-template-columns: 1fr 1fr; }
 .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
 .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
 .grid.cols-6 { grid-template-columns: repeat(6, 1fr); }
 
 table {
@@ -266,21 +267,35 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   border-color: rgba(79,142,247,.4);
   padding: 18px 22px;
 }
-.otc-grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; align-items: center; }
+.otc-grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; align-items: start; }
+.otc-grid > * { min-width: 0; }   /* let grid children shrink instead of overflowing */
 .otc-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-2); margin-bottom: 4px; }
-.otc-player { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
+.otc-player { font-size: 28px; font-weight: 600; margin-bottom: 4px; word-break: break-word; }
 .otc-meta { font-size: 13px; color: var(--text-2); }
 .otc-meta .muted { color: var(--text-3); }
-.otc-bid { border-left: 1px solid var(--border); padding-left: 22px; }
+.otc-bid { border-left: 1px solid var(--border); padding-left: 22px; min-width: 0; }
 .otc-bid-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-2); margin-bottom: 4px; }
 .otc-bid-amt { font-size: 28px; font-family: var(--mono); font-weight: 600; margin-bottom: 8px; }
-.otc-bid-controls { display: flex; gap: 6px; margin-bottom: 6px; }
+.otc-bid-controls { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.otc-bid-controls input { max-width: 72px; }
+/* Stack the bid panel under the player on narrow screens so nothing clips. */
+@media (max-width: 680px) {
+  .otc-grid { grid-template-columns: 1fr; gap: 14px; }
+  .otc-bid { border-left: none; border-top: 1px solid var(--border); padding-left: 0; padding-top: 14px; }
+  .otc-player { font-size: 23px; }
+  /* Stack multi-column grids so nothing overflows the viewport on phones. */
+  .grid.cols-2, .grid.cols-3, .grid.cols-4, .grid.cols-5, .grid.cols-6 { grid-template-columns: 1fr; }
+}
+/* The expanded board's 5-up columns get cramped before phone width — drop to 2-up. */
+@media (max-width: 900px) {
+  .grid.cols-5 { grid-template-columns: repeat(2, 1fr); }
+}
 .otc-signal { margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 4px; }
 .otc-signal.buy { background: rgba(63,185,80,.12); border: 1px solid rgba(63,185,80,.4); color: var(--good); }
 .otc-signal.sell { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.4); color: var(--bad); }
 .otc-empty { padding: 4px; }
 
-.team-strip { display: grid; grid-template-columns: repeat(12, 1fr); gap: 6px; }
+.team-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
 .team-strip-card {
   background: var(--bg-3);
   border: 1px solid var(--border);
@@ -307,8 +322,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .settings-slider { display: flex; gap: 12px; align-items: center; margin-top: 4px; }
 .cat-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .cat-chip { padding: 4px 8px; font-size: 11px; }
-
-.grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
 
 /* Draft grade card */
 .grade-grid { display: grid; grid-template-columns: 180px 1fr 1fr; gap: 22px; align-items: start; }

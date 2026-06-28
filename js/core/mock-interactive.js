@@ -430,9 +430,11 @@ function _completeSale() {
   _interactive.phase = "sold";
   _interactive.inflation = inflationForMockState(_interactive.states);
   _fireChange();
-  // Advance to next nominator (a beat on the SOLD banner before the next lot).
+  // Advance to next nominator after a 5-second beat on the SOLD banner so you
+  // can absorb who won and for how much. ("Instant" speed collapses it.)
   _interactive.currentNominator++;
-  _later(() => _advanceToNominatingTeam(), _d(700));
+  const dwell = _interactive.bidSpeed === "instant" ? 0 : 5000;
+  _later(() => _advanceToNominatingTeam(), dwell);
 }
 
 // Interactive inflation now uses the shared inflationForMockState() so the
