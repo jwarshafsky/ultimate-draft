@@ -278,6 +278,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .otc-bid-amt { font-size: 28px; font-family: var(--mono); font-weight: 600; margin-bottom: 8px; }
 .otc-bid-controls { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 .otc-bid-controls input { max-width: 72px; }
+/* Fixed-structure bid panel — reserved status height + stable rows so controls
+   never move (prevents accidental clicks as the lead alternates). */
+.otc-status { min-height: 32px; display: flex; align-items: center; margin: 8px 0 6px; }
+.otc-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.btn:disabled, .btn[disabled] { opacity: .38; cursor: not-allowed; pointer-events: none; }
 /* Stack the bid panel under the player on narrow screens so nothing clips. */
 @media (max-width: 680px) {
   .otc-grid { grid-template-columns: 1fr; gap: 14px; }

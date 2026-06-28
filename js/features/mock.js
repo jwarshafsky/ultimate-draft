@@ -12,6 +12,7 @@ const _mockState = {
   boardExpanded: false, // interactive Board: compact (top per pos) vs full
   boardSearch: "",       // interactive Board: filter remaining players by name
   boardNeedsOnly: false, // interactive Board: only positions you still need
+  reviewMock: null,      // id of a saved mock being reviewed on the start screen
 };
 
 function renderMock() {
@@ -143,6 +144,7 @@ function renderInteractiveMock() {
     html += '</select></label>';
     html += '</div>';
     html += '</div>';
+    html += renderSavedMocks();   // review past mocks
     return html;
   }
 
@@ -233,36 +235,51 @@ function renderInteractiveMock() {
     html += '<div class="otc-bid-amt">$' + s.currentBid + '</div>';
     html += verdict;
     html += '<div class="muted small" style="margin-top:4px;">Your max bid: $' + myMax + (myMax < inflV ? ' <span style="color:var(--bad);">(can\'t reach par)</span>' : '') + '</div>';
+    // FIXED-STRUCTURE action panel: every control keeps the SAME position for the
+    // whole lot. Controls only enable/disable (a disabled button ignores clicks)
+    // — they are never added/removed/reordered, so nothing moves under your cursor
+    // and an accidental click can't fire. Status row has a reserved height so the
+    // timer bar appearing/disappearing never shifts the buttons.
     const pricedOut = myMax <= s.currentBid;
-    if (!isMyBid && !iHavePassed && pricedOut) {
-      html += '<p class="small bad" style="margin-top: 8px;">Priced out (max $' + myMax + ') — passing.</p>';
-    } else if (!isMyBid && !iHavePassed) {
-      // Draft-day clock: a shrinking bar + seconds while it's your turn to act.
-      if (s.useTimer && s.secondsLeft > 0) {
-        const pct = Math.max(0, Math.min(100, (s.secondsLeft / s.timerSecs) * 100));
-        const urgent = s.secondsLeft <= 4;
-        html += '<div style="margin-top:8px;">';
-        html += '<div style="display:flex; justify-content:space-between; font-size:11px;" class="muted"><span>Your turn</span><span style="color:' + (urgent ? 'var(--bad)' : 'var(--muted)') + '; font-weight:600;">' + s.secondsLeft + 's</span></div>';
-        html += '<div style="height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:2px;"><div style="height:100%; width:' + pct + '%; background:' + (urgent ? 'var(--bad)' : 'var(--accent)') + '; transition:width .9s linear;"></div></div>';
-        html += '</div>';
-      }
-      html += '<div class="otc-bid-controls" style="margin-top: 6px;">';
-      for (const inc of [1, 2, 5]) {
-        html += '<button class="btn primary im-bid" data-inc="' + inc + '" style="width:auto; padding: 6px 12px;">+$' + inc + '</button>';
-      }
-      // Jump straight to par (fair value) — one click on a star.
-      if (Math.round(inflV) > s.currentBid && Math.round(inflV) <= myMax) {
-        html += '<button class="btn im-bid" data-to="' + Math.round(inflV) + '" style="width:auto; padding: 6px 10px;" title="Bid to par/fair value">→ $' + Math.round(inflV) + '</button>';
-      }
-      html += '<input id="im-custom-bid" type="number" min="' + (s.currentBid + 1) + '" placeholder="$" style="width: 70px;">';
-      html += '<button class="btn im-bid-custom" style="width:auto; padding: 6px 10px;">Bid</button>';
-      html += '</div>';
-      html += '<div style="margin-top: 6px; display:flex; align-items:center; gap:8px;"><button class="btn ghost" id="im-pass">Pass</button><span class="muted" style="font-size:10px;">Enter = bid · P/Esc = pass</span></div>';
-    } else if (isMyBid) {
-      html += '<p class="small good" style="margin-top: 8px;">Highest bidder. AI is responding…</p>';
+    const canAct = !isMyBid && !iHavePassed && !pricedOut;
+    const parVal = Math.round(inflV);
+    // --- status row (reserved height) ---
+    html += '<div class="otc-status">';
+    if (isMyBid) {
+      html += '<span class="good small">✓ You\'re the high bidder — AI responding…</span>';
+    } else if (iHavePassed) {
+      html += '<span class="muted small">You passed on this lot.</span>';
+    } else if (pricedOut) {
+      html += '<span class="bad small">Priced out (max $' + myMax + ') — passing.</span>';
+    } else if (s.useTimer && s.secondsLeft > 0) {
+      const pct = Math.max(0, Math.min(100, (s.secondsLeft / s.timerSecs) * 100));
+      const urgent = s.secondsLeft <= 4;
+      html += '<div style="width:100%;"><div style="display:flex; justify-content:space-between; font-size:11px;" class="muted"><span>Your turn</span><span style="color:' + (urgent ? 'var(--bad)' : 'var(--muted)') + '; font-weight:600;">' + s.secondsLeft + 's</span></div>';
+      html += '<div style="height:4px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:2px;"><div style="height:100%; width:' + pct + '%; background:' + (urgent ? 'var(--bad)' : 'var(--accent)') + '; transition:width .9s linear;"></div></div></div>';
     } else {
-      html += '<p class="small muted" style="margin-top: 8px;">You passed on this auction.</p>';
+      html += '<span class="muted small">Your turn — bid or pass.</span>';
     }
+    html += '</div>';
+    // --- quick-bid row (always +$1 +$2 +$5 + jump-to-par; disabled when N/A) ---
+    html += '<div class="otc-row">';
+    for (const inc of [1, 2, 5]) {
+      const en = canAct && (s.currentBid + inc) <= myMax;
+      html += '<button class="btn primary im-bid" data-inc="' + inc + '"' + (en ? '' : ' disabled') + ' style="width:auto; padding:6px 12px; min-width:46px;">+$' + inc + '</button>';
+    }
+    const parEn = canAct && parVal > s.currentBid && parVal <= myMax;
+    html += '<button class="btn im-bid" data-to="' + parVal + '"' + (parEn ? '' : ' disabled') + ' style="width:auto; padding:6px 10px; min-width:56px;" title="Bid to par/fair value">→ $' + parVal + '</button>';
+    html += '</div>';
+    // --- custom-bid row ---
+    html += '<div class="otc-row">';
+    html += '<input id="im-custom-bid" type="number" min="' + (s.currentBid + 1) + '" placeholder="$" style="width:72px;"' + (canAct ? '' : ' disabled') + '>';
+    html += '<button class="btn im-bid-custom" style="width:auto; padding:6px 10px;"' + (canAct ? '' : ' disabled') + '>Bid</button>';
+    html += '</div>';
+    // --- pass row ---
+    const passEn = !isMyBid && !iHavePassed;
+    html += '<div class="otc-row">';
+    html += '<button class="btn ghost" id="im-pass"' + (passEn ? '' : ' disabled') + '>Pass</button>';
+    html += '<span class="muted" style="font-size:10px;">Enter = bid · P/Esc = pass</span>';
+    html += '</div>';
     // Proxy / max-bid: let the engine bid for you up to a cap (set it anytime you
     // haven't passed — works while you're leading too, so you don't babysit a target).
     if (!iHavePassed) {
@@ -362,8 +379,10 @@ function renderInteractiveMock() {
     if (s.pool.length === 0 && openLeft > 0) {
       html += '<div class="card"><h2>Pool Exhausted</h2><p class="muted">Ran out of valued players with <b>' + openLeft + '</b> roster slot' + (openLeft === 1 ? '' : 's') + ' still open. Load more projections / Dollar Values (Data tab) for a complete draft. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
     } else {
-      html += '<div class="card"><h2>Mock Complete</h2><p>All rosters filled. Switch to Auto mode for batch sims, or End Mock to reset.</p></div>';
+      html += '<div class="card"><h2>Mock Complete</h2><p class="muted small">All rosters filled. Save it below to review later, or End Mock to reset.</p></div>';
     }
+    // Scorecard — grade + projected standings — shown for any finished draft.
+    if (s.picks.length) html += renderMockScorecard(s);
   }
 
   return html;
@@ -530,6 +549,171 @@ function renderMockBoard(s, expanded) {
   return html;
 }
 
+// ===== End-of-draft scorecard: projected standings + grade =====
+
+function _mockValueMap() {
+  const m = {}; const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (x => String(x || "").toLowerCase());
+  (getValues() || []).forEach(p => { m[nk(p.name)] = p.value; });
+  return m;
+}
+
+// Projects every team's roster into roto standings: relative category ranking
+// across the league (best in a cat = N points, worst = 1), summed to roto points.
+// Falls back to roster-$ ordering when stat projections aren't loaded.
+function computeMockStandings(states) {
+  const cats = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
+  const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (x => String(x || "").toLowerCase());
+  const vmap = _mockValueMap();
+  const teams = Object.values(states).map(t => {
+    const names = [...(t.kept || []).map(k => k.name), ...t.drafted.map(d => d.name)];
+    const totals = (typeof aggregateCats === "function") ? aggregateCats(names) : {};
+    const rosterValue = names.reduce((a, n) => a + (vmap[nk(n)] || 0), 0);
+    const spent = t.drafted.reduce((a, d) => a + (d.price || 0), 0);
+    const surplus = t.drafted.reduce((a, d) => a + ((d.value || vmap[nk(d.name)] || 0) - (d.price || 0)), 0);
+    return { teamId: t.teamId, owner: t.ownerName, isMe: !!t.isMe, totals, rosterValue, spent, surplus, catPoints: {}, rotoPoints: 0 };
+  });
+  const N = teams.length;
+  const valOf = (t, c) => {
+    if (c === "SV_HLD") return t.totals.SV_HLD || 0;
+    const v = t.totals[c] || 0;
+    if ((c === "ERA" || c === "WHIP") && (!t.totals.IP || v <= 0)) return Infinity; // no pitching = worst, not "0.00 best"
+    return v;
+  };
+  let anyData = false;
+  for (const c of cats) {
+    if (teams.some(t => { const v = valOf(t, c); return isFinite(v) && v > 0; })) anyData = true;
+    const lower = (c === "ERA" || c === "WHIP");
+    const order = teams.slice().sort((a, b) => lower ? valOf(a, c) - valOf(b, c) : valOf(b, c) - valOf(a, c));
+    let i = 0;
+    while (i < N) {
+      let j = i; while (j + 1 < N && valOf(order[j + 1], c) === valOf(order[i], c)) j++;
+      let sum = 0; for (let r = i; r <= j; r++) sum += (N - r);
+      const avg = sum / (j - i + 1);
+      for (let r = i; r <= j; r++) { order[r].catPoints[c] = avg; order[r].rotoPoints += avg; }
+      i = j + 1;
+    }
+  }
+  teams.sort((a, b) => anyData ? (b.rotoPoints - a.rotoPoints) : (b.rosterValue - a.rosterValue));
+  teams.forEach((t, i) => t.rank = i + 1);
+  return { teams, anyData, cats, N };
+}
+
+function _mockGrade(rank, N) {
+  const pct = N > 1 ? (N - rank) / (N - 1) : 1;
+  return pct >= 0.92 ? "A+" : pct >= 0.83 ? "A" : pct >= 0.75 ? "A-" : pct >= 0.66 ? "B+"
+       : pct >= 0.55 ? "B" : pct >= 0.45 ? "B-" : pct >= 0.36 ? "C+" : pct >= 0.27 ? "C"
+       : pct >= 0.18 ? "C-" : pct >= 0.09 ? "D" : "F";
+}
+function _ord(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+function _gradeColor(g) { return ["A+", "A", "A-"].includes(g) ? "var(--good)" : ["D", "F"].includes(g) ? "var(--bad)" : "var(--text)"; }
+
+const CAT_LABELS = { R: "R", HR: "HR", RBI: "RBI", SB: "SB", OBP: "OBP", QS: "QS", K: "K", SV_HLD: "SV+HLD", ERA: "ERA", WHIP: "WHIP" };
+
+// The end-of-draft scorecard (grade + projected standings), rendered live from
+// the finished mock states. `standingsData`/`grade` can be passed for a saved review.
+function renderMockScorecard(s) {
+  const st = computeMockStandings(s.states);
+  const mine = st.teams.find(t => t.isMe);
+  if (!mine) return '';
+  const grade = _mockGrade(mine.rank, st.N);
+  let html = '<div class="card">';
+  html += '<h2 style="margin:0 0 10px;">Draft Scorecard</h2>';
+  html += '<div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">';
+  html += '<div style="font-size:54px; font-weight:800; line-height:1; color:' + _gradeColor(grade) + ';">' + grade + '</div>';
+  html += '<div><div style="font-size:18px; font-weight:700;">Projected finish: ' + _ord(mine.rank) + ' of ' + st.N + '</div>';
+  html += '<div class="muted small">' + (st.anyData ? (Math.round(mine.rotoPoints * 10) / 10) + ' projected roto pts · ' : 'by roster $ (load stat projections for category standings) · ')
+        + 'spent $' + mine.spent + ' · surplus ' + (mine.surplus >= 0 ? '+' : '') + '$' + Math.round(mine.surplus) + '</div></div>';
+  html += '</div>';
+  if (st.anyData) {
+    const sorted = st.cats.slice().sort((a, b) => (mine.catPoints[b] || 0) - (mine.catPoints[a] || 0));
+    const strong = sorted.slice(0, 3).map(c => CAT_LABELS[c]);
+    const weak = sorted.slice(-3).reverse().map(c => CAT_LABELS[c]);
+    html += '<div class="small" style="margin-top:10px;"><span class="good">Strengths: ' + strong.join(", ") + '</span> · <span class="bad">Needs: ' + weak.join(", ") + '</span></div>';
+  }
+  html += '<table style="margin-top:12px; font-size:12px;"><thead><tr><th class="num">#</th><th>Owner</th>'
+        + (st.anyData ? '<th class="num">Roto</th>' : '') + '<th class="num">Roster $</th><th class="num">Spent</th></tr></thead><tbody>';
+  for (const t of st.teams) {
+    html += '<tr' + (t.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '>';
+    html += '<td class="num dim">' + t.rank + '</td><td>' + esc(t.owner) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
+    if (st.anyData) html += '<td class="num">' + (Math.round(t.rotoPoints * 10) / 10) + '</td>';
+    html += '<td class="num">$' + Math.round(t.rosterValue) + '</td><td class="num">$' + t.spent + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;"><button class="btn primary" id="im-save-mock" style="width:auto; padding:8px 16px;">Save this mock</button><span id="im-save-msg" class="good small" style="align-self:center;"></span></div>';
+  html += '</div>';
+  return html;
+}
+
+// ===== Saved mocks (localStorage) =====
+const SAVED_MOCKS_KEY = "ud_saved_mocks_v1";
+function getSavedMocks() { try { return JSON.parse(localStorage.getItem(SAVED_MOCKS_KEY) || "[]") || []; } catch (_) { return []; } }
+function _writeSavedMocks(l) { localStorage.setItem(SAVED_MOCKS_KEY, JSON.stringify(l)); }
+function saveCurrentMock(label) {
+  const s = getInteractiveState();
+  const st = computeMockStandings(s.states);
+  const mine = st.teams.find(t => t.isMe);
+  const tm = Object.values(s.states).find(x => x.isMe);
+  const rec = {
+    id: "m" + Date.now(), ts: Date.now(),
+    label: label || ("Mock — " + new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+    anyData: st.anyData, grade: mine ? _mockGrade(mine.rank, st.N) : "—", myRank: mine ? mine.rank : null, n: st.N,
+    picks: s.picks.length,
+    standings: st.teams.map(t => ({ owner: t.owner, isMe: t.isMe, rank: t.rank, rotoPoints: Math.round(t.rotoPoints * 10) / 10, rosterValue: Math.round(t.rosterValue), spent: t.spent })),
+    myRoster: tm ? [...(tm.kept || []).map(k => ({ name: k.name, pos: k.pos, price: k.price, kept: true })), ...tm.drafted.map(d => ({ name: d.name, pos: d.pos, price: d.price, value: d.value }))] : [],
+  };
+  const l = getSavedMocks(); l.unshift(rec); while (l.length > 20) l.pop(); _writeSavedMocks(l);
+  return rec.id;
+}
+function deleteSavedMock(id) { _writeSavedMocks(getSavedMocks().filter(m => m.id !== id)); }
+
+function renderSavedMocks() {
+  const list = getSavedMocks();
+  if (!list.length) return '';
+  let html = '<div class="card"><h3 style="margin:0 0 8px;">Saved mocks (' + list.length + ')</h3>';
+  html += '<table style="font-size:12px;"><tbody>';
+  for (const m of list) {
+    html += '<tr><td><strong>' + esc(m.label) + '</strong></td>';
+    html += '<td class="num" style="color:' + _gradeColor(m.grade) + ';">' + esc(m.grade) + '</td>';
+    html += '<td class="num dim">' + (m.myRank ? _ord(m.myRank) + '/' + m.n : '—') + '</td>';
+    html += '<td><button class="btn ghost mock-review" data-id="' + m.id + '" style="width:auto; padding:2px 10px; font-size:11px;">Review</button> ';
+    html += '<button class="btn ghost mock-del" data-id="' + m.id + '" style="width:auto; padding:2px 8px; font-size:11px; color:var(--bad);">✕</button></td></tr>';
+  }
+  html += '</tbody></table>';
+  if (_mockState.reviewMock) {
+    const rec = list.find(m => m.id === _mockState.reviewMock);
+    if (rec) html += renderSavedReview(rec);
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderSavedReview(rec) {
+  let html = '<div class="card" style="margin-top:10px; border-color: rgba(79,142,247,.35);">';
+  html += '<div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">';
+  html += '<div style="font-size:38px; font-weight:800; color:' + _gradeColor(rec.grade) + ';">' + esc(rec.grade) + '</div>';
+  html += '<div><div style="font-weight:700;">' + esc(rec.label) + '</div>';
+  html += '<div class="muted small">Projected finish ' + (rec.myRank ? _ord(rec.myRank) + ' of ' + rec.n : '—') + ' · ' + rec.picks + ' picks' + (rec.anyData ? '' : ' · roster-$ basis') + '</div></div>';
+  html += '<button class="btn ghost" id="im-review-close" style="width:auto; padding:2px 10px; margin-left:auto;">Close</button></div>';
+  // projected standings
+  html += '<table style="margin-top:10px; font-size:12px;"><thead><tr><th class="num">#</th><th>Owner</th>' + (rec.anyData ? '<th class="num">Roto</th>' : '') + '<th class="num">Roster $</th><th class="num">Spent</th></tr></thead><tbody>';
+  for (const t of rec.standings) {
+    html += '<tr' + (t.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '><td class="num dim">' + t.rank + '</td><td>' + esc(t.owner) + (t.isMe ? ' <span class="kbd">you</span>' : '') + '</td>';
+    if (rec.anyData) html += '<td class="num">' + t.rotoPoints + '</td>';
+    html += '<td class="num">$' + t.rosterValue + '</td><td class="num">$' + t.spent + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  // my roster
+  if (rec.myRoster && rec.myRoster.length) {
+    html += '<div class="muted small" style="margin-top:10px;">Your roster</div><table style="font-size:12px;"><tbody>';
+    for (const p of rec.myRoster) {
+      html += '<tr><td>' + esc(p.name) + (p.kept ? ' <span class="kbd" style="color:var(--keeper);">K</span>' : '') + '</td><td class="dim">' + esc(p.pos) + '</td><td class="num">$' + p.price + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+  return html;
+}
+
 function wireMockControls() {
   document.getElementById("mock-mode-auto")?.addEventListener("click", () => {
     _mockState.mode = "auto"; renderMock();
@@ -628,6 +812,23 @@ function wireMockControls() {
   document.querySelector(".im-proxy-set")?.addEventListener("click", setProxy);
   document.getElementById("im-proxy")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); setProxy(); } });
   document.getElementById("im-proxy-cancel")?.addEventListener("click", () => { if (typeof setProxyMax === "function") setProxyMax(null); });
+  // Scorecard: save / review / delete
+  document.getElementById("im-save-mock")?.addEventListener("click", () => {
+    const id = saveCurrentMock();
+    const msg = document.getElementById("im-save-msg");
+    if (msg) msg.textContent = "Saved ✓ — review it from the start screen.";
+    document.getElementById("im-save-mock").disabled = true;
+  });
+  document.querySelectorAll(".mock-review").forEach(b => b.addEventListener("click", () => {
+    _mockState.reviewMock = (_mockState.reviewMock === b.dataset.id) ? null : b.dataset.id;
+    renderMock();
+  }));
+  document.querySelectorAll(".mock-del").forEach(b => b.addEventListener("click", () => {
+    deleteSavedMock(b.dataset.id);
+    if (_mockState.reviewMock === b.dataset.id) _mockState.reviewMock = null;
+    renderMock();
+  }));
+  document.getElementById("im-review-close")?.addEventListener("click", () => { _mockState.reviewMock = null; renderMock(); });
   document.getElementById("mock-board-toggle")?.addEventListener("click", () => {
     _mockState.boardExpanded = !_mockState.boardExpanded;
     renderMock();
