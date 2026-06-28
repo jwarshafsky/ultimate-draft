@@ -515,8 +515,8 @@ function renderMockBoard(s, expanded) {
   html += '<input id="mock-board-search" type="search" placeholder="Filter players…" value="' + esc(_mockState.boardSearch || "") + '" style="flex:1; min-width:160px; font-size:13px;">';
   html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" title="Only show positions you still have an open slot for"><input type="checkbox" id="mock-board-needs"' + (_mockState.boardNeedsOnly ? ' checked' : '') + '> My needs only</label>';
   html += '</div>';
-  html += '<p class="muted small" style="margin-top:0;">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + (expanded ? ' Scroll each column for the full list.' : '') + ' <span style="opacity:.7;">— line = tier cliff</span></p>';
-  html += '<div class="grid ' + (expanded ? 'cols-5' : 'cols-3') + '">';
+  html += '<p class="muted small" style="margin-top:0;">$ = inflated at ' + infMult + '×.' + (myTurn ? ' Click a name to nominate.' : '') + (expanded ? ' Full list per position — scroll the page.' : ' Top ' + perCol + ' per position — Expand for the full list.') + ' <span style="opacity:.7;">— line = tier cliff</span></p>';
+  html += '<div class="grid ' + (expanded ? 'cols-5' : 'cols-3') + '" style="align-items:start;">';
   let shown = 0;
   for (const pos of positions) {
     const all = s.pool.filter(p => p.posKey === pos && matchSearch(p));
@@ -524,7 +524,7 @@ function renderMockBoard(s, expanded) {
     const list = perCol === Infinity ? all : all.slice(0, perCol);
     const needBadge = needPos.has(pos) ? ' <span class="kbd" style="font-size:8px; color:var(--accent);" title="open slot">need</span>' : '';
     html += '<div><h4 style="margin:4px 0;">' + (pos === "UTIL" ? "DH/UT" : pos) + ' <span class="muted small">' + all.length + '</span>' + needBadge + '</h4>';
-    html += '<div style="' + (expanded ? 'max-height:340px; overflow-y:auto;' : '') + '"><table style="font-size:11px; width:100%;"><tbody>';
+    html += '<div><table style="font-size:11px; width:100%;"><tbody>';
     let prevTier = null;
     for (const p of list) {
       shown++;

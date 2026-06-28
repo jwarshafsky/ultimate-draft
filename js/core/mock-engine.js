@@ -224,6 +224,12 @@ let MOCK_MARKET_HEAT = 1.0;
 function setMockMarketHeat(f) { MOCK_MARKET_HEAT = (typeof f === "number" && isFinite(f) && f > 0) ? f : 1.0; }
 function getMockMarketHeat() { return MOCK_MARKET_HEAT; }
 
+// Baseline price level — a gentle global trim so winning bids sit a touch under
+// par on average. Lower = teams are more frugal (some budget left unspent).
+let MOCK_PRICE_LEVEL = 0.92;
+function setMockPriceLevel(f) { MOCK_PRICE_LEVEL = (typeof f === "number" && isFinite(f) && f > 0) ? f : 1.0; }
+function getMockPriceLevel() { return MOCK_PRICE_LEVEL; }
+
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
   const market = inflatedValue(p, inflation);
@@ -275,7 +281,7 @@ function computeMaxBid(state, p, inflation) {
 
   const noise = 1 + (Math.random() - 0.5) * 2 * (profile.noise || 0.07);
 
-  let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise * MOCK_MARKET_HEAT;
+  let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise * MOCK_MARKET_HEAT * MOCK_PRICE_LEVEL;
   // Cap a single buy so it can't dump the whole wad early; loosen the cap in the
   // endgame so cash-rich teams can actually deploy money on the last good players.
   const overCap = state.slotsRemaining <= 6 ? 2.4 : state.slotsRemaining <= 10 ? 1.9 : 1.6;
