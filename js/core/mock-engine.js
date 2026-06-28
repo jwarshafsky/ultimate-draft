@@ -216,6 +216,14 @@ function _mockPlayerValue(name) {
 //   We tilt `market` by a few MODEST factors (need, owner tendency, cash on
 //     hand, forced-fill) to get this team's willingness-to-pay. The English
 //     auction in runBiddingRound then clears near the 2nd-highest WTP.
+// Market heat — a global willingness multiplier simulating a hot vs cold room.
+// 1.0 = normal; >1 everyone reaches a bit higher (early stars clear hot, late
+// players go cheap — budget stays conserved); <1 = a bargain room. Applies to
+// both interactive and auto sims.
+let MOCK_MARKET_HEAT = 1.0;
+function setMockMarketHeat(f) { MOCK_MARKET_HEAT = (typeof f === "number" && isFinite(f) && f > 0) ? f : 1.0; }
+function getMockMarketHeat() { return MOCK_MARKET_HEAT; }
+
 function computeMaxBid(state, p, inflation) {
   if (state.slotsRemaining <= 0) return 0;
   const market = inflatedValue(p, inflation);
@@ -267,7 +275,7 @@ function computeMaxBid(state, p, inflation) {
 
   const noise = 1 + (Math.random() - 0.5) * 2 * (profile.noise || 0.07);
 
-  let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise;
+  let wtp = market * needMult * profMult * posMult * targetMult * cashMult * fill * noise * MOCK_MARKET_HEAT;
   // Cap a single buy so it can't dump the whole wad early; loosen the cap in the
   // endgame so cash-rich teams can actually deploy money on the last good players.
   const overCap = state.slotsRemaining <= 6 ? 2.4 : state.slotsRemaining <= 10 ? 1.9 : 1.6;

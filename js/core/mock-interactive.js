@@ -26,7 +26,32 @@ const _interactive = {
   timerSecs: 12,
   secondsLeft: 0,    // live countdown while waiting on the user
   bidSpeed: "realistic", // "realistic" (staggered) | "fast" | "instant" — pacing of AI bids/nominations
+  proxyMax: null,    // auto-bid cap for the CURRENT lot (engine bids for you up to this)
+  nomSlot: "random", // where you sit in the nomination order: "random" | "first" | "last" | 0-based seat #
+  heat: "normal",    // market-heat label: "cold" | "normal" | "hot" (UI; engine global does the work)
 };
+
+const HEAT_FACTORS = { cold: 0.92, normal: 1.0, hot: 1.10 };
+function setMockClock(secsOrOff) {
+  if (secsOrOff === "off" || secsOrOff === 0) { _interactive.useTimer = false; _clearMockTimer(); }
+  else { _interactive.useTimer = true; _interactive.timerSecs = parseInt(secsOrOff, 10) || 12; }
+  _fireChange();
+}
+function setMockNomSlot(slot) { _interactive.nomSlot = slot; _fireChange(); }
+function setMockHeat(label) {
+  if (!(label in HEAT_FACTORS)) return;
+  _interactive.heat = label;
+  if (typeof setMockMarketHeat === "function") setMockMarketHeat(HEAT_FACTORS[label]);
+  _fireChange();
+}
+// Auto-bid cap for the current lot. Cleared at the start of each new auction.
+function setProxyMax(v) {
+  const n = parseInt(v, 10);
+  _interactive.proxyMax = (isFinite(n) && n > _interactive.currentBid) ? n : null;
+  _fireChange();
+  // If it's already our turn (an AI is leading), let the proxy engage immediately.
+  if (_interactive.proxyMax) { const me = getMyTeam(); if (me && _interactive.phase === "bidding" && _interactive.currentWinner !== me.id && !_interactive.passedTeams.has(me.id)) _giveUserTheClock(); }
+}
 
 // Pacing factor applied to every AI-churn / between-lot delay (NOT the draft
 // clock, which is real seconds). instant=0 (resolve on next tick), fast=0.4x.
@@ -71,10 +96,22 @@ function startInteractiveMock() {
   _interactive.pool.sort((a, b) => b.value - a.value);
   _interactive.picks = [];
   _interactive.nominationOrder = Object.keys(_interactive.states);
-  // Shuffle nomination order; user goes wherever they land
+  // Shuffle nomination order; user goes wherever they land...
   for (let i = _interactive.nominationOrder.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [_interactive.nominationOrder[i], _interactive.nominationOrder[j]] = [_interactive.nominationOrder[j], _interactive.nominationOrder[i]];
+  }
+  // ...unless you chose a specific nomination seat — re-seat yourself there.
+  const meId = (typeof getMyTeam === "function" && getMyTeam()) ? getMyTeam().id : null;
+  if (meId && _interactive.nomSlot !== "random") {
+    const order = _interactive.nominationOrder.filter(id => id !== meId);
+    const n = order.length;
+    let idx;
+    if (_interactive.nomSlot === "first") idx = 0;
+    else if (_interactive.nomSlot === "last") idx = n;
+    else { idx = parseInt(_interactive.nomSlot, 10); if (!isFinite(idx)) idx = 0; idx = Math.max(0, Math.min(n, idx)); }
+    order.splice(idx, 0, meId);
+    _interactive.nominationOrder = order;
   }
   _interactive.currentNominator = 0;
   _interactive.phase = "nominating";
@@ -86,6 +123,8 @@ function startInteractiveMock() {
   _interactive.bidLog = [];
   _interactive.lastSale = null;
   _interactive.secondsLeft = 0;
+  _interactive.proxyMax = null;
+  if (typeof setMockMarketHeat === "function") setMockMarketHeat(HEAT_FACTORS[_interactive.heat] || 1.0);
   _interactive.inflation = inflationForMockState(_interactive.states);
   _advanceToNominatingTeam();
 }
@@ -164,6 +203,7 @@ function _startAuction(player, nominatorId, opening) {
   _interactive.currentWinner = nominatorId;
   _interactive.passedTeams = new Set();
   _interactive.phase = "bidding";
+  _interactive.proxyMax = null;     // proxy cap is per-lot
   _interactive.lastSale = null;     // clear the SOLD banner once a new lot opens
   // Seed the escalation ticker with the opening (nominating) bid.
   const nom = _interactive.states[nominatorId];
@@ -279,6 +319,18 @@ function _giveUserTheClock() {
   const myMax = st ? (st.budget - Math.max(0, st.slotsRemaining - 1)) : 0;
   if (!st || st.slotsRemaining <= 0 || myMax <= _interactive.currentBid) {
     _later(() => userPass(), _d(180));   // priced out / roster full -> auto-pass
+    return;
+  }
+  // Proxy / max-bid: if you've set an auto-bid cap, the engine bids for you.
+  if (_interactive.proxyMax != null) {
+    if (_interactive.proxyMax > _interactive.currentBid) {
+      const inc = _interactive.currentBid < 12 ? 1 : _interactive.currentBid < 25 ? 2 : 3;
+      const next = Math.min(_interactive.proxyMax, _interactive.currentBid + inc);
+      _later(() => userBid(next), _d(200));   // step up toward your cap
+      return;
+    }
+    // An AI passed your cap — you're out.
+    _later(() => userPass(), _d(180));
     return;
   }
   _startMockTimer();

@@ -25,7 +25,7 @@ function renderMock() {
   // on every AI bump and every timer tick — without this, typing in the custom-bid
   // / search / nominate fields would be interrupted once a second).
   const ae = document.activeElement;
-  const focusId = ae && /^(im-custom-bid|im-nominate-name|im-nominate-open|mock-board-search)$/.test(ae.id) ? ae.id : null;
+  const focusId = ae && /^(im-custom-bid|im-nominate-name|im-nominate-open|mock-board-search|im-proxy)$/.test(ae.id) ? ae.id : null;
   const focusCaret = focusId ? ae.selectionStart : null;
   const focusVal = focusId ? ae.value : null;
 
@@ -120,15 +120,28 @@ function renderInteractiveMock() {
     html += '<div class="card"><h3>Start a Live Mock</h3>';
     html += '<p class="muted small">You\'ll nominate when it\'s your turn (random order). For other teams, the AI uses each owner\'s historical tendency profile to bid. Press start when ready.</p>';
     html += '<button class="btn primary" id="interactive-start" style="width:auto; padding: 10px 22px;">Start Interactive Mock</button>';
-    html += '<div style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:14px;" title="How fast the AI bids and the draft advances. Realistic = watch the price climb; Instant = jumps straight to the result.">';
-    html += '<span class="muted">Bid speed</span>';
-    html += '<select id="im-bidspeed">';
-    for (const [v, lbl] of [["realistic", "Realistic (staggered)"], ["fast", "Fast"], ["instant", "Instant"]]) {
-      html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
+    html += '<div class="grid cols-2" style="margin-top:16px; gap:10px; max-width:520px;">';
+    // Bid speed
+    html += '<label style="font-size:13px;" title="How fast the AI bids and the draft advances. Realistic = watch the price climb; Instant = jumps straight to the result."><div class="muted small">Bid speed</div><select id="im-bidspeed" style="width:100%;">';
+    for (const [v, lbl] of [["realistic", "Realistic (staggered)"], ["fast", "Fast"], ["instant", "Instant"]]) html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
+    html += '</select></label>';
+    // Draft-day clock length
+    html += '<label style="font-size:13px;" title="A clock runs when it\'s your turn to act; time out = auto-pass."><div class="muted small">Draft-day clock</div><select id="im-clock" style="width:100%;">';
+    for (const [v, lbl] of [["off", "Off"], ["8", "8 sec"], ["12", "12 sec"], ["20", "20 sec"]]) {
+      const sel = (v === "off" ? !s.useTimer : (s.useTimer && String(s.timerSecs) === v));
+      html += '<option value="' + v + '"' + (sel ? ' selected' : '') + '>' + lbl + '</option>';
     }
-    html += '</select></div>';
-    html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:10px;" title="A clock runs when it\'s your turn to act; time out = auto-pass. Adds real draft-day pressure.">';
-    html += '<input type="checkbox" id="im-timer-toggle"' + (s.useTimer ? ' checked' : '') + '> Draft-day clock (' + s.timerSecs + 's to act, auto-pass on timeout)</label>';
+    html += '</select></label>';
+    // Your nomination seat
+    html += '<label style="font-size:13px;" title="Where you sit in the nomination order each run."><div class="muted small">Your nomination seat</div><select id="im-nomslot" style="width:100%;">';
+    let seatOpts = '<option value="random"' + (s.nomSlot === "random" ? " selected" : "") + '>Random</option><option value="first"' + (s.nomSlot === "first" ? " selected" : "") + '>First</option><option value="last"' + (s.nomSlot === "last" ? " selected" : "") + '>Last</option>';
+    for (let i = 0; i < 12; i++) seatOpts += '<option value="' + i + '"' + (String(s.nomSlot) === String(i) ? " selected" : "") + '>Seat ' + (i + 1) + '</option>';
+    html += seatOpts + '</select></label>';
+    // Market heat
+    html += '<label style="font-size:13px;" title="Simulate a hot vs cold room. Hot = everyone reaches higher (early stars clear hot, late players go cheap)."><div class="muted small">Market heat</div><select id="im-heat" style="width:100%;">';
+    for (const [v, lbl] of [["cold", "Cold (bargains)"], ["normal", "Normal"], ["hot", "Hot (overpay)"]]) html += '<option value="' + v + '"' + (s.heat === v ? ' selected' : '') + '>' + lbl + '</option>';
+    html += '</select></label>';
+    html += '</div>';
     html += '</div>';
     return html;
   }
@@ -149,7 +162,15 @@ function renderInteractiveMock() {
     html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
   }
   html += '</select></label>';
-  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Draft-day clock on your turns"><input type="checkbox" id="im-timer-toggle"' + (s.useTimer ? ' checked' : '') + '> clock</label>';
+  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Draft-day clock on your turns">clock <select id="im-clock">';
+  for (const [v, lbl] of [["off", "Off"], ["8", "8s"], ["12", "12s"], ["20", "20s"]]) {
+    const sel = (v === "off" ? !s.useTimer : (s.useTimer && String(s.timerSecs) === v));
+    html += '<option value="' + v + '"' + (sel ? ' selected' : '') + '>' + lbl + '</option>';
+  }
+  html += '</select></label>';
+  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Hot vs cold room">heat <select id="im-heat">';
+  for (const [v, lbl] of [["cold", "Cold"], ["normal", "Normal"], ["hot", "Hot"]]) html += '<option value="' + v + '"' + (s.heat === v ? ' selected' : '') + '>' + lbl + '</option>';
+  html += '</select></label>';
   html += '<button class="btn ghost danger" id="interactive-stop">End Mock</button>';
   html += '</div></div></div>';
 
@@ -241,6 +262,15 @@ function renderInteractiveMock() {
       html += '<p class="small good" style="margin-top: 8px;">Highest bidder. AI is responding…</p>';
     } else {
       html += '<p class="small muted" style="margin-top: 8px;">You passed on this auction.</p>';
+    }
+    // Proxy / max-bid: let the engine bid for you up to a cap (set it anytime you
+    // haven't passed — works while you're leading too, so you don't babysit a target).
+    if (!iHavePassed) {
+      if (s.proxyMax != null) {
+        html += '<div class="small" style="margin-top:8px; display:flex; align-items:center; gap:8px;"><span class="good">Auto-bidding up to <strong>$' + s.proxyMax + '</strong></span><button class="btn ghost" id="im-proxy-cancel" style="width:auto; padding:2px 10px; font-size:11px;">Cancel</button></div>';
+      } else {
+        html += '<div class="small" style="margin-top:8px; display:flex; align-items:center; gap:6px;"><span class="muted">Auto-bid up to</span><input id="im-proxy" type="number" min="' + (s.currentBid + 1) + '" placeholder="$max" style="width:70px;"><button class="btn im-proxy-set" style="width:auto; padding:4px 10px; font-size:11px;">Set</button></div>';
+      }
     }
     html += '</div></div>';
     // Escalation ticker — the live "who bid what" feed for this lot.
@@ -578,6 +608,24 @@ function wireMockControls() {
     if (typeof setMockBidSpeed === "function") setMockBidSpeed(e.target.value);
     renderMock();
   });
+  document.getElementById("im-clock")?.addEventListener("change", (e) => {
+    if (typeof setMockClock === "function") setMockClock(e.target.value);
+    renderMock();
+  });
+  document.getElementById("im-nomslot")?.addEventListener("change", (e) => {
+    if (typeof setMockNomSlot === "function") setMockNomSlot(e.target.value);
+  });
+  document.getElementById("im-heat")?.addEventListener("change", (e) => {
+    if (typeof setMockHeat === "function") setMockHeat(e.target.value);
+    renderMock();
+  });
+  const setProxy = () => {
+    const v = parseInt(document.getElementById("im-proxy")?.value, 10);
+    if (typeof setProxyMax === "function") setProxyMax(v);
+  };
+  document.querySelector(".im-proxy-set")?.addEventListener("click", setProxy);
+  document.getElementById("im-proxy")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); setProxy(); } });
+  document.getElementById("im-proxy-cancel")?.addEventListener("click", () => { if (typeof setProxyMax === "function") setProxyMax(null); });
   document.getElementById("mock-board-toggle")?.addEventListener("click", () => {
     _mockState.boardExpanded = !_mockState.boardExpanded;
     renderMock();
