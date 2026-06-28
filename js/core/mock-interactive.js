@@ -25,7 +25,18 @@ const _interactive = {
   useTimer: true,    // draft-day countdown pressure when it's your turn to act
   timerSecs: 12,
   secondsLeft: 0,    // live countdown while waiting on the user
+  bidSpeed: "realistic", // "realistic" (staggered) | "fast" | "instant" — pacing of AI bids/nominations
 };
+
+// Pacing factor applied to every AI-churn / between-lot delay (NOT the draft
+// clock, which is real seconds). instant=0 (resolve on next tick), fast=0.4x.
+function _bidSpeedFactor() {
+  return _interactive.bidSpeed === "instant" ? 0 : _interactive.bidSpeed === "fast" ? 0.4 : 1;
+}
+function _d(base) { return Math.round(base * _bidSpeedFactor()); }
+function setMockBidSpeed(speed) {
+  if (["realistic", "fast", "instant"].includes(speed)) { _interactive.bidSpeed = speed; _fireChange(); }
+}
 
 // Schedule a callback that only runs if the mock is still on the SAME generation
 // and active — so a stopped/restarted/backgrounded mock can't keep mutating
@@ -97,7 +108,7 @@ function _advanceToNominatingTeam() {
       _fireChange();
       // If it's an AI team's turn, auto-nominate
       if (!_interactive.states[id].isMe) {
-        _later(() => _aiAutoNominate(id), 400);
+        _later(() => _aiAutoNominate(id), _d(400));
       }
       return;
     }
@@ -159,7 +170,7 @@ function _startAuction(player, nominatorId, opening) {
   _interactive.bidLog = [{ owner: nom ? (nom.isMe ? "You" : nom.ownerName) : "—", bid: opening, mine: !!(nom && nom.isMe) }];
   _fireChange();
   // AI gets first crack at responding (one step at a time, so the price climbs visibly).
-  _later(() => _runAiBidsUntilUserTurn(), 450);
+  _later(() => _runAiBidsUntilUserTurn(), _d(450));
 }
 
 // ----- draft-day countdown -----
@@ -256,7 +267,7 @@ function _runAiBidsUntilUserTurn() {
   // Snappier once the user has bowed out (they're just watching price discovery);
   // a touch slower while the user is still the high bidder and could be re-engaged.
   const delay = _interactive.passedTeams.has(me?.id) ? 150 : 550;
-  _later(() => _runAiBidsUntilUserTurn(), delay);
+  _later(() => _runAiBidsUntilUserTurn(), _d(delay));
 }
 
 // Hand the user the decision — but if they literally can't outbid the current
@@ -267,7 +278,7 @@ function _giveUserTheClock() {
   const st = me ? _interactive.states[me.id] : null;
   const myMax = st ? (st.budget - Math.max(0, st.slotsRemaining - 1)) : 0;
   if (!st || st.slotsRemaining <= 0 || myMax <= _interactive.currentBid) {
-    _later(() => userPass(), 180);   // priced out / roster full -> auto-pass
+    _later(() => userPass(), _d(180));   // priced out / roster full -> auto-pass
     return;
   }
   _startMockTimer();
@@ -291,7 +302,7 @@ function userBid(amount) {
   _interactive.bidLog.push({ owner: "You", bid, mine: true });
   if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
   _fireChange();
-  _later(() => _runAiBidsUntilUserTurn(), 450);
+  _later(() => _runAiBidsUntilUserTurn(), _d(450));
   return { ok: true };
 }
 
@@ -303,7 +314,7 @@ function userPass() {
   _clearMockTimer();
   _interactive.passedTeams.add(me.id);
   _fireChange();
-  _later(() => _runAiBidsUntilUserTurn(), 350);
+  _later(() => _runAiBidsUntilUserTurn(), _d(350));
 }
 
 function _completeSale() {
@@ -330,7 +341,7 @@ function _completeSale() {
     _interactive.inflation = inflationForMockState(_interactive.states);
     _fireChange();
     _interactive.currentNominator++;
-    _later(() => _advanceToNominatingTeam(), 500);
+    _later(() => _advanceToNominatingTeam(), _d(500));
     return;
   }
 
@@ -367,9 +378,9 @@ function _completeSale() {
   _interactive.phase = "sold";
   _interactive.inflation = inflationForMockState(_interactive.states);
   _fireChange();
-  // Advance to next nominator
+  // Advance to next nominator (a beat on the SOLD banner before the next lot).
   _interactive.currentNominator++;
-  _later(() => _advanceToNominatingTeam(), 700);
+  _later(() => _advanceToNominatingTeam(), _d(700));
 }
 
 // Interactive inflation now uses the shared inflationForMockState() so the

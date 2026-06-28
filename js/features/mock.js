@@ -120,7 +120,14 @@ function renderInteractiveMock() {
     html += '<div class="card"><h3>Start a Live Mock</h3>';
     html += '<p class="muted small">You\'ll nominate when it\'s your turn (random order). For other teams, the AI uses each owner\'s historical tendency profile to bid. Press start when ready.</p>';
     html += '<button class="btn primary" id="interactive-start" style="width:auto; padding: 10px 22px;">Start Interactive Mock</button>';
-    html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:12px;" title="A 12-second clock runs when it\'s your turn to act; time out = auto-pass. Adds real draft-day pressure.">';
+    html += '<div style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:14px;" title="How fast the AI bids and the draft advances. Realistic = watch the price climb; Instant = jumps straight to the result.">';
+    html += '<span class="muted">Bid speed</span>';
+    html += '<select id="im-bidspeed">';
+    for (const [v, lbl] of [["realistic", "Realistic (staggered)"], ["fast", "Fast"], ["instant", "Instant"]]) {
+      html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
+    }
+    html += '</select></div>';
+    html += '<label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-top:10px;" title="A clock runs when it\'s your turn to act; time out = auto-pass. Adds real draft-day pressure.">';
     html += '<input type="checkbox" id="im-timer-toggle"' + (s.useTimer ? ' checked' : '') + '> Draft-day clock (' + s.timerSecs + 's to act, auto-pass on timeout)</label>';
     html += '</div>';
     return html;
@@ -136,8 +143,15 @@ function renderInteractiveMock() {
   html += '<div class="card" style="border-color: rgba(79,142,247,.4);">';
   html += '<div style="display: flex; justify-content: space-between; align-items: center;">';
   html += '<h2 style="margin: 0;">Live Mock <span class="muted small">· ' + s.picks.length + ' picks done</span></h2>';
+  html += '<div style="display:flex; align-items:center; gap:10px;">';
+  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Pacing of AI bids / draft advance">speed <select id="im-bidspeed">';
+  for (const [v, lbl] of [["realistic", "Realistic"], ["fast", "Fast"], ["instant", "Instant"]]) {
+    html += '<option value="' + v + '"' + (s.bidSpeed === v ? ' selected' : '') + '>' + lbl + '</option>';
+  }
+  html += '</select></label>';
+  html += '<label style="display:flex; align-items:center; gap:5px; font-size:12px;" class="muted" title="Draft-day clock on your turns"><input type="checkbox" id="im-timer-toggle"' + (s.useTimer ? ' checked' : '') + '> clock</label>';
   html += '<button class="btn ghost danger" id="interactive-stop">End Mock</button>';
-  html += '</div></div>';
+  html += '</div></div></div>';
 
   // === Phase: nominating ===
   if (s.phase === "nominating") {
@@ -558,6 +572,10 @@ function wireMockControls() {
   document.getElementById("im-pass")?.addEventListener("click", () => userPass());
   document.getElementById("im-timer-toggle")?.addEventListener("change", (e) => {
     if (typeof setMockTimerEnabled === "function") setMockTimerEnabled(e.target.checked);
+    renderMock();
+  });
+  document.getElementById("im-bidspeed")?.addEventListener("change", (e) => {
+    if (typeof setMockBidSpeed === "function") setMockBidSpeed(e.target.value);
     renderMock();
   });
   document.getElementById("mock-board-toggle")?.addEventListener("click", () => {
