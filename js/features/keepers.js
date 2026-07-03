@@ -133,13 +133,9 @@ function _teamCandidates(team, source) {
     const cost = o.cost == null ? 0 : o.cost;
     const myPicked = (typeof isMyKeeper === "function") && isMyKeeper(team.id, name);
     const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, name);
-    let predValue = _keeperPredValue(name, type, source);
-    // Minor leaguers / callups rarely have an auction projection — fall back to
-    // Jeff's ETA-discounted dynasty $ so the MiL slots are rankable, not blank.
-    if (predValue == null && (o.kind === "minor" || o.kind === "callup") &&
-        typeof prospectPresentValue === "function") {
-      predValue = prospectPresentValue(name);
-    }
+    // Prospects use the same projected $ (ROS / next-year) as everyone else;
+    // it's just null for players the projection source doesn't cover yet.
+    const predValue = _keeperPredValue(name, type, source);
     const surplus = predValue != null ? predValue - cost : null;            // Pred $ − Cost
     const contractExpired = !!(o.contract && !o.contract.canKeepNextSeason); // used all keeper years
     const eligible = !contractExpired && !myIneligible;
@@ -233,7 +229,7 @@ function renderKeepers() {
 
   // === Controls ===
   let html = '<div class="card"><h2>Keepers by Team</h2>';
-  html += '<p class="muted small"><b>Surplus</b> = Predicted $ − Cost. <b>Value</b> = Predicted $ − (Cost ÷ Inflation) — so Value = Surplus only while Inflation is 1.00, and exceeds it as you check keepers. Expired players sink to the bottom and can’t be checked. <b>Minor-leaguers</b> have no auction projection, so type a <b>dynasty $</b> estimate and <b>ETA</b> (years to MLB) in the Pred $ column — the ETA-discounted value ranks them alongside your ML keepers.</p>';
+  html += '<p class="muted small"><b>Surplus</b> = Predicted $ − Cost. <b>Value</b> = Predicted $ − (Cost ÷ Inflation) — so Value = Surplus only while Inflation is 1.00, and exceeds it as you check keepers. Expired players sink to the bottom and can’t be checked. <b>Minor-leaguers</b> are valued at their projected ROS/next-year $ when the projection source covers them (else “no proj”); since their cost is $0, that projected $ is their full surplus.</p>';
   html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:8px;">';
 
   // Projection source
@@ -382,8 +378,13 @@ function renderKeepers() {
       // Cost
       html += '<td class="num">' + (r.isMinor ? '<span class="dim">$0</span>' : (r.costMissing ? '<span class="dim" title="No draft record — assumed">$' + r.cost + '?</span>' : '$' + r.cost)) + '</td>';
 
-      // Predicted $  (editable dynasty $ + ETA for prospects)
-      html += _predCell(t.id, r);
+      // Predicted $ — projected ROS/next-year auction value. Minors that the
+      // projection source doesn't cover yet read "no proj" (dim) rather than —.
+      html += '<td class="num">' + (r.predValue != null
+        ? '$' + r.predValue.toFixed(0)
+        : (r.isMinor || r.kind === "callup"
+            ? '<span class="dim" title="No projection for this prospect in the selected source yet">no proj</span>'
+            : '<span class="dim">—</span>')) + '</td>';
 
       // Surplus = Predicted $ − Cost
       const sp = r.surplus;
@@ -413,26 +414,6 @@ function renderKeepers() {
   updateInflationBadge();
 
   _wireKeepers();
-}
-
-// Predicted-$ cell. For ML players it's the auction projection. For MiL/callup
-// prospects (which have no projection) it's an inline editor: your dynasty-$
-// estimate + years-to-MLB (ETA), with the ETA-discounted present value shown
-// beneath. That present value flows into Surplus/Value so MiL keepers rank.
-function _predCell(teamId, r) {
-  if (r.kind === "minor" || r.kind === "callup") {
-    const pv = (typeof getProspectValue === "function") ? getProspectValue(r.name) : null;
-    const dyn = pv && pv.dyn > 0 ? pv.dyn : "";
-    const eta = pv && pv.eta > 0 ? pv.eta : "";
-    const present = r.predValue != null ? '$' + r.predValue.toFixed(0) : '—';
-    const tid = esc(teamId), pn = esc(r.name);
-    return '<td class="num" title="Your dynasty-$ estimate and years-to-MLB (ETA). Value = dynasty $ discounted ~18% per extra year to arrival.">' +
-      '$<input type="number" class="kp-dyn" data-team="' + tid + '" data-player="' + pn + '" value="' + dyn + '" min="0" step="1" placeholder="dyn" style="width:44px;"> ' +
-      '<span class="dim" style="font-size:10px;">ETA</span> ' +
-      '<input type="number" class="kp-eta" data-team="' + tid + '" data-player="' + pn + '" value="' + eta + '" min="1" max="6" step="1" placeholder="1" style="width:30px;">' +
-      '<div class="dim" style="font-size:10px;">= ' + present + '</div></td>';
-  }
-  return '<td class="num">' + (r.predValue != null ? '$' + r.predValue.toFixed(0) : '<span class="dim">—</span>') + '</td>';
 }
 
 // Eligibility cell: contract status badge + a manual "ineligible" toggle for
@@ -467,17 +448,6 @@ function _wireKeepers() {
       e.preventDefault();
       const cur = isMyIneligible(el.dataset.team, el.dataset.player);
       setMyIneligible(el.dataset.team, el.dataset.player, !cur);
-      renderKeepers();
-    });
-  });
-  // Prospect dynasty-$ / ETA inputs (MiL keeper rows). Fire on change (blur/enter)
-  // so re-render doesn't steal keystrokes; both inputs live in the same cell.
-  document.querySelectorAll(".kp-dyn, .kp-eta").forEach(el => {
-    el.addEventListener("change", () => {
-      const td = el.closest("td");
-      const dynEl = td && td.querySelector(".kp-dyn");
-      const etaEl = td && td.querySelector(".kp-eta");
-      setProspectValue(el.dataset.player, dynEl ? dynEl.value : "", etaEl ? etaEl.value : "");
       renderKeepers();
     });
   });

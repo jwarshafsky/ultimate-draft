@@ -96,50 +96,6 @@ function getEffectiveKeeperSelections() {
   return out;
 }
 
-// --- Prospect / dynasty values for minor-league keepers ---------------------
-// MiL prospects have no auction projection, so the 8 ML keeper slots showed a
-// Value and the 10 MiL slots showed nothing. Here Jeff assigns a dynasty-$
-// estimate (his own read) plus an optional ETA (years to MLB); present value
-// discounts the dynasty $ for time-to-arrival, so MiL keepers become rankable
-// like ML keepers. Keyed by player name — a prospect's value is the same on any
-// roster.
-
-const PROSPECTS_KEY = "ud_prospect_values_v1";
-const _prospects = {};                 // { [name]: { dyn: number, eta: number } }
-const PROSPECT_ETA_DISCOUNT = 0.82;    // value retained per extra year to MLB
-
-function loadProspectValues() {
-  try {
-    const v = JSON.parse(localStorage.getItem(PROSPECTS_KEY) || "null");
-    if (v && typeof v === "object") for (const k in v) _prospects[k] = v[k];
-  } catch (e) { /* ignore */ }
-}
-
-function getProspectValue(name) {
-  const p = _prospects[name];
-  return (p && (p.dyn > 0 || p.eta > 0)) ? p : null;
-}
-
-// Dynasty $ discounted for ETA (years to MLB). ETA 1 (or unset) = full value;
-// each additional year multiplies by PROSPECT_ETA_DISCOUNT. Null if no estimate.
-function prospectPresentValue(name) {
-  const p = _prospects[name];
-  if (!p || !(p.dyn > 0)) return null;
-  const eta = p.eta > 0 ? p.eta : 1;
-  return p.dyn * Math.pow(PROSPECT_ETA_DISCOUNT, Math.max(0, eta - 1));
-}
-
-function setProspectValue(name, dyn, eta) {
-  if (!name) return;
-  const d = Number(dyn), e = Number(eta);
-  const entry = {};
-  if (isFinite(d) && d > 0) entry.dyn = d;
-  if (isFinite(e) && e > 0) entry.eta = e;
-  if (entry.dyn || entry.eta) _prospects[name] = entry;
-  else delete _prospects[name];
-  localStorage.setItem(PROSPECTS_KEY, JSON.stringify(_prospects));
-}
-
 // --- Projection-source preference (keepers page) ---
 
 function getKeeperProjSource() { return _myKeepersSource; }
@@ -153,4 +109,3 @@ function setKeeperProjSource(sourceId) {
 }
 
 loadMyKeepers();
-loadProspectValues();
