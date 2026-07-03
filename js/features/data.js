@@ -13,13 +13,23 @@ function renderData() {
 
   // Status block — per-source stat + dollar coverage.
   html += '<div class="card"><h2>Data Status</h2>';
-  html += '<table><thead><tr><th>Source</th><th class="num">Stat projections (H / P)</th><th class="num">Dollar values (H / P)</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>Source</th><th class="num">Stat projections (H / P)</th><th class="num">Dollar values (H / P)</th><th>Data as of</th></tr></thead><tbody>';
   for (const s of ROS_SOURCES) {
     const c = getRosCounts(s.id);
     const dc = (typeof getRosDollarCounts === "function") ? getRosDollarCounts(s.id) : { hitters: 0, pitchers: 0 };
+    // "Data as of" = the projection's own date (manifest/import), NOT the last
+    // fetch time — a dead refresh job shows up here as a reddening date.
+    const upd = getRosUpdated(s.id);
+    const ageDays = upd ? Math.floor((Date.now() - new Date(upd + "T12:00:00").getTime()) / 86400000) : null;
+    const stale = ageDays != null && ageDays > 7;
+    const updTxt = upd
+      ? esc(upd) + (stale ? ' <span class="bad">(' + ageDays + 'd old)</span>' : '') +
+        (rosIsManual(s.id) ? ' <span class="muted">· manual</span>' : '')
+      : '<span class="muted">—</span>';
     html += '<tr><td>' + esc(s.label) + '</td>' +
       '<td class="num">' + c.hitters + ' / ' + c.pitchers + '</td>' +
-      '<td class="num">' + dc.hitters + ' / ' + dc.pitchers + '</td></tr>';
+      '<td class="num">' + dc.hitters + ' / ' + dc.pitchers + '</td>' +
+      '<td>' + updTxt + '</td></tr>';
   }
   html += '</tbody></table>';
   html += '<div class="grid cols-2" style="margin-top:10px;">';
@@ -178,8 +188,9 @@ function renderData() {
       if (!text) { alert("Open the link, copy the page, and paste it first."); return; }
       try {
         const count = importRosJSON(_dataRosSel, kind, text);
+        setRosManual(_dataRosSel, true);   // your paste overrides the live default
         if (ta) ta.value = "";
-        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + "." + rosImportWarning(kind, count));
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ". This source will no longer auto-update (your manual override). Use “Load latest projections” to switch back to live." + rosImportWarning(kind, count));
         renderData();
       } catch (e) { alert(e.message || String(e)); }
     });
@@ -195,7 +206,8 @@ function renderData() {
       reader.onload = () => {
         try {
           const count = importRosJSON(_dataRosSel, kind, String(reader.result));
-          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + "." + rosImportWarning(kind, count));
+          setRosManual(_dataRosSel, true);   // your upload overrides the live default
+          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ". Manual override set; use “Load latest projections” to switch back to live." + rosImportWarning(kind, count));
           renderData();
         } catch (e) { alert(e.message || String(e)); }
       };

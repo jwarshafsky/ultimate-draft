@@ -6,7 +6,7 @@
   --border: #2a3340;
   --text: #e6edf3;
   --text-2: #9aa6b2;
-  --text-3: #6b7785;
+  --text-3: #7f8b98; /* ≥5:1 on --bg at the 11px sizes it's used for */
   --accent: #4f8ef7;
   --accent-2: #2f6fe0;
   --good: #3fb950;

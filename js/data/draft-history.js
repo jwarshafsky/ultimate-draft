@@ -227,11 +227,22 @@ function getUpcomingDraftYear() {
 //   1. Manual override in keeper_price_exceptions (most authoritative)
 //   2. Most recent year's pick price + $2 × (upcoming year - that year)
 // Returns null only if we have no record of this player anywhere.
+// Match history picks by NORMALIZED name — draft-history names come from ESPN
+// while callers pass League App / FanGraphs names, and accent or suffix drift
+// ("José Ramírez", "Acuña Jr.") would otherwise miss and fall into guesses.
+function _historyPicksFor(playerName) {
+  const key = normalizePlayerName(playerName);
+  return _history.picks.filter(p => {
+    if (p._norm === undefined) p._norm = normalizePlayerName(p.player);
+    return p._norm === key;
+  });
+}
+
 function getCurrentKeeperSalary(playerName) {
   if (!playerName) return null;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
   if (exc[playerName] != null) return exc[playerName];
-  const allOfPlayer = _history.picks.filter(p => p.player === playerName).sort((a, b) => b.year - a.year);
+  const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
   if (!allOfPlayer.length) {
     // No draft history — assume FAAB pickup. Per league constitution, FAAB
     // pickups keep at $6 first keepable year, +$2/year after. Most likely
@@ -253,7 +264,7 @@ function isKeeperSalaryEstimated(playerName) {
   if (!playerName) return false;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
   if (exc[playerName] != null) return false;
-  const allOfPlayer = _history.picks.filter(p => p.player === playerName).sort((a, b) => b.year - a.year);
+  const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
   if (!allOfPlayer.length) return false;
   const upcomingYear = getUpcomingDraftYear();
   const mostRecent = allOfPlayer[0];
@@ -280,9 +291,7 @@ function _maxKeepYears(originalPrice, fromMinors) {
 // have no draft record (e.g. a recent FA pickup never seen in an auction).
 function getKeeperContractStatus(playerName) {
   if (!playerName) return { known: false, canKeepNextSeason: true, status: "unknown", label: "no record" };
-  const picks = _history.picks
-    .filter(p => p.player === playerName)
-    .sort((a, b) => a.year - b.year);
+  const picks = _historyPicksFor(playerName).sort((a, b) => a.year - b.year);
   if (!picks.length) {
     return { known: false, canKeepNextSeason: true, status: "unknown", label: "no record",
       yearsKept: null, yearsRemaining: null, originalPrice: null };

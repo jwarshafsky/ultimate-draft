@@ -80,11 +80,12 @@ async function loadLeagueData() {
     ]);
 
     // Surface any errors but continue with whatever loaded.
+    let tableErrors = 0;
     for (const [label, r] of [
       ["keeper_selections", ks], ["callup_overrides", co],
       ["league_state", ls], ["trades", tr], ["roster_moves", rm],
     ]) {
-      if (r.error) console.warn(label + ":", r.error.message);
+      if (r.error) { tableErrors++; console.warn(label + ":", r.error.message); }
     }
 
     _data.keeperSelections = {};
@@ -116,9 +117,12 @@ async function loadLeagueData() {
     _data.rosterMoves = rm.data || [];
     _data.loaded = true;
     _data.error = null;
-    setStatus("supabase", "ok (" +
-      Object.values(_data.keeperSelections).reduce((n, t) => n + Object.keys(t).length, 0) +
-      " selections)", "ok");
+    const nSel = Object.values(_data.keeperSelections).reduce((n, t) => n + Object.keys(t).length, 0);
+    if (tableErrors) {
+      setStatus("supabase", nSel + " selections, " + tableErrors + " table error" + (tableErrors > 1 ? "s" : ""), "bad");
+    } else {
+      setStatus("supabase", "ok (" + nSel + " selections)", "ok");
+    }
   } catch (e) {
     _data.error = e.message || String(e);
     setStatus("supabase", "error", "bad");
@@ -138,7 +142,14 @@ function subscribeRealtime() {
     .on("postgres_changes", { event: "*", schema: "public", table: "callup_overrides" }, loadLeagueData)
     .on("postgres_changes", { event: "*", schema: "public", table: "league_state" }, loadLeagueData)
     .on("postgres_changes", { event: "*", schema: "public", table: "roster_moves" }, loadLeagueData)
-    .subscribe();
+    .subscribe((status) => {
+      // Realtime dying means the UI silently stops tracking The League App —
+      // flag it in the status bar instead of pretending everything is fine.
+      if (!_realtimeChannel) return;   // deliberate unsubscribe (sign-out)
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        setStatus("supabase", "live sync lost — reload to reconnect", "warn");
+      }
+    });
 }
 
 function unsubscribeRealtime() {

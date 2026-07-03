@@ -23,6 +23,8 @@ const VIEWS = {
 function switchView(name) {
   if (!VIEWS[name]) name = "overview";
   currentView = name;
+  // Keep the tab in the URL so a reload lands where you were.
+  if (("#" + name) !== location.hash) history.replaceState(null, "", "#" + name);
   document.querySelectorAll(".tab").forEach(t => {
     t.classList.toggle("active", t.dataset.view === name);
   });
@@ -36,9 +38,21 @@ function switchView(name) {
   }
 }
 
+// Coalesce data-driven rerenders through one animation frame so the startup
+// loaders (league data, projections, draft dollars) don't each rebuild the view.
+let _rerenderQueued = false;
 function rerender() {
   if (!dataReady()) return;
-  switchView(currentView);
+  if (_rerenderQueued) return;
+  _rerenderQueued = true;
+  requestAnimationFrame(() => {
+    _rerenderQueued = false;
+    // Don't clobber an in-progress paste/import on the Data tab.
+    const ae = document.activeElement;
+    if (currentView === "data" && ae && ae.closest("#view-root") &&
+        (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT")) return;
+    switchView(currentView);
+  });
 }
 
 function initApp() {
@@ -65,6 +79,9 @@ function initApp() {
       app.hidden = false;
       const sub = document.getElementById("brand-sub");
       sub.textContent = "· " + (user.email.split("@")[0]);
+      // Land on the tab from the URL hash (survives reloads).
+      const hashView = (location.hash || "").slice(1);
+      if (VIEWS[hashView]) currentView = hashView;
       // Kick off data load and realtime subscriptions.
       loadLeagueData();
       subscribeRealtime();
@@ -86,12 +103,16 @@ function initApp() {
   // Auto-populate live ROS projections (hosted, auto-refreshed) as the default,
   // unless the user has manually overridden a source. Same-origin, no auth.
   if (typeof autoloadHostedRos === "function") {
-    autoloadHostedRos().then((changed) => { if (changed) rerender(); }).catch(() => {});
+    autoloadHostedRos().then((changed) => { if (changed) rerender(); }).catch(() => {
+      setStatus("projections", "live autoload failed", "warn");
+    });
   }
 
   // Pull traded draft-dollar adjustments from the published sheet.
   if (typeof loadDraftDollars === "function") {
-    loadDraftDollars().then(() => rerender()).catch(() => {});
+    loadDraftDollars().then(() => rerender()).catch(() => {
+      console.warn("draft-dollar sheet load failed");
+    });
   }
 }
 

@@ -18,8 +18,10 @@ const _standings = {
   rosSource: null,   // selected ROS source id
   loading: false,
   error: null,
+  autoLoaded: false, // ESPN pull auto-fired once on first view this session
   faPool: null,      // normalized free-agent list (YTD lines) for what-if "add"
   whatIf: { add: null, dropName: null },
+  whatIfSim: { key: null, pBefore: 0, pAfter: 0 },  // memoized what-if title-odds sims
   whatIfTab: "addrop",                       // "addrop" | "trade" | "pickups"
   trade: { partner: null, send: [], recv: [] },
   pickups: null,                             // cached best-pickups result
@@ -114,6 +116,7 @@ function recomputeStandings() {
   _standings.odds = simulateTitleOdds(built.rosters, { sims: 3000, fracRemaining: seasonFractionRemaining() });
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
   _standings.tradeFinder.results = null;   // and trade-finder results
+  _standings.whatIfSim.key = null;         // and the memoized what-if sims
 }
 
 // --- Optimal lineup -----------------------------------------------------
@@ -386,6 +389,14 @@ function seasonFractionRemaining() {
 function renderStandings() {
   const root = document.getElementById("view-root");
   if (!root) return;
+  // Pull live rosters automatically the first time the tab is viewed (same as
+  // the Keepers tab) instead of greeting every session with an empty prompt.
+  if (!_standings.autoLoaded && !_standings.ytd && !_standings.loading &&
+      !_standings.error && ESPN.proxyUrl) {
+    _standings.autoLoaded = true;
+    loadStandingsData();
+    return;   // loadStandingsData re-renders immediately with the loading state
+  }
   const me = getMyTeam();
   // Make sure a ROS source is selected whenever any are imported.
   if (!_standings.rosSource) _standings.rosSource = firstLoadedRosSource();
@@ -461,8 +472,13 @@ function renderStandings() {
     if (me && _standings.mode !== "current") html += renderWhatIfCard(me.id);
   }
 
+  // Preserve scroll across the innerHTML swap — this is the tallest view in
+  // the app and every toggle used to snap back to the top.
+  const sy = window.scrollY, st = root.scrollTop;
   root.innerHTML = html;
   wireStandings();
+  root.scrollTop = st;
+  window.scrollTo(0, sy);
 }
 
 function renderTitleOddsCard(computed, odds, myId) {
@@ -987,9 +1003,19 @@ function renderAddDropPanel(myId) {
     const after = computeStandings(afterLines);
     const afterMe = after.teams.find(t => t.teamId === myId);
     const d = { rotoPoints: afterMe.rotoPoints - beforeMe.rotoPoints, place: beforeMe.place - afterMe.place };
-    const frac = seasonFractionRemaining();
-    const pBefore = simulateTitleOdds(_standings.built, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
-    const pAfter = simulateTitleOdds(afterLines, { sims: 1500, fracRemaining: frac }).byTeam[myId]?.pFirst || 0;
+    // Title-odds sims are expensive — memoize per move so unrelated re-renders
+    // (filters, toggles) don't re-run thousands of simulated seasons. "Before"
+    // reuses the base 3000-sim run from recomputeStandings.
+    const simKey = (_standings.whatIf.dropName || "") + "|" + (_standings.whatIf.add?.name || "");
+    if (_standings.whatIfSim.key !== simKey) {
+      _standings.whatIfSim = {
+        key: simKey,
+        pBefore: _standings.odds?.byTeam[myId]?.pFirst || 0,
+        pAfter: simulateTitleOdds(afterLines, { sims: 1500, fracRemaining: seasonFractionRemaining() }).byTeam[myId]?.pFirst || 0,
+      };
+    }
+    const pBefore = _standings.whatIfSim.pBefore;
+    const pAfter = _standings.whatIfSim.pAfter;
 
     html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
     const moveTxt = [];

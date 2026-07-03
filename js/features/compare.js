@@ -31,7 +31,7 @@ function renderCompare() {
 
   // Picker
   html += '<div class="card"><h2>Player Comparison</h2>';
-  html += '<p class="muted small">Pin up to 3 players side-by-side. Search or click ▶ in any player table to add.</p>';
+  html += '<p class="muted small">Pin up to 3 players side-by-side — search a name to add.</p>';
   html += '<div style="display: flex; gap: 8px; align-items: center;">';
   html += '<input id="cmp-search" placeholder="Search player to add..." style="flex: 1;" list="cmp-options">';
   html += '<datalist id="cmp-options">';

@@ -14,11 +14,20 @@ import csv, json, os, sys, time, urllib.request
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "projections")
 
 # source id -> (label, [candidate FanGraphs type slugs, tried in order])
+# NOTE: every slug here must be a REST-OF-SEASON feed. Plain "atc" is the
+# full-season projection — mid-season it's ~2x every remaining stat line, so it
+# must never be a fallback. In-season ATC is published as "ATC DC (RoS)" →
+# slug ratcdc (verified; keep in sync with FG_API_SLUG in js/data/ros-projections.js).
 SOURCES = {
     "steamer_ros": ("Steamer ROS", ["steamerr"]),
     "batx_ros":    ("THE BAT X ROS", ["rthebatx"]),
-    "atc_ros":     ("ATC ROS", ["atcr", "ratc", "atc"]),
+    "atc_ros":     ("ATC ROS", ["ratcdc"]),
 }
+
+# A complete FanGraphs ROS list has well over this many rows; fewer means a
+# truncated/filtered feed we should not publish (mirrors ROS_MIN_EXPECTED in
+# js/data/ros-projections.js).
+MIN_ROWS = {"bat": 700, "pit": 450}
 
 HEADERS = {
     "accept": "application/json, text/plain, */*",
@@ -86,11 +95,17 @@ def main():
         for slug in slugs:
             sys.stderr.write("Fetching %s via type=%s ...\n" % (label, slug))
             bat = fetch(slug, "bat")
-            if not bat:
+            if not bat or len(bat) < MIN_ROWS["bat"]:
+                if bat:
+                    sys.stderr.write("  rejected %s: only %d hitters (< %d)\n"
+                                     % (slug, len(bat), MIN_ROWS["bat"]))
                 continue
             time.sleep(6)   # be gentle between requests (avoid rate limits)
             pit = fetch(slug, "pit")
-            if not pit:
+            if not pit or len(pit) < MIN_ROWS["pit"]:
+                if pit:
+                    sys.stderr.write("  rejected %s: only %d pitchers (< %d)\n"
+                                     % (slug, len(pit), MIN_ROWS["pit"]))
                 continue
             used = slug
             break

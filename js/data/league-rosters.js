@@ -49,7 +49,12 @@ function _loadLeagueRostersFromCache() {
 // Fetch the latest data.js and parse it. Falls back to cache on failure.
 async function loadLeagueRosters(force) {
   if (_leagueRostersLoading) return _leagueRosters;
-  if (_leagueRosters && !force) return _leagueRosters;
+  // Serve the cache only while it's fresh (<12h) — contracts/rosters change
+  // after trades and callups, and the old behavior pinned a stale localStorage
+  // copy for the whole season unless the refresh button was pressed.
+  const freshMs = 12 * 3600 * 1000;
+  const fresh = _leagueRostersAt && (Date.now() - new Date(_leagueRostersAt).getTime()) < freshMs;
+  if (_leagueRosters && !force && fresh) return _leagueRosters;
   _leagueRostersLoading = true;
   try {
     const r = await fetch(LEAGUE_ROSTERS_URL, { cache: "no-store" });

@@ -73,7 +73,8 @@ function renderDraft() {
   const inflation = computeLiveInflation();
   const badge = document.getElementById("inflation-badge");
   if (inflation) {
-    badge.textContent = "infl " + inflation.multiplier.toFixed(2) + "x";
+    badge.textContent = "live infl " + inflation.multiplier.toFixed(2) + "×";
+    badge.title = "Live auction inflation — remaining budget vs. remaining player value, recomputed from the picks recorded so far.";
     badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
   }
   setStatus("draft", _liveDraft.picks.length + " picks", _liveDraft.picks.length > 0 ? "ok" : "");

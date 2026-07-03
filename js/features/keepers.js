@@ -61,7 +61,9 @@ function updateInflationBadge() {
   const badge = document.getElementById("inflation-badge");
   if (!badge) return;
   const inf = computeKeeperInflation();
-  badge.textContent = "infl " + inf.toFixed(2) + "x";
+  badge.textContent = "keeper infl " + inf.toFixed(2) + "×";
+  badge.title = "Auction prices should run ~" + Math.round((inf - 1) * 100) +
+    "% above sticker value because keepers lock up bargains — based on your Keepers-tab predictions.";
   badge.className = "badge " + (inf > 1.2 ? "hot" : inf < 1.0 ? "cold" : "");
 }
 
