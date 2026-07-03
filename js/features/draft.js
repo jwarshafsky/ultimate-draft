@@ -30,6 +30,70 @@ function getDraftedNames() {
   return new Set(_liveDraft.picks.map(p => p.player));
 }
 
+// Players still nominate-able: in the value pool, not drafted, not kept.
+// Sorted by value so the typeahead surfaces the best names first.
+function availableDraftPool() {
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const drafted = new Set(_liveDraft.picks.map(p => _nk(p.player)));
+  const kept = new Set(collectKeepers().map(k => _nk(k.name)));
+  return getValues()
+    .filter(p => !drafted.has(_nk(p.name)) && !kept.has(_nk(p.name)))
+    .slice()
+    .sort((a, b) => b.value - a.value);
+}
+
+// Small edit distance for typo suggestions ("Wander Franc" → "Wander Franco").
+function _nomEditDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+// Resolve a typed nomination against the projection pool. A pick recorded
+// under a name that isn't in the pool is a "ghost": its price counts as money
+// spent but no player value leaves the pool, so live inflation drifts wrong.
+// Returns { status: "ok"|"drafted"|"kept", name } or
+//         { status: "nomatch", suggestions: [player, ...] }.
+function _nomResolveName(typed) {
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const q = _nk(typed);
+  const values = getValues();
+  const drafted = new Set(_liveDraft.picks.map(p => _nk(p.player)));
+  const kept = new Set(collectKeepers().map(k => _nk(k.name)));
+
+  let match = values.find(p => _nk(p.name) === q);
+  if (!match && typeof coreNameKey === "function") {
+    const cq = coreNameKey(typed);
+    if (cq) match = values.find(p => coreNameKey(p.name) === cq);
+  }
+  if (match) {
+    if (drafted.has(_nk(match.name))) return { status: "drafted", name: match.name };
+    if (kept.has(_nk(match.name))) return { status: "kept", name: match.name };
+    return { status: "ok", name: match.name };
+  }
+
+  const avail = values.filter(p => !drafted.has(_nk(p.name)) && !kept.has(_nk(p.name)));
+  // Substring hits first (covers last-name-only entry), best value first.
+  let sugg = avail.filter(p => _nk(p.name).includes(q)).sort((a, b) => b.value - a.value);
+  if (!sugg.length) {
+    const maxD = q.length <= 5 ? 2 : 3;
+    sugg = avail
+      .map(p => ({ p, d: _nomEditDistance(q, _nk(p.name)) }))
+      .filter(x => x.d <= maxD)
+      .sort((a, b) => a.d - b.d)
+      .map(x => x.p);
+  }
+  return { status: "nomatch", suggestions: sugg.slice(0, 6) };
+}
+
 // Live inflation accounting for picks made so far.
 function computeLiveInflation() {
   const flat = computeFlatInflation();
@@ -200,6 +264,7 @@ function renderOnTheClockPanel() {
       html += '<option value="' + t.id + '"' + (t.id === _liveDraft.highBidder ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
     }
     html += '</select>';
+    html += '<div class="small" id="otc-maxbid-hint" style="margin-top: 4px;"></div>';
     html += '<div style="display: flex; gap: 6px; margin-top: 8px;">';
     html += '<button class="btn primary" id="otc-sold" style="width: auto; padding: 8px 14px;">SOLD</button>';
     html += '<button class="btn ghost" id="otc-cancel">Cancel</button>';
@@ -210,10 +275,17 @@ function renderOnTheClockPanel() {
     html += '<div class="otc-empty">';
     html += '<div class="otc-label">Nominate Player</div>';
     html += '<div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">';
-    html += '<input id="otc-nominate-name" placeholder="Player name…" style="flex: 1; min-width: 200px; font-size: 16px;">';
+    html += '<input id="otc-nominate-name" list="otc-nominate-list" placeholder="Player name…" autocomplete="off" style="flex: 1; min-width: 200px; font-size: 16px;">';
     html += '<input id="otc-nominate-open" type="number" placeholder="Opening $" value="1" style="width: 100px; font-size: 16px;">';
     html += '<button class="btn primary" id="otc-nominate" style="width: auto; padding: 10px 16px; font-size: 14px;">Nominate</button>';
     html += '</div>';
+    // Typeahead options: available (undrafted, unkept) players, best first.
+    html += '<datalist id="otc-nominate-list">';
+    for (const p of availableDraftPool().slice(0, 600)) {
+      html += '<option value="' + esc(p.name) + '">' + esc(p.posKey) + ' · $' + p.value.toFixed(0) + '</option>';
+    }
+    html += '</datalist>';
+    html += '<div id="otc-nominate-suggest"></div>';
     html += '<div class="muted small" style="margin-top: 8px;">Or use the player pool below to start the auction with one click.</div>';
     html += '</div>';
   }
@@ -356,12 +428,36 @@ function wireDraftHandlers() {
       startAuction(b.dataset.name, 1);
     });
   });
-  // Nominate via input
+  // Nominate via input — validated against the pool so a typo can't create a
+  // ghost player (which would corrupt live inflation).
   document.getElementById("otc-nominate")?.addEventListener("click", () => {
     const name = document.getElementById("otc-nominate-name").value.trim();
     const open = parseFloat(document.getElementById("otc-nominate-open").value) || 1;
     if (!name) { alert("Enter a player name."); return; }
-    startAuction(name, open);
+    const res = _nomResolveName(name);
+    if (res.status === "ok") { startAuction(res.name, open); return; }
+    if (res.status === "drafted") {
+      const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+      const pk = _liveDraft.picks.find(p => _nk(p.player) === _nk(res.name));
+      const who = pk ? (getTeam(pk.team)?.owner || pk.team) : "someone";
+      alert(res.name + " was already drafted by " + who + (pk ? " for $" + pk.price : "") + ".");
+      return;
+    }
+    if (res.status === "kept") { alert(res.name + " is a keeper — not in the draft pool."); return; }
+    renderNominateSuggestions(name, res.suggestions);
+  });
+  // Clicks on suggestion buttons (injected after a failed match).
+  document.getElementById("otc-nominate-suggest")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const open = parseFloat(document.getElementById("otc-nominate-open")?.value) || 1;
+    if (btn.dataset.pick) { startAuction(btn.dataset.pick, open); return; }
+    if (btn.dataset.force) {
+      const typed = btn.dataset.force;
+      if (confirm('"' + typed + '" is not in the player pool.\n\nRecording them anyway means their price counts as money spent but no projected value leaves the pool, so live inflation will read slightly low. Only do this for a real player who has no projection.\n\nNominate "' + typed + '" anyway?')) {
+        startAuction(typed, open);
+      }
+    }
   });
   document.getElementById("otc-nominate-name")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("otc-nominate").click();
@@ -372,14 +468,18 @@ function wireDraftHandlers() {
       const inc = parseInt(b.dataset.bidAdd, 10);
       _liveDraft.highBid = (_liveDraft.highBid || 0) + inc;
       document.getElementById("otc-price").value = _liveDraft.highBid;
+      updateOtcMaxBidHint();
     });
   });
-  document.getElementById("otc-price")?.addEventListener("change", (e) => {
+  document.getElementById("otc-price")?.addEventListener("input", (e) => {
     _liveDraft.highBid = parseInt(e.target.value, 10) || 0;
+    updateOtcMaxBidHint();
   });
   document.getElementById("otc-team")?.addEventListener("change", (e) => {
     _liveDraft.highBidder = e.target.value;
+    updateOtcMaxBidHint();
   });
+  updateOtcMaxBidHint();
   // Prominent draft controls
   document.getElementById("draft-undo")?.addEventListener("click", () => {
     if (_liveDraft.picks.length) { _liveDraft.picks.pop(); saveLiveDraft(); renderDraft(); }
@@ -429,6 +529,42 @@ function wireDraftHandlers() {
   wireAiPanel();
 }
 
+// Injected under the nominate input when the typed name matched nothing.
+function renderNominateSuggestions(typed, suggestions) {
+  const box = document.getElementById("otc-nominate-suggest");
+  if (!box) return;
+  let html = '<div style="margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn); background: rgba(210,153,34,.08);">';
+  html += '<b style="color: var(--warn);">No player named "' + esc(typed) + '" in the pool.</b>';
+  if (suggestions.length) {
+    html += '<div class="small muted" style="margin: 6px 0 4px;">Did you mean:</div>';
+    html += '<div style="display: flex; gap: 6px; flex-wrap: wrap;">';
+    for (const p of suggestions) {
+      html += '<button class="btn ghost" data-pick="' + esc(p.name) + '" style="padding: 4px 10px;">' + esc(p.name) + ' <span class="muted small">' + esc(p.posKey) + ' · $' + p.value.toFixed(0) + '</span></button>';
+    }
+    html += '</div>';
+  }
+  html += '<div style="margin-top: 8px;"><button class="btn ghost" data-force="' + esc(typed) + '" style="padding: 3px 10px; font-size: 11px;">Nominate "' + esc(typed) + '" anyway (no projection)</button></div>';
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+// Live "max bid" hint for the selected bidder, updated as the bid/team change.
+function updateOtcMaxBidHint() {
+  const el = document.getElementById("otc-maxbid-hint");
+  if (!el || typeof computeLiveTeamStates !== "function") return;
+  const team = document.getElementById("otc-team")?.value || _liveDraft.highBidder;
+  const st = computeLiveTeamStates()[team];
+  if (!st) { el.textContent = ""; return; }
+  const bid = _liveDraft.highBid || 0;
+  if (bid > st.maxBid) {
+    el.innerHTML = '⚠ Over ' + esc(st.ownerName) + "'s max bid of $" + st.maxBid + ' ($' + st.budget + ' left, ' + st.slotsRemaining + ' slot' + (st.slotsRemaining === 1 ? '' : 's') + ' to fill)';
+    el.style.color = "var(--bad)";
+  } else {
+    el.innerHTML = esc(st.ownerName) + ' max bid $' + st.maxBid + ' <span class="muted">($' + st.budget + ' · ' + st.slotsRemaining + ' slot' + (st.slotsRemaining === 1 ? '' : 's') + ')</span>';
+    el.style.color = "";
+  }
+}
+
 function startAuction(playerName, openBid) {
   const val = getPlayerValue(playerName);
   _liveDraft.current = { player: playerName, posKey: val?.posKey || null, value: val?.value || 0 };
@@ -443,6 +579,16 @@ function soldCurrent() {
   const price = _liveDraft.highBid || 1;
   const team = _liveDraft.highBidder || getMyTeam()?.id;
   if (!team) { alert("Select a team."); return; }
+  // Budget sanity check: warn (don't block) if this price is beyond what the
+  // winning team can actually bid — budget minus $1 reserved per open slot.
+  const st = (typeof computeLiveTeamStates === "function") ? computeLiveTeamStates()[team] : null;
+  if (st && price > st.maxBid) {
+    const owner = getTeam(team)?.owner || team;
+    const msg = st.slotsRemaining <= 0
+      ? owner + "'s roster is already full (keepers + picks = " + LEAGUE.rosterSize + " slots)."
+      : owner + " can only bid up to $" + st.maxBid + " — they have $" + st.budget + " left and " + st.slotsRemaining + " slot" + (st.slotsRemaining === 1 ? "" : "s") + " to fill at $1 minimum.";
+    if (!confirm(msg + "\n\nRecord " + c.player + " to " + owner + " for $" + price + " anyway?")) return;
+  }
   _liveDraft.picks.push({
     player: c.player,
     pos: c.posKey,
