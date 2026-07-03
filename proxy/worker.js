@@ -536,9 +536,9 @@ async function captureDraftSocket(url, env) {
   await new Promise((r) => setTimeout(r, seconds * 1000));
   try { ws.close(); } catch (_) {}
 
-  // 3) Best-effort decode each captured frame.
+  // 3) Decode each captured frame (ESPN's draft socket is a TEXT protocol).
   const decoded = frames.map((b, i) => decodeDraftFrame(b, i));
-  const picks = decoded.filter(d => d.type === 2 && d.pick).map(d => d.pick);
+  const picks = decoded.filter(d => d.pick).map(d => d.pick);
   return {
     ok: true,
     connected: true,
@@ -561,52 +561,31 @@ function _findKeys(obj, keys, out) {
 }
 function _redact(u) { return u.replace(/(&5=)[^&]+/, "$1<token>").replace(/(&4=)[^&]+/, "$1<swid>"); }
 
-// Faithful port of ESPN's frame reader (big-endian). Decodes one frame into a
-// type + the raw token stream, and — for PICK_MADE (2) — a best-effort pick.
+// ESPN's draft socket is a TEXT protocol (confirmed by live capture): each frame
+// is an ASCII string, space-delimited, first word = command. Observed commands:
+//   INIT <big blob>            full state on connect
+//   TOKEN 1:<n>:<team>:<swid>:<n>   auth/session handshake
+//   NOMINATION <teamId> <playerId>
+//   BID <teamId> <playerId> <n> <n> <n>
+//   PASSED <teamId> <playerId> <bool>
+//   SOLD <lot> <playerId> <teamId> <price> <flag>   ← a COMPLETED auction pick
+//   CLOCK <...>                timer ticks (the flood — ignored)
+// The client slices a trailing delimiter byte before parsing.
 function decodeDraftFrame(bytes, idx) {
-  // ESPN slices off the last byte (frame delimiter) before parsing.
-  const body = bytes.length > 1 ? bytes.subarray(0, bytes.length - 1) : bytes;
-  const hex = Array.from(bytes.subarray(0, 48)).map(x => x.toString(16).padStart(2, "0")).join(" ");
-  const r = new EspnReader(body);
-  let type = null;
-  try { type = r.readByte(); } catch (_) {}
-  // Emit a generic token stream so we can see the layout even if the exact
-  // field order is unknown. We greedily read ints, noting where strings appear.
-  const tokens = [];
-  try {
-    while (r.remaining() > 0 && tokens.length < 24) {
-      // Peek: if the next 2 bytes look like a plausible string length, read UTF.
-      const save = r.index;
-      const len = r.peekShort();
-      if (len > 0 && len < 40 && r.remaining() >= 2 + len) {
-        const s = r.readUTF();
-        if (/^[\x20-\x7e]+$/.test(s)) { tokens.push({ t: "utf", v: s }); continue; }
-        r.index = save;
-      }
-      tokens.push({ t: "int", v: r.readInt() });
-    }
-  } catch (_) {}
-  // Best-effort PICK_MADE map: ints observed in draft.js are pickNumber, teamId,
-  // playerId, bidAmount (+ autodraft flag). Real capture confirms the exact order.
-  let pick = null;
-  if (type === 2) {
-    const ints = tokens.filter(t => t.t === "int").map(t => t.v);
-    if (ints.length >= 3) {
-      pick = { _guessOrder: "pickNumber,teamId,playerId,bidAmount", ints,
-        strings: tokens.filter(t => t.t === "utf").map(t => t.v) };
-    }
-  }
-  return { idx, type, typeName: FRAME_TYPES[type] || ("?" + type), bytes: bytes.length, hex, tokens, pick };
-}
-const FRAME_TYPES = { 1: "MESSAGE", 2: "PICK_MADE", 3: "MEMBER_JOINED", 4: "MEMBER_LEFT", 5: "PICK_UNDONE" };
+  let text = "";
+  try { text = new TextDecoder("utf-8", { fatal: false }).decode(bytes); } catch (_) {}
+  text = text.replace(/[ -]+$/g, "").trim();   // strip trailing delimiter/control bytes
+  const parts = text.split(/\s+/);
+  const cmd = (parts[0] || "").toUpperCase();
+  const fields = parts.slice(1);
 
-class EspnReader {
-  constructor(bytes) { this.bytes = bytes; this.index = 0; }
-  remaining() { return this.bytes.length - this.index; }
-  readByte() { return this.bytes[this.index++]; }
-  _num(n) { let v = 0; for (let i = 0; i < n; i++) v = v * 256 + this.bytes[this.index++]; return v; }
-  readShort() { return this._num(2); }
-  peekShort() { return this.bytes[this.index] * 256 + this.bytes[this.index + 1]; }
-  readInt() { const e = this._num(4); return e > 0x7fffffff ? e - 0x100000000 : e; }  // signed
-  readUTF() { const len = this.readShort(); let s = ""; for (let i = 0; i < len; i++) s += String.fromCharCode(this.bytes[this.index++]); return s; }
+  // SOLD = completed auction pick. playerId (field 1) and price (field 3)
+  // positions are confirmed against BID frames for the same player; teamId is
+  // reported both ways (lot vs field 2) until confirmed against the draft board.
+  let pick = null;
+  if (cmd === "SOLD" && fields.length >= 4) {
+    const n = fields.map(x => Number(x));
+    pick = { lot: n[0], playerId: n[1], teamId: n[2], price: n[3], flag: n[4], raw: fields };
+  }
+  return { idx, cmd, text: text.slice(0, 200), fields, bytes: bytes.length, isPick: cmd === "SOLD", pick };
 }

@@ -131,16 +131,23 @@ async function captureOnce(){
       if(data.bodySample) log(`        handshake body: ${data.bodySample}`,"mut");
       return;
     }
-    setStatus(`<span class="good">SOCKET connected=${data.connected}</span> · gameId ${data.gameId} · ${data.frameCount} frames · ${data.picksDecoded} PICK_MADE · run #${sockRuns}`);
-    log(`[${stamp()}] ✓ connected — ${data.frameCount} frames this window (${data.picksDecoded} PICK_MADE)`, data.frameCount? "new":"mut");
+    setStatus(`<span class="good">SOCKET connected=${data.connected}</span> · gameId ${data.gameId} · ${data.frameCount} frames · ${data.picksDecoded} SOLD picks · run #${sockRuns}`);
+    log(`[${stamp()}] ✓ connected — ${data.frameCount} frames (${data.picksDecoded} SOLD picks)`, data.frameCount? "new":"mut");
+    // Show decoded frame text. CLOCK ticks are the flood — collapse them.
+    let clockCount = 0;
     (data.frames||[]).forEach(f=>{
-      const tok = (f.tokens||[]).map(t=> t.t==="utf"?`"${t.v}"`:t.v).join(", ");
-      const cls = f.type===2?"new":"mut";
-      log(`        frame#${f.idx} type=${f.typeName}(${f.type}) ${f.bytes}B  tokens[${tok}]`, cls);
-      if(f.type===2) log(`             hex: ${f.hex}`, "new");
+      if(f.cmd==="CLOCK"){ clockCount++; return; }
+      const cls = f.cmd==="SOLD" ? "new" : "mut";
+      log(`        ${f.cmd==="SOLD"?"🟢 ":""}${f.text}`, cls);
     });
-    // Track unique decoded picks across runs
-    (data.picks||[]).forEach(p=>{ const k=JSON.stringify(p.ints); if(!sockPicks.has(k)){ sockPicks.set(k,p); log(`        🟢 PICK_MADE ints=[${p.ints.join(", ")}] strings=[${(p.strings||[]).join(", ")}]`,"new"); }});
+    if(clockCount) log(`        (…${clockCount} CLOCK timer ticks hidden)`, "mut");
+    // Track unique completed picks (SOLD) across runs.
+    (data.picks||[]).forEach(p=>{
+      const k = `${p.playerId}@${p.lot}`;
+      if(!sockPicks.has(k)){ sockPicks.set(k,p);
+        log(`        ✅ PICK: player ${p.playerId} → team ${p.teamId} for $${p.price}   (raw: SOLD ${p.raw.join(" ")})`, "new");
+      }
+    });
   } catch(e){ log(`[${stamp()}] socket fetch failed: ${e.message}`,"bad"); setStatus(`<span class="bad">socket fetch failed</span>`); }
 }
 $("sockstart").onclick = () => { if(sockTimer)return; sockRuns=0; sockPicks=new Map(); log("📡 SOCKET capture — connects to ESPN's live draft socket every ~10s. Start/continue your draft now.","mut"); $("sockstart").disabled=true; $("sockstop").disabled=false; captureOnce(); sockTimer=setInterval(captureOnce, 10000); };
