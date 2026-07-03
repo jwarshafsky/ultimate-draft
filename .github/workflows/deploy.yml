@@ -1,0 +1,61 @@
+name: Deploy to GitHub Pages
+
+# Replaces the legacy "deploy from a branch" path so we can retry the deploy
+# step, which GitHub's Pages backend fails transiently ("Deployment failed, try
+# again later") often enough to strand the live site on a stale version.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; don't cancel an in-progress deploy (we want it to finish).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trim non-site files from the artifact
+        run: rm -rf .git
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      # Up to 3 attempts. Each earlier failure is swallowed (continue-on-error);
+      # the final attempt is allowed to fail the job so a genuine outage is loud.
+      - name: Deploy (attempt 1)
+        id: try1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait, then retry
+        if: steps.try1.outcome == 'failure'
+        run: sleep 30
+      - name: Deploy (attempt 2)
+        id: try2
+        if: steps.try1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait, then final retry
+        if: steps.try1.outcome == 'failure' && steps.try2.outcome == 'failure'
+        run: sleep 60
+      - name: Deploy (attempt 3)
+        if: steps.try1.outcome == 'failure' && steps.try2.outcome == 'failure'
+        uses: actions/deploy-pages@v4
