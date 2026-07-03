@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESPN Draft Feed Test</title>
+  <style>
+    :root { --bg:#0e1116; --bg2:#161b22; --bd:#2a3340; --tx:#e6edf3; --mut:#7f8b98;
+            --acc:#4f8ef7; --good:#3fb950; --warn:#d29922; --bad:#f85149; --mono:ui-monospace,Menlo,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.5 -apple-system,system-ui,sans-serif; padding:20px; max-width:900px; margin:0 auto; }
+    h1 { font-size:20px; } h2 { font-size:15px; margin:18px 0 8px; }
+    p.sub { color:var(--mut); margin-top:-6px; }
+    .card { background:var(--bg2); border:1px solid var(--bd); border-radius:8px; padding:14px; margin-bottom:14px; }
+    label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
+    input, select { width:100%; padding:8px; background:var(--bg); border:1px solid var(--bd); border-radius:6px; color:var(--tx); font-size:14px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; } .row > div { flex:1; min-width:130px; }
+    button { padding:9px 16px; border:0; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; }
+    .primary { background:var(--acc); color:#fff; } .ghost { background:transparent; color:var(--tx); border:1px solid var(--bd); }
+    button:disabled { opacity:.5; cursor:default; }
+    #status { font-family:var(--mono); font-size:13px; padding:8px 10px; border-radius:6px; background:var(--bg); border:1px solid var(--bd); }
+    #log { font-family:var(--mono); font-size:12px; white-space:pre-wrap; background:#0a0d12; border:1px solid var(--bd); border-radius:6px; padding:10px; height:340px; overflow-y:auto; }
+    .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); } .mut { color:var(--mut); }
+    .new { color:var(--acc); font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>ESPN Draft Feed Test</h1>
+  <p class="sub">Standalone check — does ESPN's <code>mDraftDetail</code> feed stream picks <b>live</b> during an in-progress draft? This talks only to the proxy; it touches nothing in Ultimate Draft.</p>
+
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="row">
+      <div><label>Proxy URL</label><input id="proxy" placeholder="https://…workers.dev"></div>
+      <div><label>Proxy key (x-ud-key)</label><input id="key" type="password" placeholder="your proxy key"></div>
+    </div>
+    <div class="row">
+      <div><label>Sport</label><select id="sport"><option value="ffl">Football (ffl)</option><option value="flb">Baseball (flb)</option></select></div>
+      <div><label>Season</label><input id="season" value="2026"></div>
+      <div><label>League ID</label><input id="league" placeholder="e.g. 123456"></div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button class="primary" id="start">▶ Start polling (5s)</button>
+      <button class="ghost" id="stop" disabled>⏹ Stop</button>
+      <button class="ghost" id="once">Test one call</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div id="status">idle</div>
+    <p class="sub" style="margin-top:8px;">Watch the <b>picks count</b>. If it grows while the draft is live, ESPN streams the feed and Ultimate Draft's live sync will work. If it stays 0 until the draft ends, the feed is post-draft only.</p>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const LS = "udft_cfg_v1";
+// Restore saved config
+try { const c = JSON.parse(localStorage.getItem(LS)||"{}"); for (const k of ["proxy","key","sport","season","league"]) if (c[k]!=null) $(k).value = c[k]; } catch(e){}
+function saveCfg(){ const c={}; for (const k of ["proxy","key","sport","season","league"]) c[k]=$(k).value; localStorage.setItem(LS, JSON.stringify(c)); }
+
+let timer = null, lastCount = -1, polls = 0, seen = new Set();
+
+function log(msg, cls){ const el=$("log"); const line=document.createElement("div"); if(cls)line.className=cls; line.textContent=msg; el.appendChild(line); el.scrollTop=el.scrollHeight; }
+function stamp(){ const d=new Date(); return d.toTimeString().slice(0,8); }
+function setStatus(html){ $("status").innerHTML = html; }
+
+async function pollOnce(){
+  saveCfg();
+  const proxy=$("proxy").value.trim().replace(/\/$/,""), key=$("key").value.trim();
+  const sport=$("sport").value, season=$("season").value.trim(), league=$("league").value.trim();
+  if(!proxy||!league){ log("[!] Proxy URL and League ID are required.","bad"); return; }
+  const url = `${proxy}/espn/draft?leagueId=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}&sport=${encodeURIComponent(sport)}`;
+  polls++;
+  try {
+    const r = await fetch(url, { cache:"no-store", headers: key ? {"x-ud-key":key} : {} });
+    if(!r.ok){ const t=await r.text(); log(`[${stamp()}] HTTP ${r.status}: ${t.slice(0,160)}`,"bad"); setStatus(`<span class="bad">error ${r.status}</span> · poll #${polls}`); return; }
+    const data = await r.json();
+    const picks = data.picks || [];
+    const count = picks.length;
+    const delta = lastCount<0 ? count : count-lastCount;
+    // find genuinely new picks this poll
+    const fresh = picks.filter(p => { const k=p.playerId+"@"+p.overallPickNumber; if(seen.has(k))return false; seen.add(k); return true; });
+    lastCount = count;
+    const flag = data.inProgress ? '<span class="good">IN PROGRESS</span>' : (data.drafted ? '<span class="mut">complete</span>' : '<span class="warn">not started</span>');
+    setStatus(`${flag} · <b>${count}</b> picks · poll #${polls} · ${stamp()}`);
+    let line = `[${stamp()}] ${count} picks (Δ${delta>=0?'+':''}${delta})  inProgress=${data.inProgress}  drafted=${data.drafted}`;
+    log(line, delta>0 ? "new" : "mut");
+    fresh.slice(-8).forEach(p => log(`        → #${p.overallPickNumber||'?'} ${p.playerName} (team ${p.teamId}${p.bidAmount?', $'+p.bidAmount:''})`, "new"));
+  } catch(e){ log(`[${stamp()}] fetch failed: ${e.message}`,"bad"); setStatus(`<span class="bad">fetch failed</span> · poll #${polls}`); }
+}
+
+$("start").onclick = () => { if(timer)return; seen=new Set(); lastCount=-1; polls=0; $("log").innerHTML=""; log("Polling every 5s — start your ESPN draft now…","mut"); $("start").disabled=true; $("stop").disabled=false; pollOnce(); timer=setInterval(pollOnce, 5000); };
+$("stop").onclick = () => { clearInterval(timer); timer=null; $("start").disabled=false; $("stop").disabled=true; log("Stopped.","mut"); };
+$("once").onclick = () => pollOnce();
+</script>
+</body>
+</html>

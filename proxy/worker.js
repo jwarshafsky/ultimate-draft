@@ -92,6 +92,13 @@ function json(obj, status, extraHeaders) {
 
 const ESPN_BASE = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb";
 
+// Sport-configurable base for the draft route (so a football league can be used
+// to dry-run live-draft polling). flb = baseball (default), ffl = football.
+function espnBaseForSport(sport) {
+  const s = /^[a-z]{3}$/.test(sport || "") ? sport : "flb";
+  return "https://lm-api-reads.fantasy.espn.com/apis/v3/games/" + s;
+}
+
 async function espnFetch(url, env, headers) {
   const cookieHeader = "espn_s2=" + env.ESPN_S2 + "; SWID=" + env.ESPN_SWID;
   const r = await fetch(url, {
@@ -113,7 +120,8 @@ async function espnFetch(url, env, headers) {
 async function proxyEspnDraft(url, env) {
   const leagueId = url.searchParams.get("leagueId");
   const season = url.searchParams.get("season");
-  const target = ESPN_BASE + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?view=mDraftDetail";
+  const sport = url.searchParams.get("sport");   // flb (default) | ffl for a football test
+  const target = espnBaseForSport(sport) + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?view=mDraftDetail";
   const data = await espnFetch(target, env);
   // Normalize the picks array: each pick has playerId, teamId, bidAmount, etc.
   const picks = (data.draftDetail?.picks || []).map(p => ({
@@ -125,7 +133,12 @@ async function proxyEspnDraft(url, env) {
     overallPickNumber: p.overallPickNumber,
     keeper: !!p.keeper,
   }));
-  return { picks, draftStatus: data.draftDetail?.drafted ? "complete" : "active" };
+  return {
+    picks,
+    draftStatus: data.draftDetail?.drafted ? "complete" : "active",
+    inProgress: !!data.draftDetail?.inProgress,   // ESPN's own "draft is happening now" flag
+    drafted: !!data.draftDetail?.drafted,
+  };
 }
 
 async function proxyEspnTeams(url, env) {
