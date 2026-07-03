@@ -121,12 +121,22 @@ async function proxyEspnDraft(url, env) {
   const leagueId = url.searchParams.get("leagueId");
   const season = url.searchParams.get("season");
   const sport = url.searchParams.get("sport");   // flb (default) | ffl for a football test
-  const target = espnBaseForSport(sport) + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?view=mDraftDetail";
+  // mDraftDetail gives playerId but NOT the name; add mRoster so we can resolve
+  // names (a drafted player lands on the winning team's roster immediately).
+  const target = espnBaseForSport(sport) + "/seasons/" + season + "/segments/0/leagues/" + leagueId + "?view=mDraftDetail&view=mRoster";
   const data = await espnFetch(target, env);
+  // Build playerId -> name from current rosters.
+  const nameById = {};
+  for (const t of (data.teams || [])) {
+    for (const e of (t.roster?.entries || [])) {
+      const p = e.playerPoolEntry?.player;
+      if (p && p.id != null) nameById[p.id] = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
+    }
+  }
   // Normalize the picks array: each pick has playerId, teamId, bidAmount, etc.
   const picks = (data.draftDetail?.picks || []).map(p => ({
     playerId: p.playerId,
-    playerName: p.playerName || ("Player " + p.playerId),
+    playerName: p.playerName || nameById[p.playerId] || ("Player " + p.playerId),
     teamId: p.teamId,
     bidAmount: p.bidAmount || 0,
     nominator: p.nominatingTeamId,
