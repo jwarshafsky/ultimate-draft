@@ -13,6 +13,11 @@ function renderOverview() {
 
   let html = "";
 
+  // In-season (Mar–Oct), lead with the daily "Today" brief; off-season it drops
+  // below the draft-prep cards. See renderDailyBrief().
+  const brief = renderDailyBrief();
+  if (_isInSeason()) html += brief;
+
   // Setup checklist (only show if something missing)
   const checklist = [];
   if (!hasProj) checklist.push({ label: "Import projections", action: 'switchView("data")' });
@@ -104,7 +109,60 @@ function renderOverview() {
   }
   html += '</tbody></table></div>';
 
+  // Off-season: the standings brief lives below the draft-prep cards.
+  if (!_isInSeason()) html += brief;
+
   root.innerHTML = html;
+}
+
+// In-season ≈ March through October (roto matters daily); otherwise draft prep leads.
+function _isInSeason() {
+  const m = new Date().getMonth();   // 0 = Jan
+  return m >= 2 && m <= 9;
+}
+
+// A daily "Today" brief built from the cached Standings snapshot (place, title
+// odds, projection coverage, age) — no ESPN pull needed. Written by
+// _saveStandingsBrief() in standings.js each time standings recompute.
+function renderDailyBrief() {
+  let snap = null;
+  try { snap = JSON.parse(localStorage.getItem("ud_standings_brief_v1") || "null"); } catch (e) { /* ignore */ }
+  const modeLabel = { current: "current", ros: "rest-of-season", full: "projected final" };
+  const ord = (n) => (typeof ordinal === "function" ? ordinal(n) : String(n));
+
+  let html = '<div class="card" style="border-color: rgba(79,142,247,.45);"><h2>Today</h2>';
+  if (!snap || snap.place == null) {
+    html += '<p class="muted small">Pull your live standings to see where you stand, your title odds, and roster gaps — it caches here for a daily glance.</p>';
+    html += '<button class="btn primary" onclick=\'switchView("standings")\' style="width:auto;">Open Standings</button></div>';
+    return html;
+  }
+
+  const ageMs = Date.now() - (snap.ts || 0);
+  const ageH = ageMs / 3600000;
+  const ageStr = ageH < 1 ? Math.max(1, Math.round(ageMs / 60000)) + "m ago"
+    : ageH < 48 ? Math.round(ageH) + "h ago"
+    : Math.round(ageH / 24) + "d ago";
+  const stale = ageH > 48;
+  const covPct = snap.coverageTotal ? Math.round((snap.coverageMatched / snap.coverageTotal) * 100) : null;
+
+  html += '<div class="grid cols-3">';
+  html += '<div><div class="small muted">Place · ' + (modeLabel[snap.mode] || snap.mode) + '</div>' +
+    '<div style="font-size:26px; font-family:var(--mono);">' + ord(snap.place) +
+    '<span class="small muted"> of ' + snap.numTeams + '</span></div>' +
+    '<div class="small muted">' + (snap.rotoPoints != null ? snap.rotoPoints.toFixed(1) + ' roto pts' : '') + '</div></div>';
+  html += '<div><div class="small muted">Title odds</div>' +
+    '<div style="font-size:26px; font-family:var(--mono);">' + (snap.pFirst != null ? Math.round(snap.pFirst * 100) + '%' : '—') + '</div>' +
+    '<div class="small muted">P(finish 1st)</div></div>';
+  html += '<div><div class="small muted">Data</div>' +
+    '<div style="font-size:16px; font-family:var(--mono); color:' + (stale ? 'var(--warn)' : 'var(--text-2)') + ';">as of ' + ageStr + '</div>' +
+    (covPct != null ? '<div class="small ' + (covPct >= 80 ? 'muted' : 'warn') + '">' + covPct + '% projection coverage</div>' : '') + '</div>';
+  html += '</div>';
+  if (stale) html += '<p class="small warn" style="margin-top:6px;">Standings are a couple days old — refresh on the Standings tab for current numbers.</p>';
+  html += '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">' +
+    '<button class="btn" onclick=\'switchView("standings")\' style="width:auto;">Standings detail</button>' +
+    '<button class="btn ghost" onclick=\'switchView("hotfa")\' style="width:auto;">Hot FAs</button></div>';
+  html += '</div>';
+  return html;
 }
 
 function esc(s) {

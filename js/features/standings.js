@@ -117,6 +117,33 @@ function recomputeStandings() {
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
   _standings.tradeFinder.results = null;   // and trade-finder results
   _standings.whatIfSim.key = null;         // and the memoized what-if sims
+  _saveStandingsBrief();                   // cache place/odds for the Overview "Today" brief
+}
+
+// Persist a tiny snapshot (my place, title odds, projection coverage, timestamp)
+// so the Overview tab can show a daily brief without forcing its own ESPN pull.
+// Read by renderDailyBrief() in overview.js.
+const STANDINGS_BRIEF_KEY = "ud_standings_brief_v1";
+function _saveStandingsBrief() {
+  try {
+    const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+    if (!me || !_standings.computed) return;
+    const t = _standings.computed.teams.find(x => x.teamId === me.id);
+    if (!t) return;
+    const odds = (_standings.odds && _standings.odds.byTeam) ? _standings.odds.byTeam[me.id] : null;
+    const cov = _standings.coverage || null;
+    localStorage.setItem(STANDINGS_BRIEF_KEY, JSON.stringify({
+      ts: Date.now(),
+      mode: _standings.mode,
+      season: _standings.ytd ? _standings.ytd.season : null,
+      place: t.place,
+      numTeams: _standings.computed.teams.length,
+      rotoPoints: t.rotoPoints,
+      pFirst: odds ? odds.pFirst : null,
+      coverageMatched: cov ? cov.matched : null,
+      coverageTotal: cov ? cov.total : null,
+    }));
+  } catch (e) { /* non-fatal */ }
 }
 
 // --- Optimal lineup -----------------------------------------------------
