@@ -202,6 +202,14 @@ function renderSettings() {
   html += '<p class="muted small">Secret the proxy requires on every request — without it, anyone with the URL could use your Anthropic key and ESPN account. Saved with the same button.</p>';
   html += '<input id="set-proxy-key" type="password" placeholder="paste the proxy key" value="' + esc(ESPN.proxyKey) + '" style="width: 100%;" autocomplete="off">';
   html += '<div class="small muted" style="margin-top: 6px;">' + (ESPN.proxyKey ? '✓ Key set' : '<span class="warn">No key — proxy requests will be rejected once the worker requires one</span>') + '</div>';
+
+  // Test-league override — for live-draft dry runs against a throwaway league.
+  html += '<h3 style="margin-top: 12px;">Test league ID</h3>';
+  html += '<p class="muted small">Point the app at a throwaway ESPN league (e.g. to dry-run live-draft polling against a practice auction). Leave blank for the real league (1200). Saved with the same button.</p>';
+  html += '<input id="set-league-id" type="number" placeholder="1200 (default — The League)" value="' + (leagueOverrideActive() ? ESPN.leagueId : '') + '" style="width: 100%;">';
+  if (leagueOverrideActive()) {
+    html += '<div class="small" style="margin-top: 6px; color: var(--warn);">⚠ TEST MODE — every tab (Standings, Keepers, Live Draft, History) is reading league ' + ESPN.leagueId + ', NOT The League. Clear this field and Save when done testing.</div>';
+  }
   html += '</div>';
 
   // === AI Assistant ===
@@ -270,6 +278,7 @@ function wireSettingsHandlers() {
   document.getElementById("set-proxy-save")?.addEventListener("click", () => {
     setProxyUrl(document.getElementById("set-proxy-url").value);
     setProxyKey(document.getElementById("set-proxy-key")?.value);
+    setLeagueOverride(document.getElementById("set-league-id")?.value);
     renderSettings();
   });
   document.getElementById("set-save")?.addEventListener("click", () => {

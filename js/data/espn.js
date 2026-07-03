@@ -21,10 +21,14 @@ function _defaultSeason() {
   return Number(localStorage.getItem("ud_season")) || new Date().getFullYear();
 }
 
+const UD_HOME_LEAGUE_ID = 1200;   // The League — the real league this tool is for
+
 const ESPN = {
   proxyUrl: localStorage.getItem("ud_proxy_url") || "",
   proxyKey: localStorage.getItem("ud_proxy_key") || "",
-  leagueId: 1200,
+  // Test-league override (Settings) — lets a throwaway ESPN league stand in for
+  // a live-draft dry run. Empty/default = the real league.
+  leagueId: Number(localStorage.getItem("ud_league_override")) || UD_HOME_LEAGUE_ID,
   season: _defaultSeason(),
   polling: false,
   pollTimer: null,
@@ -66,6 +70,19 @@ function proxyHeaders(extra) {
   if (ESPN.proxyKey) h["x-ud-key"] = ESPN.proxyKey;
   return h;
 }
+
+// Test-league override. Pass empty/0/1200 to clear back to the real league.
+function setLeagueOverride(id) {
+  const n = Number(id);
+  if (Number.isFinite(n) && n > 0 && n !== UD_HOME_LEAGUE_ID) {
+    ESPN.leagueId = n;
+    localStorage.setItem("ud_league_override", String(n));
+  } else {
+    ESPN.leagueId = UD_HOME_LEAGUE_ID;
+    localStorage.removeItem("ud_league_override");
+  }
+}
+function leagueOverrideActive() { return ESPN.leagueId !== UD_HOME_LEAGUE_ID; }
 
 async function fetchEspnDraft() {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
