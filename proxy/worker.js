@@ -453,30 +453,52 @@ async function captureDraftSocket(url, env) {
   const sport = url.searchParams.get("sport") || "ffl";
   const teamId = url.searchParams.get("teamId") || "1";
   const seconds = Math.min(20, Math.max(3, Number(url.searchParams.get("seconds")) || 9));
-  if (!leagueId) throw new Error("leagueId required");
 
-  // 1) draftInit REST → gameId + draftToken. Exact response path is unknown, so
-  //    search the JSON for the fields and also return a trimmed dump for debugging.
-  const initUrl = espnBaseForSport(sport) + "/seasons/" + season +
-    "/segments/0/leagues/" + leagueId + "?view=draftInit&view=mSettings";
-  const init = await espnFetch(initUrl, env);
-  const found = _findKeys(init, ["gameId", "draftToken", "draftDetail", "id"]);
-  const gameId = found.gameId != null ? found.gameId : init.gameId;
-  const draftToken = found.draftToken;
-  const debug = { initKeys: Object.keys(init || {}), foundGameId: gameId, hasToken: draftToken != null };
-  if (gameId == null || draftToken == null) {
-    return { ok: false, stage: "draftInit", error: "could not find gameId/draftToken in draftInit response", debug,
-      initSample: JSON.stringify(init).slice(0, 1200) };
+  // OVERRIDE PATH (Phase-1 research): if you paste the full wss JOIN url (or a
+  // gameId + token) captured from a live draft's DevTools → Network → WS, we skip
+  // draftInit and connect directly. This isolates "can the Worker reach + decode
+  // the socket" from "auto-discover the token" (which is still TODO).
+  const joinOverride = url.searchParams.get("joinUrl");   // full wss://…/JOIN?… string
+  const tokenOverride = url.searchParams.get("token");
+  const gameIdOverride = url.searchParams.get("gameId");
+
+  let wsHttpUrl, gameId, debug;
+  if (joinOverride) {
+    wsHttpUrl = joinOverride.replace(/^wss:\/\//, "https://");
+    const m = joinOverride.match(/game-(\d+)/);
+    gameId = m ? m[1] : "(from url)";
+    debug = { source: "joinUrl override" };
+  } else if (gameIdOverride && tokenOverride) {
+    gameId = gameIdOverride;
+    const swid = env.ESPN_SWID;
+    const rand = 424242;
+    wsHttpUrl = "https://fantasydraft.espn.com/game-" + gameId + "/JOIN?1=" + gameId +
+      "&2=" + leagueId + "&3=" + teamId + "&4=" + encodeURIComponent(swid) +
+      "&5=" + encodeURIComponent(tokenOverride) + "&6=false&7=false&8=KONA&nocache=" + rand;
+    debug = { source: "gameId+token override" };
+  } else {
+    // AUTO PATH: draftInit REST → gameId + draftToken. NOTE: as of Jul 2026 the
+    // token is NOT in this response (hasToken:false) — origin still TODO. Use an
+    // override above until that's solved.
+    if (!leagueId) throw new Error("leagueId required (or pass joinUrl / gameId+token)");
+    const initUrl = espnBaseForSport(sport) + "/seasons/" + season +
+      "/segments/0/leagues/" + leagueId + "?view=draftInit&view=mSettings";
+    const init = await espnFetch(initUrl, env);
+    const found = _findKeys(init, ["gameId", "draftToken", "draftDetail", "id"]);
+    gameId = found.gameId != null ? found.gameId : init.gameId;
+    const draftToken = found.draftToken;
+    debug = { source: "draftInit auto", initKeys: Object.keys(init || {}), foundGameId: gameId, hasToken: draftToken != null };
+    if (gameId == null || draftToken == null) {
+      return { ok: false, stage: "draftInit",
+        error: "draftToken not in draftInit response — paste the JOIN url from your live draft's DevTools (Network → WS) into the override field instead",
+        debug, initSample: JSON.stringify(init).slice(0, 1000) };
+    }
+    const swid = env.ESPN_SWID;
+    const rand = 424242;
+    wsHttpUrl = "https://fantasydraft.espn.com/game-" + gameId + "/JOIN?1=" + gameId +
+      "&2=" + leagueId + "&3=" + teamId + "&4=" + encodeURIComponent(swid) +
+      "&5=" + encodeURIComponent(draftToken) + "&6=false&7=false&8=KONA&nocache=" + rand;
   }
-
-  // 2) Open the ESPN draft websocket via fetch Upgrade (Workers' WS-client path).
-  const swid = env.ESPN_SWID;
-  const rand = Math.floor(1e6 * (parseInt(url.searchParams.get("r") || "0", 10) % 1000000 || 424242));
-  const host = "fantasydraft.espn.com/game-" + gameId + "/";
-  const joinPath = "JOIN?1=" + gameId + "&2=" + leagueId + "&3=" + teamId +
-    "&4=" + encodeURIComponent(swid) + "&5=" + encodeURIComponent(draftToken) +
-    "&6=false&7=false&8=KONA&nocache=" + rand;
-  const wsHttpUrl = "https://" + host + joinPath;
 
   let resp;
   try {

@@ -45,11 +45,13 @@
       <button class="ghost" id="stop" disabled>⏹ Stop</button>
       <button class="ghost" id="once">Test one REST call</button>
     </div>
+    <div style="margin-top:8px;"><label>Paste JOIN url from DevTools (Network → WS → the <code>fantasydraft.espn.com/game-…/JOIN?…</code> request → Copy URL). Optional but most reliable — leave blank to auto-try.</label>
+      <input id="joinurl" placeholder="wss://fantasydraft.espn.com/game-XXXX/JOIN?1=…&5=&lt;token&gt;…"></div>
     <div class="row" style="margin-top:8px;">
       <button class="primary" id="sockstart" style="background:var(--good);">📡 Start SOCKET capture (live picks)</button>
       <button class="ghost" id="sockstop" disabled>⏹ Stop socket</button>
     </div>
-    <p class="sub" style="margin-top:6px;">Two tests. <b>REST polling</b> hits the old post-draft endpoint (proven not-live). <b>SOCKET capture</b> connects the proxy to ESPN's real-time draft websocket and dumps raw frames — this is the one that should catch live picks. Set <b>Your team ID</b> to the team you control in the test league.</p>
+    <p class="sub" style="margin-top:6px;">Two tests. <b>REST polling</b> hits the old post-draft endpoint (proven not-live). <b>SOCKET capture</b> connects the proxy to ESPN's real-time draft websocket and dumps raw frames — the one that should catch live picks. <b>Most reliable:</b> in your live draft tab, open DevTools → Network → filter "WS" → click the <code>JOIN</code> connection → right-click → Copy URL, and paste it above. Then hit Start SOCKET capture.</p>
   </div>
 
   <div class="card">
@@ -111,8 +113,11 @@ async function captureOnce(){
   saveCfg();
   const proxy=$("proxy").value.trim().replace(/\/$/,""), key=$("key").value.trim();
   const sport=$("sport").value, season=$("season").value.trim(), league=$("league").value.trim(), team=($("team").value.trim()||"1");
-  if(!proxy||!league){ log("[!] Proxy URL and League ID required.","bad"); return; }
-  const url = `${proxy}/espn/draft-capture?leagueId=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}&sport=${encodeURIComponent(sport)}&teamId=${encodeURIComponent(team)}&seconds=8&r=${sockRuns}`;
+  const joinUrl=$("joinurl").value.trim();
+  if(!proxy){ log("[!] Proxy URL required.","bad"); return; }
+  if(!league && !joinUrl){ log("[!] League ID (or a pasted JOIN url) required.","bad"); return; }
+  let url = `${proxy}/espn/draft-capture?leagueId=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}&sport=${encodeURIComponent(sport)}&teamId=${encodeURIComponent(team)}&seconds=8&r=${sockRuns}`;
+  if(joinUrl) url += `&joinUrl=${encodeURIComponent(joinUrl)}`;
   sockRuns++;
   log(`[${stamp()}] 📡 opening socket to ESPN (8s capture)…`,"mut");
   try {
