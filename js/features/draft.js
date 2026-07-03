@@ -137,7 +137,17 @@ function renderDraft() {
 // returns to that keepers-only state.
 function renderDraftControls() {
   const n = _liveDraft.picks.length;
-  let html = '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
+  let html = '';
+  // Loud TEST MODE banner — Live Draft's team strip / bidder list / budgets are
+  // hardwired to The League's 12 owners; test mode only repoints which league's
+  // pick feed is polled. So the scaffold shows your real owners; the Recent Picks
+  // log is what confirms the feed is streaming.
+  if (typeof leagueOverrideActive === "function" && leagueOverrideActive()) {
+    html += '<div class="card" style="border-color: var(--warn); background: rgba(210,153,34,.08); padding:10px 12px;">' +
+      '<b style="color: var(--warn);">⚠ TEST MODE — polling league ' + esc(String(ESPN.leagueId)) + '</b>' +
+      '<div class="small muted" style="margin-top:4px;">The Teams strip, bidder dropdown, and budgets below are <b>your real league\'s</b> slots — test mode only changes which league\'s pick feed is read. Watch <b>Recent Picks</b> (bottom right): each auto-pick appearing there as "Team N — Player — $" confirms the live feed works. Clear the Test league ID in Settings when done.</div></div>';
+  }
+  html += '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
   html += '<b>Live Draft</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded</span>';
   html += '<span style="flex:1;"></span>';
   html += '<button class="btn ghost" id="draft-undo"' + (n ? '' : ' disabled') + '>↶ Undo last pick</button>';
@@ -279,11 +289,17 @@ function renderRecentPicks() {
     const val = getPlayerValue(pk.player);
     const v = val ? val.value : 0;
     const surplus = v - pk.price;
-    const isMine = pk.team === myId;
+    const testMode = typeof leagueOverrideActive === "function" && leagueOverrideActive();
+    const isMine = !testMode && pk.team === myId;
+    // In test mode the ESPN team IDs belong to the throwaway league, not The
+    // League — label them generically instead of mislabeling them as real owners.
+    const teamLabel = testMode
+      ? ("Team " + (pk.espnTeamId != null ? pk.espnTeamId : "?"))
+      : (getTeam(pk.team)?.owner || pk.team);
     html += '<tr' + (isMine ? ' style="background: rgba(79,142,247,.06);"' : '') + '>';
     html += '<td class="num dim">' + (origIndex + 1) + '</td>';
     html += '<td>' + esc(pk.player) + '</td>';
-    html += '<td>' + esc(getTeam(pk.team)?.owner || pk.team) + '</td>';
+    html += '<td>' + esc(teamLabel) + '</td>';
     html += '<td class="num">$' + pk.price + '</td>';
     html += '<td class="num ' + (surplus > 0 ? 'good' : 'bad') + '">' + (val ? (surplus > 0 ? '+' : '') + '$' + surplus.toFixed(0) : '—') + '</td>';
     html += '<td><button class="btn ghost live-revert" data-idx="' + origIndex + '" title="Revert to before this pick" style="padding:1px 7px;">↶</button></td>';

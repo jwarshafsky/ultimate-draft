@@ -411,6 +411,7 @@ function processEspnPicks(rawPicks) {
       player: raw.playerName,
       pos: getPlayerValue(raw.playerName)?.posKey || null,
       team: espnTeamIdToOwnerId(raw.teamId),
+      espnTeamId: raw.teamId,          // raw ESPN id — for honest labels in test mode
       price: raw.bidAmount || 0,
       ts: Date.now(),
       espnPlayerId: raw.playerId,
