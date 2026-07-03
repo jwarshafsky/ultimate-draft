@@ -190,7 +190,7 @@ function renderSettings() {
   html += '</div></div></div></div>';
   html += '</div>';
 
-  // === Proxy URL (ESPN + Claude) ===
+  // === Proxy URL + key (ESPN + Claude) ===
   html += '<div class="card"><h2>Proxy URL</h2>';
   html += '<p class="muted small">Cloudflare Worker URL for ESPN history sync and Claude AI assistant. Set once here, used everywhere.</p>';
   html += '<div style="display: flex; gap: 8px; align-items: center;">';
@@ -198,6 +198,10 @@ function renderSettings() {
   html += '<button class="btn primary" id="set-proxy-save" style="width: auto; padding: 8px 14px;">Save</button>';
   html += '</div>';
   html += '<div class="small muted" style="margin-top: 6px;">' + (ESPN.proxyUrl ? '✓ Currently set' : 'Not yet configured') + '</div>';
+  html += '<h3 style="margin-top: 12px;">Proxy key</h3>';
+  html += '<p class="muted small">Secret the proxy requires on every request — without it, anyone with the URL could use your Anthropic key and ESPN account. Saved with the same button.</p>';
+  html += '<input id="set-proxy-key" type="password" placeholder="paste the proxy key" value="' + esc(ESPN.proxyKey) + '" style="width: 100%;" autocomplete="off">';
+  html += '<div class="small muted" style="margin-top: 6px;">' + (ESPN.proxyKey ? '✓ Key set' : '<span class="warn">No key — proxy requests will be rejected once the worker requires one</span>') + '</div>';
   html += '</div>';
 
   // === AI Assistant ===
@@ -264,8 +268,8 @@ function wireSettingsHandlers() {
   });
 
   document.getElementById("set-proxy-save")?.addEventListener("click", () => {
-    const v = document.getElementById("set-proxy-url").value;
-    setProxyUrl(v);
+    setProxyUrl(document.getElementById("set-proxy-url").value);
+    setProxyKey(document.getElementById("set-proxy-key")?.value);
     renderSettings();
   });
   document.getElementById("set-save")?.addEventListener("click", () => {

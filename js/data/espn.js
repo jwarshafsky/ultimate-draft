@@ -23,6 +23,7 @@ function _defaultSeason() {
 
 const ESPN = {
   proxyUrl: localStorage.getItem("ud_proxy_url") || "",
+  proxyKey: localStorage.getItem("ud_proxy_key") || "",
   leagueId: 1200,
   season: _defaultSeason(),
   polling: false,
@@ -53,12 +54,25 @@ function setProxyUrl(url) {
 }
 function getProxyUrl() { return ESPN.proxyUrl; }
 
+// Shared secret the worker requires (x-ud-key) — without it the proxy would be
+// an open relay for the Anthropic key and ESPN cookies.
+function setProxyKey(key) {
+  ESPN.proxyKey = (key || "").trim();
+  if (ESPN.proxyKey) localStorage.setItem("ud_proxy_key", ESPN.proxyKey);
+  else localStorage.removeItem("ud_proxy_key");
+}
+function proxyHeaders(extra) {
+  const h = { ...(extra || {}) };
+  if (ESPN.proxyKey) h["x-ud-key"] = ESPN.proxyKey;
+  return h;
+}
+
 async function fetchEspnDraft() {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/draft?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
   // no-store: live draft state must never come from the HTTP cache, or a poll
   // could miss picks and mis-compute remaining budget / inflation.
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url, { cache: "no-store", headers: proxyHeaders() });
   if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
   return r.json();
 }
@@ -66,7 +80,7 @@ async function fetchEspnDraft() {
 async function fetchEspnPlayers() {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/players?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url, { cache: "no-store", headers: proxyHeaders() });
   if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
   return r.json();
 }
@@ -196,7 +210,7 @@ async function fetchEspnRosters(sourceId) {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   sourceId = sourceId === 1 ? 1 : 0;
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/teams?leagueId=" + ESPN.leagueId + "&season=" + ESPN.season;
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url, { cache: "no-store", headers: proxyHeaders() });
   if (!r.ok) throw new Error("ESPN proxy responded " + r.status);
   const data = await r.json();
   return parseEspnRosters(data, sourceId);
@@ -288,7 +302,7 @@ async function fetchEspnFreeAgents(sourceId) {
 async function fetchEspnHistory(season) {
   if (!ESPN.proxyUrl) throw new Error("Proxy URL not configured.");
   const url = ESPN.proxyUrl.replace(/\/$/, "") + "/espn/history?leagueId=" + ESPN.leagueId + "&season=" + season;
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url, { cache: "no-store", headers: proxyHeaders() });
   if (!r.ok) throw new Error("ESPN history " + season + " responded " + r.status);
   return r.json();
 }

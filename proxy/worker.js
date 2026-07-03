@@ -11,6 +11,9 @@
 //   ESPN_SWID        — your ESPN SWID cookie (with curly braces)
 //   ANTHROPIC_API_KEY — Anthropic API key for Claude
 //   ALLOWED_ORIGIN   — your GitHub Pages origin, e.g. "https://jwarshafsky.github.io"
+//   UD_PROXY_KEY     — shared secret; every request must send it as x-ud-key.
+//                      Without it the worker is an open relay for the Anthropic
+//                      key and ESPN cookies. The app stores it in Settings.
 //
 // Deploy:
 //   npx wrangler deploy
@@ -19,6 +22,7 @@
 //   npx wrangler secret put ESPN_SWID
 //   npx wrangler secret put ANTHROPIC_API_KEY
 //   npx wrangler secret put ALLOWED_ORIGIN
+//   npx wrangler secret put UD_PROXY_KEY
 
 export default {
   async fetch(request, env) {
@@ -26,9 +30,16 @@ export default {
     const origin = request.headers.get("Origin") || "";
     const allowed = env.ALLOWED_ORIGIN || "*";
 
-    // CORS preflight
+    // CORS preflight (must not require the key — browsers send it unauthenticated)
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(allowed, origin) });
+    }
+
+    // Shared-secret gate. Enforced only once UD_PROXY_KEY is configured, so a
+    // deploy that races the secret setup fails open briefly instead of dark.
+    if (env.UD_PROXY_KEY && request.headers.get("x-ud-key") !== env.UD_PROXY_KEY) {
+      return json({ error: "unauthorized — set the proxy key on the Settings tab" }, 401,
+        corsHeaders(allowed, origin));
     }
 
     // Route
@@ -57,12 +68,15 @@ export default {
 };
 
 function corsHeaders(allowed, origin) {
+  // Exact-origin match only (plus localhost for dev). The old
+  // endsWith(".github.io") check let ANY GitHub Pages site call the proxy.
+  const isLocal = /^https?:\/\/localhost(:\d+)?$/.test(origin);
   const allowOrigin = (allowed === "*") ? "*" :
-    (origin && (origin === allowed || origin.endsWith(".github.io"))) ? origin : allowed;
+    (origin && (origin === allowed || isLocal)) ? origin : allowed;
   return {
     "access-control-allow-origin": allowOrigin,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type,x-ud-key",
     "access-control-max-age": "86400",
   };
 }

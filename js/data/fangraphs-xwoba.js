@@ -60,7 +60,7 @@ async function fetchFgxWindow(winId) {
   let url = ESPN.proxyUrl.replace(/\/$/, "") + "/fangraphs/xwoba?season=" + ESPN.season;
   if (start && end) url += "&startdate=" + start + "&enddate=" + end;
 
-  const r = await fetch(url, { cache: "no-store" });
+  const r = await fetch(url, { cache: "no-store", headers: proxyHeaders() });
   if (!r.ok) throw new Error("FanGraphs proxy responded " + r.status);
   const data = await r.json();
 

@@ -7,3 +7,4 @@ compatibility_date = "2025-01-01"
 #   ESPN_SWID         — your ESPN SWID cookie (with curly braces)
 #   ANTHROPIC_API_KEY — Anthropic API key
 #   ALLOWED_ORIGIN    — https://jwarshafsky.github.io
+#   UD_PROXY_KEY      — shared secret the app must send as x-ud-key (Settings tab)

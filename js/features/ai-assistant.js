@@ -110,7 +110,7 @@ ${userMessage || "What should I do next? Specific advice please."}`;
   };
   const r = await fetch(proxyClaudeUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: proxyHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
   if (!r.ok) {
