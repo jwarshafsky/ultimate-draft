@@ -5,7 +5,7 @@ Personal (single-user) draft + keeper tool for Jeff's 12-team ESPN keeper league
 keepers). Vanilla JS, **no framework, no build step, no modules** — plain script
 tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to main.
 
-## Two conventions that fail silently if missed
+## Three conventions that fail silently if missed
 
 1. **Cache busting** — every script/CSS tag in `index.html` carries `?v=NN`.
    After ANY js/css change, run `scripts/bump.sh` (stamps all tags to the commit
@@ -13,6 +13,10 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
 2. **One global namespace** — a duplicate top-level `function` shadows by load
    order; a duplicate `const` throws and disables that whole file. Run
    `scripts/check-globals.sh` after adding top-level names.
+3. **Device-sync whitelist** — user-authored localStorage keys are mirrored to
+   Cloudflare KV via `js/data/cloud-sync.js` (SYNC_EXACT_KEYS / SYNC_PREFIXES)
+   so state follows Jeff across devices. A new user-data key not added there
+   silently stays device-local. Don't whitelist refetchable caches.
 
 ## Layout (load order matters — see index.html)
 

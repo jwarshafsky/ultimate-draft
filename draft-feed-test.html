@@ -38,18 +38,24 @@
       <div><label>Sport</label><select id="sport"><option value="ffl">Football (ffl)</option><option value="flb">Baseball (flb)</option></select></div>
       <div><label>Season</label><input id="season" value="2026"></div>
       <div><label>League ID</label><input id="league" placeholder="e.g. 123456"></div>
+      <div><label>Your team ID (for socket JOIN)</label><input id="team" value="1" placeholder="1"></div>
     </div>
     <div class="row" style="margin-top:12px;">
-      <button class="primary" id="start">▶ Start polling (5s)</button>
+      <button class="primary" id="start">▶ Start REST polling (5s)</button>
       <button class="ghost" id="stop" disabled>⏹ Stop</button>
-      <button class="ghost" id="once">Test one call</button>
+      <button class="ghost" id="once">Test one REST call</button>
     </div>
+    <div class="row" style="margin-top:8px;">
+      <button class="primary" id="sockstart" style="background:var(--good);">📡 Start SOCKET capture (live picks)</button>
+      <button class="ghost" id="sockstop" disabled>⏹ Stop socket</button>
+    </div>
+    <p class="sub" style="margin-top:6px;">Two tests. <b>REST polling</b> hits the old post-draft endpoint (proven not-live). <b>SOCKET capture</b> connects the proxy to ESPN's real-time draft websocket and dumps raw frames — this is the one that should catch live picks. Set <b>Your team ID</b> to the team you control in the test league.</p>
   </div>
 
   <div class="card">
     <h2>Status</h2>
     <div id="status">idle</div>
-    <p class="sub" style="margin-top:8px;">Watch the <b>picks count</b>. If it grows while the draft is live, ESPN streams the feed and Ultimate Draft's live sync will work. If it stays 0 until the draft ends, the feed is post-draft only.</p>
+    <p class="sub" style="margin-top:8px;">REST test: watch the pick count. SOCKET test: watch for <b>connected=true</b> (proves the proxy reached ESPN's socket) and any <b>PICK_MADE</b> frames — those are the live picks, with raw bytes shown below for decoding.</p>
   </div>
 
   <div class="card">
@@ -61,8 +67,8 @@
 const $ = id => document.getElementById(id);
 const LS = "udft_cfg_v1";
 // Restore saved config
-try { const c = JSON.parse(localStorage.getItem(LS)||"{}"); for (const k of ["proxy","key","sport","season","league"]) if (c[k]!=null) $(k).value = c[k]; } catch(e){}
-function saveCfg(){ const c={}; for (const k of ["proxy","key","sport","season","league"]) c[k]=$(k).value; localStorage.setItem(LS, JSON.stringify(c)); }
+try { const c = JSON.parse(localStorage.getItem(LS)||"{}"); for (const k of ["proxy","key","sport","season","league","team"]) if (c[k]!=null) $(k).value = c[k]; } catch(e){}
+function saveCfg(){ const c={}; for (const k of ["proxy","key","sport","season","league","team"]) c[k]=$(k).value; localStorage.setItem(LS, JSON.stringify(c)); }
 
 let timer = null, lastCount = -1, polls = 0, seen = new Set();
 
@@ -95,9 +101,45 @@ async function pollOnce(){
   } catch(e){ log(`[${stamp()}] fetch failed: ${e.message}`,"bad"); setStatus(`<span class="bad">fetch failed</span> · poll #${polls}`); }
 }
 
-$("start").onclick = () => { if(timer)return; seen=new Set(); lastCount=-1; polls=0; $("log").innerHTML=""; log("Polling every 5s — start your ESPN draft now…","mut"); $("start").disabled=true; $("stop").disabled=false; pollOnce(); timer=setInterval(pollOnce, 5000); };
+$("start").onclick = () => { if(timer)return; seen=new Set(); lastCount=-1; polls=0; $("log").innerHTML=""; log("REST polling every 5s — start your ESPN draft now…","mut"); $("start").disabled=true; $("stop").disabled=false; pollOnce(); timer=setInterval(pollOnce, 5000); };
 $("stop").onclick = () => { clearInterval(timer); timer=null; $("start").disabled=false; $("stop").disabled=true; log("Stopped.","mut"); };
 $("once").onclick = () => pollOnce();
+
+// ---- SOCKET capture (the real live channel) ----
+let sockTimer = null, sockRuns = 0, sockPicks = new Map();
+async function captureOnce(){
+  saveCfg();
+  const proxy=$("proxy").value.trim().replace(/\/$/,""), key=$("key").value.trim();
+  const sport=$("sport").value, season=$("season").value.trim(), league=$("league").value.trim(), team=($("team").value.trim()||"1");
+  if(!proxy||!league){ log("[!] Proxy URL and League ID required.","bad"); return; }
+  const url = `${proxy}/espn/draft-capture?leagueId=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}&sport=${encodeURIComponent(sport)}&teamId=${encodeURIComponent(team)}&seconds=8&r=${sockRuns}`;
+  sockRuns++;
+  log(`[${stamp()}] 📡 opening socket to ESPN (8s capture)…`,"mut");
+  try {
+    const r = await fetch(url, { cache:"no-store", headers: key ? {"x-ud-key":key} : {} });
+    const data = await r.json();
+    if(data.ok===false){
+      setStatus(`<span class="bad">socket failed @ ${data.stage}</span>`);
+      log(`[${stamp()}] ✗ ${data.stage}: ${data.error}`,"bad");
+      if(data.debug) log(`        debug: ${JSON.stringify(data.debug)}`,"mut");
+      if(data.initSample) log(`        draftInit sample: ${data.initSample}`,"mut");
+      if(data.bodySample) log(`        handshake body: ${data.bodySample}`,"mut");
+      return;
+    }
+    setStatus(`<span class="good">SOCKET connected=${data.connected}</span> · gameId ${data.gameId} · ${data.frameCount} frames · ${data.picksDecoded} PICK_MADE · run #${sockRuns}`);
+    log(`[${stamp()}] ✓ connected — ${data.frameCount} frames this window (${data.picksDecoded} PICK_MADE)`, data.frameCount? "new":"mut");
+    (data.frames||[]).forEach(f=>{
+      const tok = (f.tokens||[]).map(t=> t.t==="utf"?`"${t.v}"`:t.v).join(", ");
+      const cls = f.type===2?"new":"mut";
+      log(`        frame#${f.idx} type=${f.typeName}(${f.type}) ${f.bytes}B  tokens[${tok}]`, cls);
+      if(f.type===2) log(`             hex: ${f.hex}`, "new");
+    });
+    // Track unique decoded picks across runs
+    (data.picks||[]).forEach(p=>{ const k=JSON.stringify(p.ints); if(!sockPicks.has(k)){ sockPicks.set(k,p); log(`        🟢 PICK_MADE ints=[${p.ints.join(", ")}] strings=[${(p.strings||[]).join(", ")}]`,"new"); }});
+  } catch(e){ log(`[${stamp()}] socket fetch failed: ${e.message}`,"bad"); setStatus(`<span class="bad">socket fetch failed</span>`); }
+}
+$("sockstart").onclick = () => { if(sockTimer)return; sockRuns=0; sockPicks=new Map(); log("📡 SOCKET capture — connects to ESPN's live draft socket every ~10s. Start/continue your draft now.","mut"); $("sockstart").disabled=true; $("sockstop").disabled=false; captureOnce(); sockTimer=setInterval(captureOnce, 10000); };
+$("sockstop").onclick = () => { clearInterval(sockTimer); sockTimer=null; $("sockstart").disabled=false; $("sockstop").disabled=true; log("Socket capture stopped.","mut"); };
 </script>
 </body>
 </html>

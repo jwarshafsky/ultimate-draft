@@ -24,7 +24,10 @@ function _defaultSeason() {
 const UD_HOME_LEAGUE_ID = 1200;   // The League — the real league this tool is for
 
 const ESPN = {
-  proxyUrl: localStorage.getItem("ud_proxy_url") || "",
+  // Falls back to the deployed Worker (constant lives in cloud-sync.js, which
+  // loads first) so a fresh device works right after sign-in.
+  proxyUrl: localStorage.getItem("ud_proxy_url") ||
+    (typeof UD_DEFAULT_PROXY_URL !== "undefined" ? UD_DEFAULT_PROXY_URL : ""),
   proxyKey: localStorage.getItem("ud_proxy_key") || "",
   // Test-league override (Settings) — lets a throwaway ESPN league stand in for
   // a live-draft dry run. Empty/default = the real league.

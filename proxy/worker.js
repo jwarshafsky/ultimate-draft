@@ -35,6 +35,22 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(allowed, origin) });
     }
 
+    // Device-sync routes authenticate with the user's Supabase login token
+    // (NOT x-ud-key): a freshly-logged-in device must be able to pull its
+    // settings — including the proxy key itself — before any are entered.
+    if (url.pathname.startsWith("/sync/")) {
+      try {
+        const user = await verifySupabaseUser(request);
+        if (!user) {
+          return json({ error: "unauthorized — sign in first" }, 401, corsHeaders(allowed, origin));
+        }
+        const body = await handleSync(url, request, env, user);
+        return json(body, 200, corsHeaders(allowed, origin));
+      } catch (e) {
+        return json({ error: e.message || String(e) }, 500, corsHeaders(allowed, origin));
+      }
+    }
+
     // Shared-secret gate. Enforced only once UD_PROXY_KEY is configured, so a
     // deploy that races the secret setup fails open briefly instead of dark.
     if (env.UD_PROXY_KEY && request.headers.get("x-ud-key") !== env.UD_PROXY_KEY) {
@@ -47,6 +63,8 @@ export default {
       let body;
       if (url.pathname === "/espn/draft") {
         body = await proxyEspnDraft(url, env);
+      } else if (url.pathname === "/espn/draft-capture") {
+        body = await captureDraftSocket(url, env);
       } else if (url.pathname === "/espn/teams") {
         body = await proxyEspnTeams(url, env);
       } else if (url.pathname === "/espn/players") {
@@ -76,9 +94,82 @@ function corsHeaders(allowed, origin) {
   return {
     "access-control-allow-origin": allowOrigin,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type,x-ud-key",
+    "access-control-allow-headers": "content-type,x-ud-key,authorization",
     "access-control-max-age": "86400",
   };
+}
+
+// --- Device sync (per-user localStorage mirror in KV) ---
+
+const SUPABASE_AUTH_URL = "https://fbllfkrtjsihrkwnbmlw.supabase.co/auth/v1/user";
+const SUPABASE_ANON_KEY = "sb_publishable_aRh0MmQKrMCr8YnTwv9xIg_1F08WXf2";
+const SYNC_ALLOWED_EMAILS = ["jwarshafsky@gmail.com"];
+
+// Token → user micro-cache so bursts of sync calls don't each hit Supabase.
+const _tokenCache = new Map();
+
+async function verifySupabaseUser(request) {
+  const auth = request.headers.get("authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return null;
+  const cached = _tokenCache.get(token);
+  if (cached && cached.exp > Date.now()) return cached.user;
+  const r = await fetch(SUPABASE_AUTH_URL, {
+    headers: { apikey: SUPABASE_ANON_KEY, authorization: "Bearer " + token },
+  });
+  if (!r.ok) return null;
+  const u = await r.json();
+  const email = (u.email || "").toLowerCase();
+  if (!u.id || !SYNC_ALLOWED_EMAILS.includes(email)) return null;
+  const user = { id: u.id, email };
+  _tokenCache.set(token, { user, exp: Date.now() + 5 * 60 * 1000 });
+  return user;
+}
+
+// KV layout: one entry per synced localStorage key, named "u:<userId>:<key>",
+// value = the raw localStorage string, metadata = { at: <client ms timestamp> }.
+function _syncKvName(user, key) {
+  return "u:" + user.id + ":" + key;
+}
+
+async function handleSync(url, request, env, user) {
+  const path = url.pathname;
+  if (path === "/sync/list" && request.method === "GET") {
+    const prefix = "u:" + user.id + ":";
+    const keys = {};
+    let cursor;
+    do {
+      const page = await env.UD_SYNC.list({ prefix, cursor });
+      for (const k of page.keys) {
+        keys[k.name.slice(prefix.length)] = (k.metadata && k.metadata.at) || 0;
+      }
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
+    return { keys };
+  }
+  if (path === "/sync/get" && request.method === "GET") {
+    const key = url.searchParams.get("key") || "";
+    if (!key) throw new Error("missing key");
+    const entry = await env.UD_SYNC.getWithMetadata(_syncKvName(user, key));
+    if (entry.value == null) return { key, value: null, at: 0 };
+    return { key, value: entry.value, at: (entry.metadata && entry.metadata.at) || 0 };
+  }
+  if (path === "/sync/set" && request.method === "POST") {
+    const b = await request.json();
+    if (!b || typeof b.key !== "string" || typeof b.value !== "string") {
+      throw new Error("body must be { key, value, at }");
+    }
+    const at = Number(b.at) || Date.now();
+    await env.UD_SYNC.put(_syncKvName(user, b.key), b.value, { metadata: { at } });
+    return { ok: true, key: b.key, at };
+  }
+  if (path === "/sync/delete" && request.method === "POST") {
+    const b = await request.json();
+    if (!b || typeof b.key !== "string") throw new Error("body must be { key }");
+    await env.UD_SYNC.delete(_syncKvName(user, b.key));
+    return { ok: true, key: b.key };
+  }
+  throw new Error("unknown sync route: " + path);
 }
 
 function json(obj, status, extraHeaders) {
@@ -343,4 +434,157 @@ async function proxyClaude(request, env) {
     throw new Error("Claude " + r.status + ": " + txt.slice(0, 400));
   }
   return r.json();
+}
+
+// --- Live draft socket CAPTURE (Phase 1 of docs/live-draft-sync-plan.md) ---
+// Connects to ESPN's real-time draft websocket, captures raw binary frames for a
+// short window, and best-effort-decodes them so we can (a) confirm a Cloudflare
+// Worker can even reach the socket, and (b) learn the exact PICK_MADE frame
+// layout from real data. This is a research/capture tool, NOT the production
+// relay. Reverse-engineered from ESPN draft.js:
+//   host = fantasydraft.espn.com/game-<gameId>/
+//   wss://<host>/JOIN?1=<gameId>&2=<leagueId>&3=<teamId>&4=<swid>&5=<draftToken>&6=false&7=false&8=KONA&nocache=<rand>
+//   frames: binary; last byte is a delimiter (sliced off); reader is big-endian:
+//     readInt=4-byte signed, readShort=2-byte, readUTF=short-length-prefixed string
+//   message types: {MESSAGE:1, PICK_MADE:2, MEMBER_JOINED:3, MEMBER_LEFT:4, PICK_UNDONE:5}
+async function captureDraftSocket(url, env) {
+  const leagueId = url.searchParams.get("leagueId");
+  const season = url.searchParams.get("season") || "2026";
+  const sport = url.searchParams.get("sport") || "ffl";
+  const teamId = url.searchParams.get("teamId") || "1";
+  const seconds = Math.min(20, Math.max(3, Number(url.searchParams.get("seconds")) || 9));
+  if (!leagueId) throw new Error("leagueId required");
+
+  // 1) draftInit REST → gameId + draftToken. Exact response path is unknown, so
+  //    search the JSON for the fields and also return a trimmed dump for debugging.
+  const initUrl = espnBaseForSport(sport) + "/seasons/" + season +
+    "/segments/0/leagues/" + leagueId + "?view=draftInit&view=mSettings";
+  const init = await espnFetch(initUrl, env);
+  const found = _findKeys(init, ["gameId", "draftToken", "draftDetail", "id"]);
+  const gameId = found.gameId != null ? found.gameId : init.gameId;
+  const draftToken = found.draftToken;
+  const debug = { initKeys: Object.keys(init || {}), foundGameId: gameId, hasToken: draftToken != null };
+  if (gameId == null || draftToken == null) {
+    return { ok: false, stage: "draftInit", error: "could not find gameId/draftToken in draftInit response", debug,
+      initSample: JSON.stringify(init).slice(0, 1200) };
+  }
+
+  // 2) Open the ESPN draft websocket via fetch Upgrade (Workers' WS-client path).
+  const swid = env.ESPN_SWID;
+  const rand = Math.floor(1e6 * (parseInt(url.searchParams.get("r") || "0", 10) % 1000000 || 424242));
+  const host = "fantasydraft.espn.com/game-" + gameId + "/";
+  const joinPath = "JOIN?1=" + gameId + "&2=" + leagueId + "&3=" + teamId +
+    "&4=" + encodeURIComponent(swid) + "&5=" + encodeURIComponent(draftToken) +
+    "&6=false&7=false&8=KONA&nocache=" + rand;
+  const wsHttpUrl = "https://" + host + joinPath;
+
+  let resp;
+  try {
+    resp = await fetch(wsHttpUrl, {
+      headers: {
+        "Upgrade": "websocket",
+        "cookie": "espn_s2=" + env.ESPN_S2 + "; SWID=" + env.ESPN_SWID,
+        "Origin": "https://fantasy.espn.com",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+      },
+    });
+  } catch (e) {
+    return { ok: false, stage: "connect", error: String(e.message || e), debug, wsUrl: _redact(wsHttpUrl) };
+  }
+  const ws = resp.webSocket;
+  if (!ws) {
+    return { ok: false, stage: "handshake", httpStatus: resp.status,
+      error: "no webSocket on response (handshake failed)", debug, wsUrl: _redact(wsHttpUrl),
+      bodySample: (await resp.text().catch(() => "")).slice(0, 400) };
+  }
+  ws.accept();
+
+  const frames = [];
+  ws.addEventListener("message", (ev) => {
+    try {
+      let bytes;
+      if (typeof ev.data === "string") bytes = new TextEncoder().encode(ev.data);
+      else bytes = new Uint8Array(ev.data);
+      frames.push(bytes);
+    } catch (_) {}
+  });
+  let closeInfo = null;
+  ws.addEventListener("close", (ev) => { closeInfo = { code: ev.code, reason: ev.reason }; });
+
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  try { ws.close(); } catch (_) {}
+
+  // 3) Best-effort decode each captured frame.
+  const decoded = frames.map((b, i) => decodeDraftFrame(b, i));
+  const picks = decoded.filter(d => d.type === 2 && d.pick).map(d => d.pick);
+  return {
+    ok: true,
+    connected: true,
+    gameId, teamId, seconds, frameCount: frames.length,
+    picksDecoded: picks.length,
+    picks,
+    frames: decoded,
+    close: closeInfo,
+    debug, wsUrl: _redact(wsHttpUrl),
+  };
+}
+
+// Recursively find the first occurrence of each key in a nested object.
+function _findKeys(obj, keys, out) {
+  out = out || {};
+  if (!obj || typeof obj !== "object") return out;
+  for (const k of keys) if (out[k] === undefined && obj[k] !== undefined && typeof obj[k] !== "object") out[k] = obj[k];
+  for (const v of Object.values(obj)) if (v && typeof v === "object") _findKeys(v, keys, out);
+  return out;
+}
+function _redact(u) { return u.replace(/(&5=)[^&]+/, "$1<token>").replace(/(&4=)[^&]+/, "$1<swid>"); }
+
+// Faithful port of ESPN's frame reader (big-endian). Decodes one frame into a
+// type + the raw token stream, and — for PICK_MADE (2) — a best-effort pick.
+function decodeDraftFrame(bytes, idx) {
+  // ESPN slices off the last byte (frame delimiter) before parsing.
+  const body = bytes.length > 1 ? bytes.subarray(0, bytes.length - 1) : bytes;
+  const hex = Array.from(bytes.subarray(0, 48)).map(x => x.toString(16).padStart(2, "0")).join(" ");
+  const r = new EspnReader(body);
+  let type = null;
+  try { type = r.readByte(); } catch (_) {}
+  // Emit a generic token stream so we can see the layout even if the exact
+  // field order is unknown. We greedily read ints, noting where strings appear.
+  const tokens = [];
+  try {
+    while (r.remaining() > 0 && tokens.length < 24) {
+      // Peek: if the next 2 bytes look like a plausible string length, read UTF.
+      const save = r.index;
+      const len = r.peekShort();
+      if (len > 0 && len < 40 && r.remaining() >= 2 + len) {
+        const s = r.readUTF();
+        if (/^[\x20-\x7e]+$/.test(s)) { tokens.push({ t: "utf", v: s }); continue; }
+        r.index = save;
+      }
+      tokens.push({ t: "int", v: r.readInt() });
+    }
+  } catch (_) {}
+  // Best-effort PICK_MADE map: ints observed in draft.js are pickNumber, teamId,
+  // playerId, bidAmount (+ autodraft flag). Real capture confirms the exact order.
+  let pick = null;
+  if (type === 2) {
+    const ints = tokens.filter(t => t.t === "int").map(t => t.v);
+    if (ints.length >= 3) {
+      pick = { _guessOrder: "pickNumber,teamId,playerId,bidAmount", ints,
+        strings: tokens.filter(t => t.t === "utf").map(t => t.v) };
+    }
+  }
+  return { idx, type, typeName: FRAME_TYPES[type] || ("?" + type), bytes: bytes.length, hex, tokens, pick };
+}
+const FRAME_TYPES = { 1: "MESSAGE", 2: "PICK_MADE", 3: "MEMBER_JOINED", 4: "MEMBER_LEFT", 5: "PICK_UNDONE" };
+
+class EspnReader {
+  constructor(bytes) { this.bytes = bytes; this.index = 0; }
+  remaining() { return this.bytes.length - this.index; }
+  readByte() { return this.bytes[this.index++]; }
+  _num(n) { let v = 0; for (let i = 0; i < n; i++) v = v * 256 + this.bytes[this.index++]; return v; }
+  readShort() { return this._num(2); }
+  peekShort() { return this.bytes[this.index] * 256 + this.bytes[this.index + 1]; }
+  readInt() { const e = this._num(4); return e > 0x7fffffff ? e - 0x100000000 : e; }  // signed
+  readUTF() { const len = this.readShort(); let s = ""; for (let i = 0; i < len; i++) s += String.fromCharCode(this.bytes[this.index++]); return s; }
 }

@@ -8,3 +8,9 @@ compatibility_date = "2025-01-01"
 #   ANTHROPIC_API_KEY — Anthropic API key
 #   ALLOWED_ORIGIN    — https://jwarshafsky.github.io
 #   UD_PROXY_KEY      — shared secret the app must send as x-ud-key (Settings tab)
+
+# Device-sync storage: mirrors the app's localStorage state per user so a
+# login on a new device restores settings/projections/draft state.
+[[kv_namespaces]]
+binding = "UD_SYNC"
+id = "db8c9b2e54a744a6b7573259e77e2c73"

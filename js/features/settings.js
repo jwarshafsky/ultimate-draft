@@ -234,6 +234,13 @@ function renderSettings() {
   html += '</div>';
   html += '</div></div>';
 
+  // === Device Sync ===
+  html += '<div class="card"><h2>Device Sync</h2>';
+  html += '<p class="muted small">Your settings, projections, notes, keepers, and draft picks are backed up to the cloud automatically whenever they change. Sign in on any device and everything comes back on its own — nothing to configure.</p>';
+  html += '<div class="small" id="sync-status-line" style="margin: 6px 0;">' + (typeof getCloudSyncInfo === "function" ? esc(getCloudSyncInfo().summary) : "—") + '</div>';
+  html += '<button class="btn ghost" id="set-sync-now" style="width: auto; padding: 6px 14px;">↻ Sync now</button>';
+  html += '</div>';
+
   // === Buttons ===
   html += '<div style="display: flex; gap: 8px; margin-top: 12px;">';
   html += '<button class="btn primary" id="set-save" style="width: auto; padding: 10px 18px;">Save Settings</button>';
@@ -303,6 +310,15 @@ function wireSettingsHandlers() {
   });
   document.getElementById("set-reset")?.addEventListener("click", () => {
     if (confirm("Reset all settings to defaults?")) resetSettings();
+  });
+  document.getElementById("set-sync-now")?.addEventListener("click", async () => {
+    if (typeof syncPullNow !== "function") return;
+    const changed = await syncPullNow({ reloadOnChange: false });
+    const line = document.getElementById("sync-status-line");
+    if (line) line.textContent = getCloudSyncInfo().summary;
+    if (changed) {
+      if (confirm(changed + " item" + (changed === 1 ? "" : "s") + " updated from another device. Reload to apply?")) location.reload();
+    }
   });
 }
 
