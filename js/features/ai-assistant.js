@@ -92,6 +92,9 @@ function buildAiContext() {
     myCategoryRanks: cats.ranks,
     myRotoPoints: cats.rotoPoints.toFixed(1),
     myStrategy: strategy,
+    // Jeff's own written game plan, AI-condensed (Settings ▸ Draft Strategy).
+    // Treat as the highest-priority guidance after explicit target prices.
+    myWrittenStrategy: (typeof strategyForAi === "function") ? strategyForAi() : null,
     myTargetPrices: myTargets,
     topPool,
     recentPicks: (typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).slice(-6).map(p => ({

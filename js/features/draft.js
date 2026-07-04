@@ -265,7 +265,9 @@ function renderOnTheClockPanel() {
     html += '<div class="otc-grid">';
     html += '<div class="otc-main">';
     html += '<div class="otc-label">On the Clock</div>';
-    html += '<div class="otc-player">' + esc(c.player) + '</div>';
+    const _otcInj = (typeof espnInjuryLabel === "function") ? espnInjuryLabel(c.player) : null;
+    html += '<div class="otc-player">' + esc(c.player) +
+      (_otcInj ? ' <span class="small" style="color:var(--bad); border:1px solid var(--bad); border-radius:4px; padding:1px 6px; vertical-align:middle;">🚑 ' + esc(_otcInj) + '</span>' : '') + '</div>';
     html += '<div class="otc-meta">';
     html += '<span class="kbd">' + esc(val?.posKey || "?") + '</span>';
     if (val?.team) html += ' <span class="muted">' + esc(val.team) + '</span>';
@@ -855,6 +857,9 @@ function _onDraftTabPresent(tab) {
 
 // Build an ESPN playerId → name map (kona_player_info) so socket picks, which
 // carry only playerId, can be named. Best-effort; unresolved → "Player <id>".
+// The same payload carries injuryStatus — kept in a name-keyed map so the
+// on-the-clock card can flag DTD/IL players.
+let _espnInjuryByName = {};
 async function _ensureEspnNames() {
   if (_espnIdToName) return;
   _espnIdToName = {};
@@ -862,11 +867,31 @@ async function _ensureEspnNames() {
     if (typeof fetchEspnPlayers !== "function") return;
     const data = await fetchEspnPlayers();
     const list = data.players || data.playerPool || [];
+    const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
     for (const e of list) {
       const p = e.player || e;
-      if (p && p.id != null) _espnIdToName[p.id] = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
+      if (!p || p.id == null) continue;
+      const name = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
+      _espnIdToName[p.id] = name;
+      const inj = p.injuryStatus || e.injuryStatus;
+      if (name && inj && inj !== "ACTIVE") _espnInjuryByName[_nk(name)] = inj;
     }
   } catch (e) { /* names are best-effort */ }
+}
+
+// Short human label for an ESPN injury status, or null if healthy/unknown.
+function espnInjuryLabel(playerName) {
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const s = _espnInjuryByName[_nk(playerName)];
+  if (!s) return null;
+  if (s.includes("DAY_TO_DAY")) return "DTD";
+  if (s.includes("SEVEN")) return "IL-7";
+  if (s.includes("TEN")) return "IL-10";
+  if (s.includes("FIFTEEN")) return "IL-15";
+  if (s.includes("SIXTY")) return "IL-60";
+  if (s.includes("SUSPEN")) return "SUSP";
+  if (s.includes("OUT")) return "OUT";
+  return s.replace(/_/g, " ");
 }
 function _resolveEspnName(id) {
   return (_espnIdToName && _espnIdToName[id]) || ("Player " + id);

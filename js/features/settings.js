@@ -188,6 +188,19 @@ function renderSettings() {
     html += '<button class="tag-btn cat-chip' + (on ? " on" : "") + '" data-cat="' + c + '" data-list="puntCategories">' + esc(c) + '</button>';
   }
   html += '</div></div></div></div>';
+
+  // Free-text strategy → AI-condensed brief carried into every draft-day prompt
+  const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : { text: "", brief: "" };
+  html += '<div style="margin-top: 14px;"><h3>Draft Strategy (your words)</h3>';
+  html += '<p class="muted small" style="margin:0 0 6px;">Write your plan — targets, budgets by position, punts, players to avoid, nomination ideas. "Condense for AI" turns it into a tight brief the assistant carries through the whole draft (shown in Draft Mode too).</p>';
+  html += '<textarea id="set-strategy-text" rows="7" style="width:100%; resize:vertical;" placeholder="e.g. Stars and scrubs. Up to $95 total on two anchor bats. Punt saves — cheap HLD relievers only. Hard cap $12 on catchers…">' + esc(strat.text) + '</textarea>';
+  html += '<div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">';
+  html += '<button class="btn" id="set-strategy-save" style="width:auto; padding:6px 14px;">Save strategy</button>';
+  html += '<button class="btn primary" id="set-strategy-condense" style="width:auto; padding:6px 14px;">Condense for AI</button>';
+  html += '<span class="small muted" id="set-strategy-status">' + (strat.brief ? 'Brief ready' + (strat.briefAt ? ' (' + new Date(strat.briefAt).toLocaleDateString() + ')' : '') : 'No brief yet') + '</span>';
+  html += '</div>';
+  html += '<div id="set-strategy-brief" class="small" style="margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--bg-3); white-space:pre-wrap;' + (strat.brief ? '' : ' display:none;') + '">' + esc(strat.brief) + '</div>';
+  html += '</div>';
   html += '</div>';
 
   // === Proxy URL + key (ESPN + Claude) ===
@@ -310,6 +323,24 @@ function wireSettingsHandlers() {
   });
   document.getElementById("set-reset")?.addEventListener("click", () => {
     if (confirm("Reset all settings to defaults?")) resetSettings();
+  });
+  document.getElementById("set-strategy-save")?.addEventListener("click", () => {
+    setDraftStrategyText(document.getElementById("set-strategy-text").value);
+    const st = document.getElementById("set-strategy-status");
+    if (st) st.textContent = "Saved.";
+  });
+  document.getElementById("set-strategy-condense")?.addEventListener("click", async () => {
+    const st = document.getElementById("set-strategy-status");
+    setDraftStrategyText(document.getElementById("set-strategy-text").value);
+    if (st) st.textContent = "Condensing…";
+    try {
+      const brief = await condenseDraftStrategy();
+      const box = document.getElementById("set-strategy-brief");
+      if (box) { box.textContent = brief; box.style.display = ""; }
+      if (st) st.textContent = "Brief ready.";
+    } catch (e) {
+      if (st) st.textContent = "Failed: " + e.message;
+    }
   });
   document.getElementById("set-sync-now")?.addEventListener("click", async () => {
     if (typeof syncPullNow !== "function") return;

@@ -165,6 +165,7 @@ function computeLiveProjStandings() {
 
 function renderDraftMode(root, inflation) {
   document.body.classList.add("draft-mode");
+  if (typeof _ensureEspnNames === "function") _ensureEspnNames();   // names + injury flags, best-effort
   let html = '<div class="dm-wrap">';
   html += _dmTopBar(inflation);
   html += _dmHero();
@@ -224,7 +225,9 @@ function _dmHero() {
     const sig = (typeof statcastBuySell === "function") ? statcastBuySell(name) : null;
     const infl = val ? inflatedValue(val, computeLiveInflation()) : null;
     html += '<div class="otc-label">On the Clock' + (lot && lot.nomTeamId != null ? ' <span class="muted small">nominated by ' + esc(_dmTeamLabel(lot.nomTeamId)) + '</span>' : '') + '</div>';
-    html += '<div class="dm-player">' + esc(name) + '</div>';
+    const inj = (typeof espnInjuryLabel === "function") ? espnInjuryLabel(name) : null;
+    html += '<div class="dm-player">' + esc(name) +
+      (inj ? ' <span class="small" style="color:var(--bad); border:1px solid var(--bad); border-radius:4px; padding:1px 6px; vertical-align:middle;">🚑 ' + esc(inj) + '</span>' : '') + '</div>';
     html += '<div class="otc-meta">';
     html += '<span class="kbd">' + esc(val?.posKey || "?") + '</span>';
     if (val?.team) html += ' <span class="muted">' + esc(val.team) + '</span>';
@@ -380,6 +383,12 @@ function _dmTable(players, inflation) {
 // --- side panels ---
 function _dmSide() {
   let html = '';
+  const brief = (typeof strategyForAi === "function") ? strategyForAi() : null;
+  html += '<div class="card"><h3 style="margin:0 0 6px;">My Plan</h3>' +
+    (brief
+      ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
+      : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>') +
+    '</div>';
   html += '<div class="card"><h3 style="margin:0 0 6px;">Projected Standings <span class="muted small">if the rest of the draft goes to $/slot</span></h3>' + _dmStandingsHtml() + '</div>';
   html += '<div class="card"><h3 style="margin:0 0 6px;">Nominations</h3>' + renderNominationsPanel() + '</div>';
   html += renderCategoryDashboard();
