@@ -42,6 +42,14 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
   (`steamerr`, `rthebatx`, `ratcdc`) — plain full-season slugs must never be
   fallbacks. Keep slugs in sync with `FG_API_SLUG` in `js/data/ros-projections.js`.
 
+## Strategy north-star
+
+- `docs/strategy-north-star.md` maps auction/keeper **strategy → features** for
+  Jeff's league. **Consult it before adding or changing any draft feature** — new
+  draft features should serve clearing-price accuracy, opponent draining/denial,
+  end-to-end budget flexibility, or owner-tendency exploitation. Deep theory lives
+  in the fantasy-kb (`Desktop/Claude/fantasy-kb/01-valuation/*`, `07-draft-prep/*`).
+
 ## Working on it
 
 - No tests. Verify with `node -c <file>` (syntax) + browser preview.
