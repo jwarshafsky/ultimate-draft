@@ -23,7 +23,7 @@ const _standings = {
   whatIf: { add: null, dropName: null },
   whatIfSim: { key: null, pBefore: 0, pAfter: 0 },  // memoized what-if title-odds sims
   whatIfTab: "addrop",                       // "addrop" | "trade" | "pickups"
-  trade: { partner: null, send: [], recv: [] },
+  trade: { teamA: null, partner: null, send: [], recv: [] },   // teamA defaults to you; any two teams can trade
   pickups: null,                             // cached best-pickups result
   tradeFinder: { results: null, winWinOnly: false },      // trade-finder results + filter
   lineupOverride: { start: new Set(), sit: new Set() },   // your manual force-start/bench
@@ -1212,34 +1212,48 @@ function drawTradeImage(impact) {
 }
 
 // --- Trade what-if -------------------------------------------------------
+// Any two teams can trade — including deals you're not part of — so you can
+// see how a rival swap would reshuffle your projected standings and odds.
 function renderTradePanel(myId) {
-  const teams = LEAGUE.teams.filter(t => t.id !== myId);
-  if (!_standings.trade.partner) _standings.trade.partner = teams[0].id;
+  if (!_standings.trade.teamA || !LEAGUE.teams.some(t => t.id === _standings.trade.teamA)) _standings.trade.teamA = myId;
+  const teamA = _standings.trade.teamA;
+  const partners = LEAGUE.teams.filter(t => t.id !== teamA);
+  if (!_standings.trade.partner || _standings.trade.partner === teamA) _standings.trade.partner = partners[0].id;
   const partner = _standings.trade.partner;
-  const myNames = _teamPlayerNames(myId);
+  const aNames = _teamPlayerNames(teamA);
   const theirNames = _teamPlayerNames(partner);
+  const meInvolved = teamA === myId || partner === myId;
 
-  let html = '<p class="muted small">Propose a trade and see how it reshuffles the whole league — both teams’ roto points, standing, and title odds. Hold ⌘/Ctrl to pick multiple players.</p>';
+  let html = '<p class="muted small">Propose a trade between <b>any two teams</b> — including deals you’re not in — and see how it reshuffles the whole league: both teams’ roto points, standing, and title odds' +
+    ', plus the knock-on effect on you. Hold ⌘/Ctrl to pick multiple players.</p>';
   html += '<div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">';
 
-  // Partner
-  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">Trade with' +
-    '<select id="tr-partner" style="min-width:170px;">';
-  for (const t of teams) {
-    html += '<option value="' + t.id + '"' + (t.id === partner ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
+  // Team A + Team B pickers
+  html += '<div style="display:flex;flex-direction:column;gap:10px;">';
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">Team A' +
+    '<select id="tr-teama" style="min-width:170px;">';
+  for (const t of LEAGUE.teams) {
+    html += '<option value="' + t.id + '"' + (t.id === teamA ? ' selected' : '') + '>' + esc(t.owner) + (t.id === myId ? ' (you)' : '') + '</option>';
   }
   html += '</select></label>';
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">Trades with' +
+    '<select id="tr-partner" style="min-width:170px;">';
+  for (const t of partners) {
+    html += '<option value="' + t.id + '"' + (t.id === partner ? ' selected' : '') + '>' + esc(t.owner) + (t.id === myId ? ' (you)' : '') + '</option>';
+  }
+  html += '</select></label>';
+  html += '</div>';
 
-  // You send
-  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">You send (' + esc(_teamLabel(myId)) + ')' +
+  // Team A sends
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">' + esc(_teamLabel(teamA)) + ' sends' +
     '<select id="tr-send" multiple size="7" style="min-width:200px;">';
-  for (const nm of myNames) {
+  for (const nm of aNames) {
     html += '<option value="' + esc(nm) + '"' + (_standings.trade.send.includes(nm) ? ' selected' : '') + '>' + esc(nm) + '</option>';
   }
   html += '</select></label>';
 
-  // You receive
-  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">You receive (' + esc(_teamLabel(partner)) + ')' +
+  // Team B sends
+  html += '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;">' + esc(_teamLabel(partner)) + ' sends' +
     '<select id="tr-recv" multiple size="7" style="min-width:200px;">';
   for (const nm of theirNames) {
     html += '<option value="' + esc(nm) + '"' + (_standings.trade.recv.includes(nm) ? ' selected' : '') + '>' + esc(nm) + '</option>';
@@ -1251,18 +1265,22 @@ function renderTradePanel(myId) {
     '<button class="btn ghost" id="tr-clear">Clear</button></div>';
   html += '</div>';
 
-  // Result — both teams' lineups re-optimized after the swap.
+  // Result — both teams' lineups re-optimized after the swap. Your team's row
+  // is always shown: even a trade you're not in can shift your category ranks
+  // and title odds.
   const send = _standings.trade.send, recv = _standings.trade.recv;
   if (send.length || recv.length) {
-    const afterLines = _afterLines(_poolsAfterTrade(myId, partner, send, recv));
+    const afterLines = _afterLines(_poolsAfterTrade(teamA, partner, send, recv));
     const before = _standings.computed, aft = computeStandings(afterLines);
     const oddsB = _oddsFor(_standings.built), oddsA = _oddsFor(afterLines);
+    const rowIds = meInvolved ? [teamA, partner] : [teamA, partner, myId];
 
     html += '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
-    html += '<p class="small">' + esc(_teamLabel(myId)) + ' sends <b>' + (send.map(esc).join(", ") || "—") +
-      '</b> · receives <b>' + (recv.map(esc).join(", ") || "—") + '</b></p>';
+    html += '<p class="small">' + esc(_teamLabel(teamA)) + ' sends <b>' + (send.map(esc).join(", ") || "—") +
+      '</b> · receives <b>' + (recv.map(esc).join(", ") || "—") + '</b>' +
+      (meInvolved ? '' : ' <span class="muted">(you’re not in this deal — your row shows the ripple effect on you)</span>') + '</p>';
     html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">Roto</th><th class="num">Standing</th><th class="num">Title odds</th></tr></thead><tbody>';
-    for (const tid of [myId, partner]) {
+    for (const tid of rowIds) {
       const bT = before.teams.find(t => t.teamId === tid), aT = aft.teams.find(t => t.teamId === tid);
       const dR = aT.rotoPoints - bT.rotoPoints, dPlace = bT.place - aT.place;
       const pB = oddsB.byTeam[tid]?.pFirst || 0, pA = oddsA.byTeam[tid]?.pFirst || 0;
@@ -1279,10 +1297,12 @@ function renderTradePanel(myId) {
     }
     html += '</tbody></table>';
 
-    // Shareable image
-    html += '<div style="margin-top:10px;"><button class="btn primary" id="tr-image">📸 Generate shareable image</button> ' +
-      '<span class="muted small" id="tr-image-status"></span></div>';
-    html += '<div id="tr-image-preview" style="margin-top:8px;"></div>';
+    // Shareable image — only for deals you're actually in (no card for rival swaps).
+    if (meInvolved) {
+      html += '<div style="margin-top:10px;"><button class="btn primary" id="tr-image">📸 Generate shareable image</button> ' +
+        '<span class="muted small" id="tr-image-status"></span></div>';
+      html += '<div id="tr-image-preview" style="margin-top:8px;"></div>';
+    }
 
     // My per-category point swing
     const bMe = before.teams.find(t => t.teamId === myId), aMe = aft.teams.find(t => t.teamId === myId);
@@ -1292,7 +1312,8 @@ function renderTradePanel(myId) {
       if (Math.abs(a - b) > 0.001) rows.push([cat, b, a]);
     }
     if (rows.length) {
-      html += '<p class="muted small" style="margin-top:8px;">Your category points</p>';
+      html += '<p class="muted small" style="margin-top:8px;">Your category points' +
+        (meInvolved ? '' : ' (rank shifts caused by their trade)') + '</p>';
       html += '<table style="font-size:12px;"><thead><tr><th>Cat</th><th class="num">Before</th><th class="num">After</th><th class="num">Δ</th></tr></thead><tbody>';
       for (const [cat, b, a] of rows) {
         const dd = a - b;
@@ -1474,6 +1495,13 @@ function wireStandings() {
     });
   });
   // Trade controls
+  const teamA = document.getElementById("tr-teama");
+  if (teamA) teamA.addEventListener("change", () => {
+    _standings.trade.teamA = teamA.value;
+    _standings.trade.send = [];   // Team A changed — clear its send list
+    if (_standings.trade.partner === teamA.value) _standings.trade.partner = null;   // re-picked in render
+    renderStandings();
+  });
   const partner = document.getElementById("tr-partner");
   if (partner) partner.addEventListener("change", () => {
     _standings.trade.partner = partner.value;
@@ -1492,17 +1520,17 @@ function wireStandings() {
   if (trClear) trClear.addEventListener("click", () => { _standings.trade.send = []; _standings.trade.recv = []; renderStandings(); });
   const trImg = document.getElementById("tr-image");
   if (trImg) trImg.addEventListener("click", () => {
-    const me = getMyTeam(), t = _standings.trade;
-    if (!me || (!t.send.length && !t.recv.length)) return;
+    const t = _standings.trade;
+    if (!t.teamA || !t.partner || (!t.send.length && !t.recv.length)) return;
     const status = document.getElementById("tr-image-status");
     if (status) status.textContent = "Rendering…";
     setTimeout(() => {
       try {
-        const url = drawTradeImage(_computeTradeImpact(me.id, t.partner, t.send, t.recv));
+        const url = drawTradeImage(_computeTradeImpact(t.teamA, t.partner, t.send, t.recv));
         const prev = document.getElementById("tr-image-preview");
         if (prev) prev.innerHTML = '<img src="' + url + '" alt="trade card" style="max-width:100%;border:1px solid var(--border);border-radius:10px;">';
         const a = document.createElement("a");
-        a.href = url; a.download = "trade-" + _teamLabel(me.id) + "-" + _teamLabel(t.partner) + ".png";
+        a.href = url; a.download = "trade-" + _teamLabel(t.teamA) + "-" + _teamLabel(t.partner) + ".png";
         document.body.appendChild(a); a.click(); a.remove();
         if (status) status.textContent = "Saved as PNG — or right-click the image to copy.";
       } catch (e) { if (status) status.textContent = "Image error: " + (e.message || e); }
@@ -1524,7 +1552,7 @@ function wireStandings() {
   document.querySelectorAll("[data-tf-open]").forEach(b => b.addEventListener("click", () => {
     const r = _standings.tradeFinder._displayed?.[+b.dataset.tfOpen];
     if (!r) return;
-    _standings.trade = { partner: r.partner, send: r.give.slice(), recv: r.get.slice() };
+    _standings.trade = { teamA: getMyTeam().id, partner: r.partner, send: r.give.slice(), recv: r.get.slice() };
     _standings.whatIfTab = "trade";
     renderStandings();
   }));
