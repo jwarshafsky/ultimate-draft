@@ -148,6 +148,9 @@ function renderDraft() {
   // === Draft controls (reset / undo) ===
   html += renderDraftControls();
 
+  // === Live pick feed (Keeper Edge extension) ===
+  html += renderDraftFeedPanel();
+
   // === ON THE CLOCK panel ===
   html += renderOnTheClockPanel();
 
@@ -361,7 +364,7 @@ function renderRecentPicks() {
     const val = getPlayerValue(pk.player);
     const v = val ? val.value : 0;
     const surplus = v - pk.price;
-    const testMode = typeof leagueOverrideActive === "function" && leagueOverrideActive();
+    const testMode = draftTestMode();
     const isMine = !testMode && pk.team === myId;
     // In test mode the ESPN team IDs belong to the throwaway league, not The
     // League — label them generically instead of mislabeling them as real owners.
@@ -406,6 +409,14 @@ function renderLiveSourcesPanel() {
 // === Event wiring ===
 
 function wireDraftHandlers() {
+  // Live pick feed mode (off / test / real)
+  document.querySelectorAll("[data-feedmode]").forEach(b => {
+    b.addEventListener("click", () => {
+      setFeedMode(b.dataset.feedmode);
+      if (b.dataset.feedmode !== "off") _feedRequestSync();   // ask the extension for current picks
+      renderDraft();
+    });
+  });
   // Click player name to open note editor
   document.querySelectorAll("#view-root .player-name").forEach(el => {
     el.addEventListener("click", () => openNoteEditor(el.dataset.player));
@@ -614,3 +625,123 @@ function loadLiveDraft() {
   } catch {}
 }
 loadLiveDraft();
+
+// ===========================================================================
+// Live pick feed — Keeper Edge browser extension
+// ---------------------------------------------------------------------------
+// The Keeper Edge extension hooks ESPN's draft-room websocket in *your* draft
+// tab and mirrors each completed pick to the app via chrome.storage (bridged by
+// ud-bridge.js → window.postMessage). No server, no polling, no eviction. This
+// block receives those picks and feeds them onto the Live Draft board.
+//
+// Mode (Live Draft page): off | test (any ESPN mock) | real (only league 1200).
+// "real" ignores any stray mock feed so a practice run can't corrupt draft day.
+// ===========================================================================
+
+const FEED_MODE_KEY = "ud_feed_mode";
+function getFeedMode() { return localStorage.getItem(FEED_MODE_KEY) || "off"; }
+function setFeedMode(m) {
+  const mode = (m === "test" || m === "real") ? m : "off";
+  localStorage.setItem(FEED_MODE_KEY, mode);
+  // "real" = your actual league (1200); clear any test-league override so
+  // player-name lookups and team mapping use the real league.
+  if (mode === "real" && typeof setLeagueOverride === "function") setLeagueOverride("");
+}
+// A pick log shows generic "Team N" labels when this is a practice run — either
+// the REST test-league override OR the extension feed set to test mode.
+function draftTestMode() {
+  return (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
+}
+
+const _feed = { extPresent: false, connected: false, leagueId: null, sport: null, count: 0, at: 0 };
+let _espnIdToName = null;
+
+// Build an ESPN playerId → name map (kona_player_info) so socket picks, which
+// carry only playerId, can be named. Best-effort; unresolved → "Player <id>".
+async function _ensureEspnNames() {
+  if (_espnIdToName) return;
+  _espnIdToName = {};
+  try {
+    if (typeof fetchEspnPlayers !== "function") return;
+    const data = await fetchEspnPlayers();
+    const list = data.players || data.playerPool || [];
+    for (const e of list) {
+      const p = e.player || e;
+      if (p && p.id != null) _espnIdToName[p.id] = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
+    }
+  } catch (e) { /* names are best-effort */ }
+}
+function _resolveEspnName(id) {
+  return (_espnIdToName && _espnIdToName[id]) || ("Player " + id);
+}
+
+// Ask the extension (if present) to (re)send the current feed.
+function _feedRequestSync() {
+  try { window.postMessage({ source: "ud-app", type: "ping" }, location.origin); } catch (e) {}
+}
+
+async function _applyDraftFeed(feed) {
+  const mode = getFeedMode();
+  if (mode === "off" || !feed || !Array.isArray(feed.picks)) return;
+  // In "real" mode, only accept picks from your actual league.
+  if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
+      String(feed.leagueId) !== String(UD_HOME_LEAGUE_ID)) return;
+
+  _feed.connected = true;
+  _feed.leagueId = feed.leagueId;
+  _feed.sport = feed.sport;
+  _feed.count = feed.picks.length;
+  _feed.at = Date.now();
+
+  await _ensureEspnNames();
+  const raws = feed.picks.map(p => ({
+    playerId: p.playerId, teamId: p.teamId, bidAmount: p.price, playerName: _resolveEspnName(p.playerId),
+  }));
+  // processEspnPicks (espn.js) de-dupes by espnPlayerId, saves, and re-renders.
+  if (typeof processEspnPicks === "function") processEspnPicks(raws);
+  else if (currentView === "draft") renderDraft();
+}
+
+// Listen for the extension bridge's messages (same-window postMessage).
+window.addEventListener("message", (ev) => {
+  if (ev.source !== window) return;
+  const d = ev.data;
+  if (!d || d.source !== "keeper-edge") return;
+  _feed.extPresent = true;
+  if (d.type === "draftFeed") _applyDraftFeed(d.feed);
+  else if (d.type === "hello" && currentView === "draft") renderDraft();
+});
+// One-time nudge in case the app loaded before the extension bridge.
+setTimeout(_feedRequestSync, 800);
+
+function renderDraftFeedPanel() {
+  const mode = getFeedMode();
+  const seg = (val, label, sub) =>
+    '<button class="btn' + (mode === val ? ' primary' : ' ghost') + '" data-feedmode="' + val +
+    '" style="border-radius:0;">' + label + (sub ? ' <span class="small" style="opacity:.8;">' + sub + '</span>' : '') + '</button>';
+
+  let status, cls;
+  if (!_feed.extPresent) {
+    cls = "warn"; status = "Keeper Edge extension not detected on this page. Load/reload it (chrome://extensions), then reopen this tab.";
+  } else if (mode === "off") {
+    cls = "muted"; status = "Feed off. Pick <b>Test</b> or <b>Real</b> to auto-capture picks from your open ESPN draft tab.";
+  } else if (_feed.connected && _feed.count > 0) {
+    cls = "good"; status = "● Live — capturing league <b>" + esc(String(_feed.leagueId || "?")) + "</b> (" + esc(_feed.sport || "?") + "): <b>" + _feed.count + "</b> pick" + (_feed.count === 1 ? "" : "s") + " received.";
+  } else {
+    cls = "muted"; status = "Waiting for your ESPN draft tab… open your " + (mode === "real" ? "league's draft" : "mock draft") + " and start it. Picks will appear here automatically.";
+  }
+  const colorVar = cls === "good" ? "var(--good)" : cls === "warn" ? "var(--warn)" : "var(--text-2)";
+
+  let html = '<div class="card" style="padding:10px 12px;">';
+  html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">';
+  html += '<b>Live Pick Feed</b> <span class="muted small">via Keeper Edge — no manual entry</span>';
+  html += '<span style="flex:1;"></span>';
+  html += '<div class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden;">';
+  html += seg("off", "Off", "");
+  html += seg("test", "Test", "(mock)");
+  html += seg("real", "Real", "(my league)");
+  html += '</div></div>';
+  html += '<div class="small" style="margin-top:6px; color:' + colorVar + ';">' + status + '</div>';
+  html += '</div>';
+  return html;
+}
