@@ -579,13 +579,13 @@ function decodeDraftFrame(bytes, idx) {
   const cmd = (parts[0] || "").toUpperCase();
   const fields = parts.slice(1);
 
-  // SOLD = completed auction pick. playerId (field 1) and price (field 3)
-  // positions are confirmed against BID frames for the same player; teamId is
-  // reported both ways (lot vs field 2) until confirmed against the draft board.
+  // SOLD = completed auction pick. Confirmed against live BID_ACK frames:
+  //   SOLD <teamId> <playerId> <seq> <price> <flag>
+  // teamId is the FIRST field (matches the winning bidder), playerId 2nd, price 4th.
   let pick = null;
   if (cmd === "SOLD" && fields.length >= 4) {
     const n = fields.map(x => Number(x));
-    pick = { lot: n[0], playerId: n[1], teamId: n[2], price: n[3], flag: n[4], raw: fields };
+    pick = { teamId: n[0], playerId: n[1], seq: n[2], price: n[3], flag: n[4], raw: fields };
   }
   return { idx, cmd, text: text.slice(0, 200), fields, bytes: bytes.length, isPick: cmd === "SOLD", pick };
 }
