@@ -653,8 +653,25 @@ function draftTestMode() {
   return (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
 }
 
-const _feed = { extPresent: false, connected: false, leagueId: null, sport: null, count: 0, at: 0 };
+const _feed = { extPresent: false, connected: false, leagueId: null, sport: null, count: 0, at: 0,
+  tabAt: 0, tabLeagueId: null, tabSport: null };
 let _espnIdToName = null;
+let _draftTabStaleTimer = null;
+
+// The ESPN draft tab heartbeats every ~8s while open. Treat it as "open" only if
+// we've heard a beat in the last ~25s, so a closed tab auto-clears.
+function draftTabOpen() { return _feed.tabAt && (Date.now() - _feed.tabAt) < 25000; }
+function _onDraftTabPresent(tab) {
+  if (!tab) return;
+  const wasOpen = draftTabOpen();
+  _feed.tabAt = tab.at || Date.now();
+  _feed.tabLeagueId = tab.leagueId || null;
+  _feed.tabSport = tab.sport || null;
+  clearTimeout(_draftTabStaleTimer);
+  // When beats stop, re-render once so the panel flips to "no draft tab".
+  _draftTabStaleTimer = setTimeout(() => { if (currentView === "draft") renderDraft(); }, 26000);
+  if (!wasOpen && currentView === "draft") renderDraft();   // transition closed→open
+}
 
 // Build an ESPN playerId → name map (kona_player_info) so socket picks, which
 // carry only playerId, can be named. Best-effort; unresolved → "Player <id>".
@@ -709,6 +726,7 @@ window.addEventListener("message", (ev) => {
   if (!d || d.source !== "keeper-edge") return;
   _feed.extPresent = true;
   if (d.type === "draftFeed") _applyDraftFeed(d.feed);
+  else if (d.type === "draftTab") _onDraftTabPresent(d.tab);
   else if (d.type === "hello" && currentView === "draft") renderDraft();
 });
 // One-time nudge in case the app loaded before the extension bridge.
@@ -720,15 +738,34 @@ function renderDraftFeedPanel() {
     '<button class="btn' + (mode === val ? ' primary' : ' ghost') + '" data-feedmode="' + val +
     '" style="border-radius:0;">' + label + (sub ? ' <span class="small" style="opacity:.8;">' + sub + '</span>' : '') + '</button>';
 
+  // Auto-detected state of the two links in the chain.
+  const tabOpen = draftTabOpen();
+  const dot = (on, color) => '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' +
+    (on ? color : "var(--text-3)") + '; margin-right:5px; vertical-align:middle;"></span>';
+
+  // Extension detected? / ESPN draft tab open? — two auto-detected indicators.
+  let detect = '<div class="small" style="margin-top:6px; display:flex; gap:16px; flex-wrap:wrap;">';
+  detect += '<span>' + dot(_feed.extPresent, "var(--good)") + (_feed.extPresent ? "Keeper Edge connected" : "Keeper Edge not detected") + '</span>';
+  detect += '<span>' + dot(tabOpen, "var(--good)") +
+    (tabOpen ? "ESPN draft tab open — " + esc(_feed.tabSport === "ffl" ? "football" : _feed.tabSport === "flb" ? "baseball" : (_feed.tabSport || "?")) + " · league " + esc(String(_feed.tabLeagueId || "?"))
+             : "No ESPN draft tab open") + '</span>';
+  detect += '</div>';
+
   let status, cls;
   if (!_feed.extPresent) {
-    cls = "warn"; status = "Keeper Edge extension not detected on this page. Load/reload it (chrome://extensions), then reopen this tab.";
+    cls = "warn"; status = "Load/reload Keeper Edge (chrome://extensions), then reopen this tab.";
   } else if (mode === "off") {
-    cls = "muted"; status = "Feed off. Pick <b>Test</b> or <b>Real</b> to auto-capture picks from your open ESPN draft tab.";
+    cls = "muted"; status = tabOpen
+      ? "Draft tab detected. Pick <b>Test</b> or <b>Real</b> to start auto-capturing picks."
+      : "Feed off. Pick <b>Test</b> or <b>Real</b>, then open your ESPN draft tab.";
   } else if (_feed.connected && _feed.count > 0) {
-    cls = "good"; status = "● Live — capturing league <b>" + esc(String(_feed.leagueId || "?")) + "</b> (" + esc(_feed.sport || "?") + "): <b>" + _feed.count + "</b> pick" + (_feed.count === 1 ? "" : "s") + " received.";
+    cls = "good"; status = "● Live — capturing league <b>" + esc(String(_feed.leagueId || "?")) + "</b>: <b>" + _feed.count + "</b> pick" + (_feed.count === 1 ? "" : "s") + " received.";
+  } else if (tabOpen && mode === "real" && String(_feed.tabLeagueId) !== String(typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200)) {
+    cls = "warn"; status = "Draft tab is league <b>" + esc(String(_feed.tabLeagueId)) + "</b>, but Real mode only accepts your league (" + (typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + "). Switch to <b>Test</b> for a mock.";
+  } else if (tabOpen) {
+    cls = "muted"; status = "Connected to your draft tab — waiting for the first pick. Picks appear here automatically.";
   } else {
-    cls = "muted"; status = "Waiting for your ESPN draft tab… open your " + (mode === "real" ? "league's draft" : "mock draft") + " and start it. Picks will appear here automatically.";
+    cls = "muted"; status = "Waiting for your ESPN draft tab… open your " + (mode === "real" ? "league's draft" : "mock draft") + " and start it.";
   }
   const colorVar = cls === "good" ? "var(--good)" : cls === "warn" ? "var(--warn)" : "var(--text-2)";
 
@@ -741,7 +778,8 @@ function renderDraftFeedPanel() {
   html += seg("test", "Test", "(mock)");
   html += seg("real", "Real", "(my league)");
   html += '</div></div>';
-  html += '<div class="small" style="margin-top:6px; color:' + colorVar + ';">' + status + '</div>';
+  html += detect;
+  html += '<div class="small" style="margin-top:4px; color:' + colorVar + ';">' + status + '</div>';
   html += '</div>';
   return html;
 }
