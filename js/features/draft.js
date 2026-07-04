@@ -12,11 +12,15 @@
 //   └──────────────────────────┴─────────────────────────────────────┘
 
 const _liveDraft = {
-  picks: [],            // [{ player, pos, team, price, ts, espnPlayerId }]
+  picks: [],            // [{ player, pos, team, price, ts, espnPlayerId, espnSeq }]
+  deleted: {},          // espnPlayerId -> espnSeq (or true) — tombstones for manually-deleted
+                        // feed picks (commissioner undos), so the feed can't re-add them.
+                        // A later RE-SALE of the same player (different seq) clears the tombstone.
   current: null,        // { player, posKey, value } currently up for auction
   highBid: 0,
   highBidder: null,
   poolFilter: { pos: "ALL", search: "" },
+  showAllPicks: false,
 };
 
 function getMyLiveDraftPicks() {
@@ -353,10 +357,16 @@ function renderRecentPicks() {
   if (!_liveDraft.picks.length) {
     return '<div class="card"><h3>Recent Picks</h3><p class="muted small">No picks recorded yet.</p></div>';
   }
-  let html = '<div class="card"><h3>Recent Picks (last 12)</h3>';
-  html += '<p class="muted small" style="margin:0 0 6px;">↶ reverts the draft to just before that pick.</p>';
-  html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Team</th><th class="num">$</th><th class="num">vs Val</th><th></th></tr></thead><tbody>';
-  const recent = _liveDraft.picks.slice(-12).reverse();
+  const showAll = _liveDraft.showAllPicks || _liveDraft.picks.length <= 12;
+  let html = '<div class="card"><h3>Recent Picks ' +
+    (showAll ? '<span class="muted small">(all ' + _liveDraft.picks.length + ')</span>' : '<span class="muted small">(last 12)</span>') + '</h3>';
+  html += '<p class="muted small" style="margin:0 0 6px;">↶ reverts the draft to just before that pick · ✕ deletes only that pick (commissioner undo / mis-record).</p>';
+  if (_liveDraft.picks.length > 12) {
+    html += '<button class="btn ghost" id="picks-showall" style="margin-bottom:6px; padding:2px 10px; font-size:11px;">' +
+      (showAll ? 'Show last 12' : 'Show all ' + _liveDraft.picks.length) + '</button>';
+  }
+  html += '<table style="font-size: 12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Team</th><th class="num">$</th><th class="num">vs Val</th><th></th><th></th></tr></thead><tbody>';
+  const recent = (showAll ? _liveDraft.picks.slice() : _liveDraft.picks.slice(-12)).reverse();
   const myId = getMyTeam()?.id;
   for (let i = 0; i < recent.length; i++) {
     const pk = recent[i];
@@ -378,6 +388,7 @@ function renderRecentPicks() {
     html += '<td class="num">$' + pk.price + '</td>';
     html += '<td class="num ' + (surplus > 0 ? 'good' : 'bad') + '">' + (val ? (surplus > 0 ? '+' : '') + '$' + surplus.toFixed(0) : '—') + '</td>';
     html += '<td><button class="btn ghost live-revert" data-idx="' + origIndex + '" title="Revert to before this pick" style="padding:1px 7px;">↶</button></td>';
+    html += '<td><button class="btn ghost live-delete" data-idx="' + origIndex + '" title="Delete only this pick" style="padding:1px 7px; color:var(--bad);">✕</button></td>';
     html += '</tr>';
   }
   html += '</tbody></table></div>';
@@ -509,6 +520,34 @@ function wireDraftHandlers() {
       revertToPick(idx);
     }
   }));
+  document.querySelectorAll(".live-delete").forEach(b => b.addEventListener("click", () => {
+    const idx = parseInt(b.dataset.idx, 10);
+    const pk = _liveDraft.picks[idx];
+    if (!pk) return;
+    if (confirm("Delete pick #" + (idx + 1) + " (" + pk.player + " — $" + pk.price + ")? Only this pick is removed; the live feed won't re-add it unless the player is genuinely re-auctioned.")) {
+      deletePickAt(idx);
+    }
+  }));
+  document.getElementById("picks-showall")?.addEventListener("click", () => {
+    _liveDraft.showAllPicks = !_liveDraft.showAllPicks;
+    renderDraft();
+  });
+  // Feed diagnostics + commissioner-undo reconciliation
+  document.getElementById("feed-download-log")?.addEventListener("click", downloadDraftLog);
+  document.getElementById("feed-resync")?.addEventListener("click", () => { _feedRequestSync(); });
+  document.getElementById("undo-remove-suspects")?.addEventListener("click", () => {
+    const suspects = _undoSuspects();
+    if (!suspects.length) return;
+    const names = suspects.map(s => s.pk.player).join(", ");
+    if (!confirm("Remove " + suspects.length + " pick" + (suspects.length === 1 ? "" : "s") + " (" + names + ")? ESPN's own draft state no longer includes them.")) return;
+    // Delete from highest index down so earlier indexes stay valid.
+    for (const { pk, idx } of suspects.slice().sort((a, b) => b.idx - a.idx)) {
+      if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : true);
+      _liveDraft.picks.splice(idx, 1);
+    }
+    saveLiveDraft();
+    renderDraft();
+  });
   document.getElementById("otc-sold")?.addEventListener("click", soldCurrent);
   document.getElementById("otc-cancel")?.addEventListener("click", () => {
     _liveDraft.current = null;
@@ -616,15 +655,31 @@ function soldCurrent() {
 }
 
 function saveLiveDraft() {
-  try { localStorage.setItem("ud_live_draft_v1", JSON.stringify(_liveDraft.picks)); } catch {}
+  try { localStorage.setItem("ud_live_draft_v1", JSON.stringify({ v: 2, picks: _liveDraft.picks, deleted: _liveDraft.deleted })); } catch {}
 }
 function loadLiveDraft() {
   try {
     const v = JSON.parse(localStorage.getItem("ud_live_draft_v1") || "[]");
-    if (Array.isArray(v)) _liveDraft.picks = v;
+    if (Array.isArray(v)) _liveDraft.picks = v;                      // legacy format (picks only)
+    else if (v && Array.isArray(v.picks)) {
+      _liveDraft.picks = v.picks;
+      _liveDraft.deleted = v.deleted || {};
+    }
   } catch {}
 }
 loadLiveDraft();
+
+// Delete ONE pick (commissioner undo, mis-record) without touching the rest.
+// Feed-sourced picks get a tombstone so the extension feed can't re-add them;
+// a genuine re-auction (same player, different ESPN lot seq) is still accepted.
+function deletePickAt(index) {
+  const pk = _liveDraft.picks[index];
+  if (!pk) return;
+  if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : true);
+  _liveDraft.picks.splice(index, 1);
+  saveLiveDraft();
+  renderDraft();
+}
 
 // ===========================================================================
 // Live pick feed — Keeper Edge browser extension
@@ -654,9 +709,111 @@ function draftTestMode() {
 }
 
 const _feed = { extPresent: false, connected: false, leagueId: null, sport: null, count: 0, at: 0,
-  tabAt: 0, tabLeagueId: null, tabSport: null };
+  tabAt: 0, tabLeagueId: null, tabSport: null, lastFrameAt: 0 };
 let _espnIdToName = null;
 let _draftTabStaleTimer = null;
+
+// The full draft-room event stream (nominations, bids, passes, sales…) mirrored
+// from the extension. Kept in memory + localStorage backup; uploaded to Supabase
+// by draft-log.js. `initState` is ESPN's own pick list from the latest INIT
+// frame, used to spot commissioner-undone picks.
+const _dlog = { leagueId: null, sport: null, startedAt: 0, events: [], lastEventAt: 0, initState: null };
+const _DLOG_LS_KEY = "ud_draft_events_v1";   // device-local backup (NOT synced — big + already mirrored to Supabase)
+
+function _dlogPersist() {
+  try {
+    localStorage.setItem(_DLOG_LS_KEY, JSON.stringify({
+      leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt,
+      events: _dlog.events.slice(-15000),
+    }));
+  } catch (e) {}
+}
+let _dlogPersistTimer = null;
+function _dlogPersistSoon() {
+  if (_dlogPersistTimer) return;
+  _dlogPersistTimer = setTimeout(() => { _dlogPersistTimer = null; _dlogPersist(); }, 2000);
+}
+function _dlogLoad() {
+  try {
+    const v = JSON.parse(localStorage.getItem(_DLOG_LS_KEY) || "null");
+    if (v && Array.isArray(v.events)) {
+      _dlog.leagueId = v.leagueId; _dlog.sport = v.sport; _dlog.startedAt = v.startedAt || 0;
+      _dlog.events = v.events;
+      _dlog.lastEventAt = v.events.length ? (v.events[v.events.length - 1].at || 0) : 0;
+    }
+  } catch (e) {}
+}
+_dlogLoad();
+
+// After a reload, resume the Supabase mirror where it left off (draft-log.js
+// keeps an uploaded-seq watermark, so this only sends what's missing).
+setTimeout(() => {
+  if (_dlog.events.length && _dlogAccepts(_dlog.leagueId) && typeof logDraftEvents === "function") {
+    logDraftEvents({ leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt },
+      _dlog.events, getFeedMode() !== "real");
+  }
+}, 3000);
+
+// Feed events arriving while the user is mid-keystroke shouldn't rebuild the
+// whole view — update the live bits of the feed panel in place instead.
+function _updateFeedActivityDom() {
+  const el = document.getElementById("feed-activity");
+  if (el) el.innerHTML = _feedActivityHtml();
+  if (typeof updateDraftDiagnostics === "function") updateDraftDiagnostics();
+}
+
+// Should this event stream be accepted + logged? Mirrors the pick-feed mode
+// rules: off = no; real = only your league; test = anything.
+function _dlogAccepts(leagueId) {
+  const mode = getFeedMode();
+  if (mode === "off") return false;
+  if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
+      String(leagueId) !== String(UD_HOME_LEAGUE_ID)) return false;
+  return true;
+}
+
+function _onDraftEvents(msg) {
+  if (!msg || !msg.log || !Array.isArray(msg.events)) return;
+  if (!_dlogAccepts(msg.log.leagueId)) return;
+  const isNewStream = _dlog.leagueId !== msg.log.leagueId || _dlog.startedAt !== msg.log.startedAt;
+  if (msg.full || isNewStream) {
+    _dlog.leagueId = msg.log.leagueId; _dlog.sport = msg.log.sport; _dlog.startedAt = msg.log.startedAt;
+    if (isNewStream) _dlog.events = [];
+  }
+  const last = _dlog.events.length ? (_dlog.events[_dlog.events.length - 1].seq || 0) : 0;
+  const fresh = msg.events.filter(e => e && e.seq != null && e.seq > last);
+  if (!fresh.length) return;
+  _dlog.events.push(...fresh);
+  if (_dlog.events.length > 15000) _dlog.events.splice(0, _dlog.events.length - 15000);
+  _dlog.lastEventAt = fresh[fresh.length - 1].at || Date.now();
+  _dlogPersistSoon();
+  // Mirror to Supabase (draft-log.js). Mock unless Real mode on your league.
+  if (typeof logDraftEvents === "function") {
+    logDraftEvents({ leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt },
+      fresh, getFeedMode() !== "real");
+  }
+  _updateFeedActivityDom();
+}
+
+function _onDraftInit(init) {
+  if (!init || !Array.isArray(init.picks)) return;
+  if (!_dlogAccepts(init.leagueId)) return;
+  _dlog.initState = init;
+  if (currentView === "draft") renderDraft();   // may surface an undo warning
+}
+
+// Picks we hold (from the feed) that ESPN's own latest full state no longer
+// contains = likely commissioner undos. Only judged for picks made BEFORE the
+// INIT snapshot (later picks are simply newer than it).
+function _undoSuspects() {
+  const init = _dlog.initState;
+  if (!init || !Array.isArray(init.picks) || !init.picks.length) return [];
+  if (String(init.leagueId) !== String(_feed.leagueId || init.leagueId)) return [];
+  const inState = new Set(init.picks.map(p => p.playerId));
+  return _liveDraft.picks
+    .map((pk, idx) => ({ pk, idx }))
+    .filter(({ pk }) => pk.espnPlayerId != null && !inState.has(pk.espnPlayerId) && (pk.ts || 0) < init.at - 3000);
+}
 
 // The ESPN draft tab heartbeats every ~8s while open. Treat it as "open" only if
 // we've heard a beat in the last ~25s, so a closed tab auto-clears.
@@ -667,10 +824,12 @@ function _onDraftTabPresent(tab) {
   _feed.tabAt = tab.at || Date.now();
   _feed.tabLeagueId = tab.leagueId || null;
   _feed.tabSport = tab.sport || null;
+  if (tab.lastFrameAt) _feed.lastFrameAt = Math.max(_feed.lastFrameAt, tab.lastFrameAt);
   clearTimeout(_draftTabStaleTimer);
   // When beats stop, re-render once so the panel flips to "no draft tab".
   _draftTabStaleTimer = setTimeout(() => { if (currentView === "draft") renderDraft(); }, 26000);
   if (!wasOpen && currentView === "draft") renderDraft();   // transition closed→open
+  else _updateFeedActivityDom();
 }
 
 // Build an ESPN playerId → name map (kona_player_info) so socket picks, which
@@ -711,12 +870,47 @@ async function _applyDraftFeed(feed) {
   _feed.at = Date.now();
 
   await _ensureEspnNames();
-  const raws = feed.picks.map(p => ({
-    playerId: p.playerId, teamId: p.teamId, bidAmount: p.price, playerName: _resolveEspnName(p.playerId),
+
+  // Tombstones: a manually-deleted pick (commissioner undo) must not be
+  // re-added by the cumulative feed. But if the feed now carries a DIFFERENT
+  // lot seq for that player, he was genuinely re-auctioned — clear the
+  // tombstone and accept the new sale.
+  let tombstonesChanged = false;
+  const alive = feed.picks.filter(p => {
+    const dead = _liveDraft.deleted[p.playerId];
+    if (dead == null) return true;
+    if (dead !== true && p.seq != null && String(p.seq) !== String(dead)) {
+      delete _liveDraft.deleted[p.playerId];
+      tombstonesChanged = true;
+      return true;
+    }
+    return false;
+  });
+
+  // Reconcile picks we already hold whose feed record CHANGED (undo → re-sold
+  // to another team/price: the bridge replaces the pick, keeping the playerId).
+  let updated = 0;
+  const held = new Map(_liveDraft.picks.filter(pk => pk.espnPlayerId != null).map(pk => [pk.espnPlayerId, pk]));
+  for (const p of alive) {
+    const pk = held.get(p.playerId);
+    if (!pk) continue;
+    const seqChanged = p.seq != null && pk.espnSeq != null && String(p.seq) !== String(pk.espnSeq);
+    if (seqChanged || pk.price !== p.price || pk.espnTeamId !== p.teamId) {
+      pk.price = p.price;
+      pk.espnTeamId = p.teamId;
+      pk.team = espnTeamIdToOwnerId(p.teamId);
+      pk.espnSeq = p.seq != null ? p.seq : pk.espnSeq;
+      updated++;
+    }
+  }
+  if (tombstonesChanged || updated) saveLiveDraft();
+
+  const raws = alive.map(p => ({
+    playerId: p.playerId, teamId: p.teamId, bidAmount: p.price, seq: p.seq, playerName: _resolveEspnName(p.playerId),
   }));
   // processEspnPicks (espn.js) de-dupes by espnPlayerId, saves, and re-renders.
   if (typeof processEspnPicks === "function") processEspnPicks(raws);
-  else if (currentView === "draft") renderDraft();
+  if (updated && currentView === "draft") renderDraft();
 }
 
 // Listen for the extension bridge's messages (same-window postMessage).
@@ -726,6 +920,8 @@ window.addEventListener("message", (ev) => {
   if (!d || d.source !== "keeper-edge") return;
   _feed.extPresent = true;
   if (d.type === "draftFeed") _applyDraftFeed(d.feed);
+  else if (d.type === "draftEvents") _onDraftEvents(d);
+  else if (d.type === "draftInit") _onDraftInit(d.init);
   else if (d.type === "draftTab") _onDraftTabPresent(d.tab);
   else if (d.type === "hello" && currentView === "draft") renderDraft();
 });
@@ -780,6 +976,140 @@ function renderDraftFeedPanel() {
   html += '</div></div>';
   html += detect;
   html += '<div class="small" style="margin-top:4px; color:' + colorVar + ';">' + status + '</div>';
+  html += '<div id="feed-activity">' + _feedActivityHtml() + '</div>';
+  html += _undoSuspectsHtml();
+  html += _feedDiagnosticsHtml();
   html += '</div>';
   return html;
 }
+
+// --- Live activity + watchdog -----------------------------------------------
+// Human-readable line for the newest draft-room event, plus a loud warning when
+// the ESPN tab is open but the socket has gone quiet (pipe broken vs. tab
+// closed — the failure mode that silently ate picks in the last mock).
+
+function _describeDraftEvent(e) {
+  if (!e) return "";
+  const test = draftTestMode();
+  const owner = (!test && e.teamId != null && typeof espnTeamIdToOwnerId === "function")
+    ? (getTeam(espnTeamIdToOwnerId(e.teamId))?.owner || null) : null;
+  const team = e.teamId != null ? (owner || "Team " + e.teamId) : "";
+  const player = e.playerId != null ? ((_espnIdToName && _espnIdToName[e.playerId]) || "player " + e.playerId) : "";
+  switch (e.cmd) {
+    case "NOMINATION": return team + " nominates" + (player ? " " + player : "");
+    case "BID":        return team + " bids" + (e.amount != null ? " $" + e.amount : "") + (player ? " — " + player : "");
+    case "BID_ACK":    return "bid confirmed" + (e.amount != null ? " at $" + e.amount : "");
+    case "PASSED":     return team + " passes";
+    case "SOLD":       return "SOLD — " + (player || "?") + " to " + (team || "?") + " for $" + (e.amount != null ? e.amount : "?");
+    case "INIT":       return "full draft state received (" + (e.text || "") + ")";
+    case "SOCKET_OPEN":  return "draft-room socket connected";
+    case "SOCKET_CLOSE": return "draft-room socket closed (" + (e.text || "?") + ")";
+    case "SOCKET_ERROR": return "draft-room socket error";
+    default:           return e.cmd + (e.text ? " · " + e.text.slice(0, 80) : "");
+  }
+}
+
+function _feedActivityHtml() {
+  const mode = getFeedMode();
+  if (mode === "off") return "";
+  let html = "";
+  const last = _dlog.events.length ? _dlog.events[_dlog.events.length - 1] : null;
+  if (last) {
+    const age = Math.max(0, Math.round((Date.now() - (last.at || 0)) / 1000));
+    html += '<div class="small muted" style="margin-top:4px;">Last activity ' +
+      (last.at ? age + "s ago" : "—") + ' · ' + esc(_describeDraftEvent(last)) +
+      ' <span class="dim">(' + _dlog.events.length + ' events logged)</span></div>';
+  }
+  // Watchdog: tab beating + we HAVE seen socket frames + >30s of silence = the
+  // draft-room feed stalled (paused draft also looks like this — say both).
+  const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
+  const quiet = lastFrame ? Date.now() - lastFrame : 0;
+  if (draftTabOpen() && lastFrame && quiet > 30000) {
+    html += '<div class="small" style="margin-top:4px; color:var(--bad);"><b>⚠ No draft-room data for ' +
+      Math.round(quiet / 1000) + 's</b> — if the ESPN draft is clearly still running, reload the ESPN draft tab ' +
+      '(the INIT backfill recovers anything missed). If the draft is just paused, ignore this.</div>';
+  }
+  return html;
+}
+
+// Commissioner-undo reconciliation: picks we hold that ESPN's latest full state
+// (INIT frame, sent on socket reconnect) no longer contains.
+function _undoSuspectsHtml() {
+  if (getFeedMode() === "off") return "";
+  const suspects = _undoSuspects();
+  if (!suspects.length) return "";
+  let html = '<div class="small" style="margin-top:6px; padding:8px 10px; border:1px solid var(--warn); background:rgba(210,153,34,.08);">';
+  html += '<b style="color:var(--warn);">⚠ ' + suspects.length + ' recorded pick' + (suspects.length === 1 ? '' : 's') +
+    ' no longer in ESPN\'s draft state</b> — likely undone by the commissioner:';
+  html += '<ul style="margin:4px 0 6px 18px;">';
+  for (const { pk } of suspects.slice(0, 8)) {
+    html += '<li>' + esc(pk.player) + ' — $' + pk.price + '</li>';
+  }
+  html += '</ul>';
+  html += '<button class="btn ghost" id="undo-remove-suspects" style="padding:3px 10px;">Remove ' +
+    (suspects.length === 1 ? 'it' : 'them') + '</button>';
+  html += ' <span class="muted">(each gets a tombstone; a genuine re-auction is still accepted)</span>';
+  html += '</div>';
+  return html;
+}
+
+// Diagnostics: the black box. Event counts, pipe ages, Supabase mirror status,
+// and a one-click export of everything for post-mortem debugging.
+function _feedDiagnosticsHtml() {
+  if (getFeedMode() === "off") return "";
+  let html = '<details style="margin-top:6px;"><summary class="small muted" style="cursor:pointer;">Diagnostics & event log</summary>';
+  html += '<div id="feed-diag-body" class="small" style="margin-top:6px;">' + _feedDiagBodyHtml() + '</div>';
+  html += '<div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">';
+  html += '<button class="btn ghost" id="feed-download-log" style="padding:3px 10px; font-size:11px;">⬇ Download event log</button>';
+  html += '<button class="btn ghost" id="feed-resync" style="padding:3px 10px; font-size:11px;">↻ Re-sync from extension</button>';
+  html += '</div></details>';
+  return html;
+}
+
+function _feedDiagBodyHtml() {
+  const now = Date.now();
+  const fmtAge = (t) => t ? Math.round((now - t) / 1000) + "s ago" : "never";
+  let rows = [];
+  rows.push(["Extension", _feed.extPresent ? "connected" : "not detected"]);
+  rows.push(["ESPN tab heartbeat", fmtAge(_feed.tabAt)]);
+  rows.push(["Last socket frame", fmtAge(Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0))]);
+  rows.push(["Events logged", String(_dlog.events.length) + (_dlog.leagueId ? " (league " + _dlog.leagueId + ")" : "")]);
+  rows.push(["Picks held", String(_liveDraft.picks.length) + " · tombstones " + Object.keys(_liveDraft.deleted).length]);
+  if (_dlog.initState) rows.push(["ESPN state (INIT)", _dlog.initState.picks.length + " picks, " + fmtAge(_dlog.initState.at)]);
+  if (typeof draftLogStatus === "function") {
+    const s = draftLogStatus();
+    rows.push(["Supabase mirror", s.sessionId
+      ? ("session " + String(s.sessionId).slice(0, 8) + "… (" + (s.isMock ? "mock" : "REAL") + ") · uploaded thru seq " + s.uploadedSeq + " · pending " + s.pending)
+      : (s.pending ? s.pending + " events pending (session not started)" : "idle")]);
+    if (s.lastError) rows.push(["Mirror error", s.lastError + " (retrying)"]);
+  }
+  return rows.map(r => '<div><span class="muted">' + r[0] + ':</span> ' + esc(String(r[1])) + '</div>').join("");
+}
+
+function updateDraftDiagnostics() {
+  const el = document.getElementById("feed-diag-body");
+  if (el) el.innerHTML = _feedDiagBodyHtml();
+}
+
+function downloadDraftLog() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    league: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt,
+    feedMode: getFeedMode(),
+    events: _dlog.events,
+    initState: _dlog.initState,
+    picks: _liveDraft.picks,
+    tombstones: _liveDraft.deleted,
+    supabase: (typeof draftLogStatus === "function") ? draftLogStatus() : null,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "draft-log-" + (_dlog.leagueId || "unknown") + "-" + new Date().toISOString().slice(0, 10) + ".json";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+
+// Keep the activity/watchdog ages fresh without full re-renders.
+setInterval(() => { if (typeof currentView !== "undefined" && currentView === "draft") _updateFeedActivityDom(); }, 10000);

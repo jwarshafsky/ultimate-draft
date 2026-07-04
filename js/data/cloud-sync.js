@@ -31,6 +31,10 @@ const SYNC_EXACT_KEYS = new Set([
   "ud_scenarios_v1",
   "ud_saved_mocks_v1",
   "ud_live_draft_v1",
+  "ud_feed_mode",
+  // Deliberately NOT synced: ud_draft_events_v1 (big; already mirrored to
+  // Supabase draft_events) and ud_draft_sessions_v1 (local watermark cache —
+  // the draft_sessions client_key upsert makes cross-device use safe anyway).
   "ud_lineup_override_v1",
   "ud_standings_brief_v1",
   "ud_nfbc_v1",

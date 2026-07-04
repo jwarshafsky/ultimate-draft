@@ -418,6 +418,7 @@ function processEspnPicks(rawPicks) {
       price: raw.bidAmount || 0,
       ts: Date.now(),
       espnPlayerId: raw.playerId,
+      espnSeq: raw.seq != null ? raw.seq : null,   // ESPN lot seq — distinguishes a re-sale from a repeated frame
     });
     added++;
   }
