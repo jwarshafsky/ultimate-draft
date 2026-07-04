@@ -34,12 +34,19 @@ function getDraftedNames() {
   return new Set(_liveDraft.picks.map(p => p.player));
 }
 
+// Off-the-board set for the auction: predicted keepers + stashed minor
+// leaguers (anyone on a MiL roster is not available unless called up).
+function _draftOffBoard(_nk) {
+  if (typeof draftExcludedNames === "function") return draftExcludedNames();
+  return new Set(collectKeepers().map(k => _nk(k.name)));
+}
+
 // Players still nominate-able: in the value pool, not drafted, not kept.
 // Sorted by value so the typeahead surfaces the best names first.
 function availableDraftPool() {
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const drafted = new Set(_liveDraft.picks.map(p => _nk(p.player)));
-  const kept = new Set(collectKeepers().map(k => _nk(k.name)));
+  const kept = _draftOffBoard(_nk);
   return getValues()
     .filter(p => !drafted.has(_nk(p.name)) && !kept.has(_nk(p.name)))
     .slice()
@@ -71,7 +78,7 @@ function _nomResolveName(typed) {
   const q = _nk(typed);
   const values = getValues();
   const drafted = new Set(_liveDraft.picks.map(p => _nk(p.player)));
-  const kept = new Set(collectKeepers().map(k => _nk(k.name)));
+  const kept = _draftOffBoard(_nk);
 
   let match = values.find(p => _nk(p.name) === q);
   if (!match && typeof coreNameKey === "function") {
@@ -107,7 +114,7 @@ function computeLiveInflation() {
   const spent = _liveDraft.picks.reduce((s, p) => s + p.price, 0);
   const values = getValues();
   let remainingValue = 0;
-  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  const keptNames = _draftOffBoard(_nk);
   for (const p of values) {
     if (p.value <= 0) continue;
     if (keptNames.has(_nk(p.name)) || draftedNames.has(_nk(p.name))) continue;
@@ -146,6 +153,13 @@ function renderDraft() {
     badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
   }
   setStatus("draft", _liveDraft.picks.length + " picks", _liveDraft.picks.length > 0 ? "ok" : "");
+
+  // Fullscreen Draft Mode (draft-mode.js) — the draft-day cockpit.
+  if (typeof _draftModeOn === "function" && _draftModeOn()) {
+    renderDraftMode(root, inflation);
+    return;
+  }
+  document.body.classList.remove("draft-mode");
 
   let html = '';
 
@@ -196,6 +210,9 @@ function renderDraft() {
 
   html += '</div>';
 
+  // Call-ups (collapsed) — flip a stashed minor leaguer onto an ML roster
+  if (typeof renderCallupsPanel === "function") html += renderCallupsPanel({ collapsed: true });
+
   // ESPN proxy + live controls — moved to bottom (less frequently changed)
   html += renderLiveSourcesPanel();
 
@@ -221,6 +238,7 @@ function renderDraftControls() {
   html += '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
   html += '<b>Live Draft</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded</span>';
   html += '<span style="flex:1;"></span>';
+  html += '<button class="btn primary" id="draft-mode-enter" title="Fullscreen draft-day cockpit (Esc exits)">⛶ Draft Mode</button>';
   html += '<button class="btn ghost" id="draft-undo"' + (n ? '' : ' disabled') + '>↶ Undo last pick</button>';
   html += '<button class="btn ghost danger" id="draft-reset"' + (n ? '' : ' disabled') + '>↺ Reset draft</button>';
   html += '</div>';
@@ -307,7 +325,7 @@ function renderPickRecorder() {
 function renderPlayerPool(inflation) {
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const draftedNames = new Set(_liveDraft.picks.map(p => _nk(p.player)));
-  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  const keptNames = _draftOffBoard(_nk);
   let players = getValues().filter(p => !draftedNames.has(_nk(p.name)) && !keptNames.has(_nk(p.name)));
   if (_liveDraft.poolFilter.pos !== "ALL") {
     players = players.filter(p => p.posKey === _liveDraft.poolFilter.pos);
@@ -450,6 +468,7 @@ function wireDraftHandlers() {
       startAuction(b.dataset.name, 1);
     });
   });
+  if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
   // Nominate via input — validated against the pool so a typo can't create a
   // ghost player (which would corrupt live inflation).
   document.getElementById("otc-nominate")?.addEventListener("click", () => {
@@ -503,6 +522,7 @@ function wireDraftHandlers() {
   });
   updateOtcMaxBidHint();
   // Prominent draft controls
+  document.getElementById("draft-mode-enter")?.addEventListener("click", () => setDraftMode(true));
   document.getElementById("draft-undo")?.addEventListener("click", () => {
     if (_liveDraft.picks.length) { _liveDraft.picks.pop(); saveLiveDraft(); renderDraft(); }
   });
@@ -793,6 +813,7 @@ function _onDraftEvents(msg) {
       fresh, getFeedMode() !== "real");
   }
   _updateFeedActivityDom();
+  if (typeof updateDraftModeLive === "function") updateDraftModeLive();
 }
 
 function _onDraftInit(init) {

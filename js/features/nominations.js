@@ -47,9 +47,14 @@ function suggestNominations(opts) {
   const values = getValues();
   if (!values.length) return [];
 
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  // Off the board = predicted keepers + every MiL-rostered player (stashed or
+  // called up) — normalized names so accents/suffixes can't leak one through.
+  const _nomNk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = (typeof draftExcludedNames === "function")
+    ? draftExcludedNames()
+    : new Set(collectKeepers().map(k => _nomNk(k.name)));
   const draftedNames = new Set(opts.draftedNames || []);
-  const pool = values.filter(p => p.value > 0 && !keptNames.has(p.name) && !draftedNames.has(p.name));
+  const pool = values.filter(p => p.value > 0 && !keptNames.has(_nomNk(p.name)) && !draftedNames.has(p.name));
 
   const inflation = computeTieredInflation();
   const allOpen = teamOpenSlotProfile();

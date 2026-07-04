@@ -21,7 +21,13 @@ function _inflationKeeperSelections() {
 function getKeptCost(playerName, teamId) {
   const sel = (_inflationKeeperSelections()[teamId] || {})[playerName];
   if (!sel) return null;
-  if (sel.minorKeeper) return { cost: 0, kind: "minor" };
+  if (sel.minorKeeper) {
+    if (typeof isCalledUp === "function" && isCalledUp(playerName)) {
+      const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(playerName) : null;
+      return { cost: ci && typeof ci.cost === "number" ? ci.cost : 0, kind: "major", calledUp: true };
+    }
+    return { cost: 0, kind: "minor" };
+  }
   if (sel.keeper) {
     const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(playerName) : null;
     return { cost: typeof price === "number" ? price : 0, kind: "major" };
@@ -37,7 +43,14 @@ function collectKeepers() {
   for (const [teamId, players] of Object.entries(selections)) {
     for (const [name, flags] of Object.entries(players)) {
       if (flags.minorKeeper) {
-        out.push({ name, teamId, cost: 0, kind: "minor" });
+        // A called-up minor leaguer occupies an ML slot at his call-up cost;
+        // a stashed one is a $0 minor (off the board, no ML slot).
+        if (typeof isCalledUp === "function" && isCalledUp(name)) {
+          const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
+          out.push({ name, teamId, cost: ci && typeof ci.cost === "number" ? ci.cost : 0, kind: "major", calledUp: true });
+        } else {
+          out.push({ name, teamId, cost: 0, kind: "minor" });
+        }
       } else if (flags.keeper) {
         const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(name) : null;
         out.push({ name, teamId, cost: typeof price === "number" ? price : 0, kind: "major" });

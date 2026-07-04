@@ -189,7 +189,12 @@ function mustFillBoost(state, elig) {
 // Normalized-name helpers so keepers/drafted match the valuation list even when
 // names differ by accents / suffixes (e.g. "Iván Herrera" vs "Ivan Herrera").
 function _mockNk(s) { return (typeof normalizePlayerName === "function") ? normalizePlayerName(s) : String(s || "").toLowerCase(); }
-function _mockKeptSet() { return new Set(collectKeepers().map(k => _mockNk(k.name))); }
+// Off-the-board set: predicted keepers + every stashed minor leaguer (players
+// on a MiL roster aren't in the auction even if nobody keeper-checked them).
+function _mockKeptSet() {
+  if (typeof draftExcludedNames === "function") return draftExcludedNames();
+  return new Set(collectKeepers().map(k => _mockNk(k.name)));
+}
 
 // Player value looked up by EXACT then NORMALIZED name, so an accented keeper
 // (e.g. "José Ramírez") resolves to the value row "Jose Ramirez" and gets its

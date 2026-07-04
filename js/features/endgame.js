@@ -19,12 +19,13 @@
 function computeLiveTeamStates() {
   const states = {};
   // Keepers come from the Keepers tab (your predicted keepers), not the
-  // league-site marks. Major keepers (keeper=true) fill ML draft slots.
+  // league-site marks. ML draft slots are filled by major keepers AND
+  // called-up minor leaguers; stashed minors stay off the ML roster.
   const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
   for (const t of LEAGUE.teams) {
     const teamSel = selections[t.id] || {};
     const kept = Object.entries(teamSel)
-      .filter(([_, f]) => f.keeper)
+      .filter(([name, f]) => f.keeper || (f.minorKeeper && typeof isCalledUp === "function" && isCalledUp(name)))
       .map(([name]) => name);
     const keptCost = kept.reduce((s, n) => {
       const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(n) : null;
@@ -113,8 +114,9 @@ function endgameNominationRecommendations() {
   if (myState.slotsRemaining === 0) return { state: "done", recs: [] };
 
   const draftedNames = new Set((typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).map(p => p.player));
-  const keptNames = new Set(collectKeepers().map(k => k.name));
-  const pool = getValues().filter(p => p.value > -2 && !draftedNames.has(p.name) && !keptNames.has(p.name));
+  const _egNk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = (typeof draftExcludedNames === "function") ? draftExcludedNames() : new Set(collectKeepers().map(k => _egNk(k.name)));
+  const pool = getValues().filter(p => p.value > -2 && !draftedNames.has(p.name) && !keptNames.has(_egNk(p.name)));
 
   // For each player I might want, compute:
   //   - my interest (positive surplus + position need)

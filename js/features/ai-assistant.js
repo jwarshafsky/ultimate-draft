@@ -59,9 +59,10 @@ function buildAiContext() {
 
   // Top remaining undrafted players (by inflated value), capped to ~30
   const draftedNames = new Set((typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).map(p => p.player));
-  const keptNames = new Set(collectKeepers().map(k => k.name));
+  const _aiNk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const keptNames = (typeof draftExcludedNames === "function") ? draftExcludedNames() : new Set(collectKeepers().map(k => _aiNk(k.name)));
   const topPool = getValues()
-    .filter(p => p.value > 5 && !draftedNames.has(p.name) && !keptNames.has(p.name))
+    .filter(p => p.value > 5 && !draftedNames.has(p.name) && !keptNames.has(_aiNk(p.name)))
     .slice(0, 30)
     .map(p => ({
       name: p.name,

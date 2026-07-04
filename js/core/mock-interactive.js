@@ -91,7 +91,7 @@ function startInteractiveMock() {
   _interactive.gen++;   // invalidate any timers from a prior session
   _interactive.states = buildMockTeamStates({});
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
-  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  const keptNames = (typeof _mockKeptSet === "function") ? _mockKeptSet() : new Set(collectKeepers().map(k => _nk(k.name)));
   _interactive.pool = getValues().filter(p => p.value > 0 && !keptNames.has(_nk(p.name))).slice();
   _interactive.pool.sort((a, b) => b.value - a.value);
   _interactive.picks = [];

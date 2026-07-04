@@ -38,7 +38,7 @@ function renderValues() {
   }
   const inflation = computeTieredInflation();
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
-  const keptNames = new Set(collectKeepers().map(k => _nk(k.name)));
+  const keptNames = (typeof draftExcludedNames === "function") ? draftExcludedNames() : new Set(collectKeepers().map(k => _nk(k.name)));
 
   // Effective value: your manual value (when the override is on and one is set),
   // otherwise the projected FanGraphs/source value.

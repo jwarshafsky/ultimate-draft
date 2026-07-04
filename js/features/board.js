@@ -25,7 +25,7 @@ function renderBoard() {
   // Match keepers/drafted to the valuation list by NORMALIZED name, so accents
   // ("Cristopher Sánchez" vs "Cristopher Sanchez") don't cause a miss.
   const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
-  const keptNames = new Set(collectKeepers().map(k => nk(k.name)));
+  const keptNames = (typeof draftExcludedNames === "function") ? draftExcludedNames() : new Set(collectKeepers().map(k => nk(k.name)));
   const draftedNames = new Set([...((typeof getDraftedNames === "function") ? getDraftedNames() : [])].map(nk));
   const positions = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP"];
   const depth = { C: 18, "1B": 22, "2B": 22, "3B": 22, "SS": 22, OF: 75, UTIL: 30, SP: 80, RP: 50 };
