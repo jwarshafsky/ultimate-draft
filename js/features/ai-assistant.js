@@ -25,6 +25,19 @@ const AI = {
 function aiEnabled() { return AI.enabled; }
 function setAiEnabled(b) { AI.enabled = !!b; }
 
+// Distilled auction/keeper strategy the assistant must reason from — synthesized
+// from the fantasy-kb (01-valuation, 07-draft-prep) and DraftKick's salary-cap
+// guide. Kept tight (it rides in every call). Mirrors docs/strategy-north-star.md.
+const AUCTION_STRATEGY = `AUCTION STRATEGY PLAYBOOK — apply these; they are how this league is won:
+- CLEARING PRICE: right price = inflated value (value × keeper inflation × positional scarcity). Expect stars to clear $5-10 OVER sticker; SB and saves carry a premium; catchers deflate. First player nominated in a tier gets a small discount; the last one pays $5-10 more.
+- MAX BID = remaining budget − $1 per still-open roster slot. Never let a bid strand the roster; if $/open-slot is drifting toward ~$3, stop chasing.
+- BUDGET SHAPE: stars-and-scrubs = concentrate on elites, fill the rest at $1-3; spread = many $15-30 pieces. You can pivot AWAY from stars-and-scrubs mid-draft but never TOWARD it, so don't overspend early and get stranded. Respect the user's stars-vs-scrubs tilt.
+- NOMINATION WARFARE: nominate players you do NOT want to drain rivals' budgets and enforce prices — but only bid one up when confident someone else will take him. Mix nominations so you don't telegraph your targets.
+- LIVE-BID TACTICS: psychological resistance at round numbers ($10/$20/$30) — bid $21 to break a $20 wall. Shutdown = jump straight to a rival's known max bid to end it efficiently; Squeeze = push a rival to his max then drop out, draining him.
+- ENDGAME: the goal isn't the most cash, it's staying able to bid — keep your max bid above $1 as long as possible; flexibility beats hoarding.
+- CATEGORY PUNTS: a coherent punt can win — punt saves (roster cheap HLD setup men), punt power (SB/AVG anchors + cheap complements), or punt SP ratios (cheap RP for ERA/WHIP/HLD). If a category is out of reach, redeploy that budget instead of overpaying.
+- KEEPERS/INFLATION: kept bargains inflate everyone else — factor the live inflation multiplier into every price.`;
+
 // Build a compact prompt with everything Claude needs to give useful advice.
 function buildAiContext() {
   const me = getMyTeam();
@@ -94,7 +107,11 @@ async function callAi(context, userMessage) {
   const proxyClaudeUrl = ESPN.proxyUrl.replace(/\/$/, "") + "/claude";
   const system = `You are an expert fantasy baseball draft assistant for a 12-team keeper auction league using OBP, QS, SV+HLD as categories. Budget is $260 per team, 70/30 hitter/pitcher split. Roster: 1 C, 1 1B, 1 2B, 1 3B, 1 SS, 5 OF, 1 MI, 1 CI, 1 UTIL, 6 SP, 4 RP, 4 BN.
 
-You give short, actionable advice: which players to bid on, target prices, when to nominate dump candidates, and category-balance trade-offs. Honor the user's pre-set dream/fair/walk-away prices (never recommend bidding above walk-away). Respect user's strategy preferences (stars-vs-scrubs tilt, risk tolerance, punt categories). Keep responses under 150 words. Use specific dollar amounts and player names. Format as 1-3 tight bullets.`;
+You give short, actionable advice: which players to bid on, target prices, when to nominate dump candidates, and category-balance trade-offs. Honor the user's pre-set dream/fair/walk-away prices (never recommend bidding above walk-away). Respect user's strategy preferences (stars-vs-scrubs tilt, risk tolerance, punt categories). Keep responses under 150 words. Use specific dollar amounts and player names. Format as 1-3 tight bullets.
+
+${AUCTION_STRATEGY}
+
+Ground every recommendation in the playbook above, but the user's explicit target prices and strategy settings always override it.`;
   const userPrompt = `Current draft state:
 \`\`\`
 ${JSON.stringify(context, null, 2)}
