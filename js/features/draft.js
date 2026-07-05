@@ -760,6 +760,17 @@ function setFeedMode(m) {
 function reconcileDraftContext() {
   if (getFeedMode() !== "real") return false;
   let changed = false;
+  // A practice mock seeds _espnIdToName with SYNTHETIC ids (900001+). That map is
+  // session-lifetime, and _ensureEspnNames early-returns when it's non-null — so
+  // a same-session REAL draft (dress rehearsal → go live, no reload) would never
+  // fetch real names and would record every real pick as "Player <id>". Drop the
+  // mock-seeded map when entering Real mode so the next pick fetches real names.
+  if (typeof _espnNamesAreMock !== "undefined" && _espnNamesAreMock) {
+    _espnIdToName = null;
+    _espnNamesAreMock = false;
+    changed = true;
+    console.log("[draft] cleared mock-seeded ESPN name map (Real mode fetches real names)");
+  }
   if (typeof leagueOverrideActive === "function" && leagueOverrideActive() &&
       typeof setLeagueOverride === "function") {
     setLeagueOverride("");
@@ -901,6 +912,17 @@ function _onFeedCleared() {
   if (currentView === "draft") renderDraft();
 }
 let _espnIdToName = null;
+// True while _espnIdToName holds SYNTHETIC mock ids (seeded by the practice mock,
+// mock-live-feed.js) rather than a real ESPN fetch — see reconcileDraftContext.
+let _espnNamesAreMock = false;
+// The practice mock seeds its synthetic id→name map here (keeps every _espnIdToName
+// read site working) and flags it so Real mode can drop it. Called from
+// mock-live-feed.js _mfSeedNames.
+function _seedMockEspnNames(map) {
+  if (!map) return;
+  _espnIdToName = Object.assign(_espnIdToName || {}, map);
+  _espnNamesAreMock = true;
+}
 let _draftTabStaleTimer = null;
 
 // The full draft-room event stream (nominations, bids, passes, sales…) mirrored
@@ -1125,6 +1147,7 @@ async function _ensureEspnNames() {
       }
       if (Object.keys(map).length) {
         _espnIdToName = map;
+        _espnNamesAreMock = false;   // these are real ESPN names now
         _fixPlaceholderNames();
       }
     } catch (e) { /* names are best-effort; next call retries */ }

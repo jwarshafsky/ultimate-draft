@@ -86,6 +86,8 @@ function makeSandbox(seed) {
   sandbox.setTimeout = () => 0; sandbox.clearTimeout = () => {};
   sandbox.setInterval = () => 0; sandbox.clearInterval = () => {};
   sandbox.alert = () => {};
+  sandbox.__confirmYes = false;
+  sandbox.confirm = () => !!sandbox.__confirmYes;
   sandbox.location = { origin: "https://app.test", pathname: "/", search: "" };
 
   sandbox.localStorage = {
@@ -383,6 +385,91 @@ async function run() {
     assertEq(ud.eval("_mockFeed.soldLots"), ffTotal, "every lot resolved");
     assertEq(ud.liveDraft.picks.filter(p => p.espnPlayerId != null).length, ffTotal, "held picks == total lots");
     assertEq(ud.checkDraftInvariants().counts.error, 0, "zero invariant errors at the end");
+  });
+
+  // === Review-round regression tests (adversarial review, 2026-07-05) =========
+
+  // #1 CRITICAL — starting a mock must never silently wipe real/manual picks.
+  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); _liveDraft.deleted={}; _liveDraft.streamKey=null; _liveDraft.picks=[{player:'Real Guy', team:'jeff', price:20, ts:1}];");
+  sandbox.__confirmYes = false;
+  const startedDenied = ud.eval("startMockFeed()");
+  test("#1 startMockFeed refuses to wipe real picks when the user cancels", () => {
+    assertEq(startedDenied, false, "returns false when confirm denied");
+    assertEq(ud.liveDraft.picks.length, 1, "the real pick is preserved");
+    assertEq(ud.liveDraft.picks[0].player, "Real Guy", "real pick untouched");
+  });
+  sandbox.__confirmYes = true;
+  ud.eval("startMockFeed()");
+  test("#1 startMockFeed proceeds only after explicit confirmation", () => {
+    assert(ud.liveDraft.picks.every(p => typeof p.team === "string" && p.team.indexOf("espn:") === 0),
+      "after confirm, only mock (espn:N) picks remain — no real pick survived");
+  });
+  ud.eval("stopMockFeed({silent:true})");
+
+  // #1 UI defense — the Start button is hidden in Real mode (the real-draft
+  // cockpit renders this control too; a misclick must be impossible).
+  test("#1 renderMockFeedControls hides Start in Real mode, shows it in Test", () => {
+    ud.eval("setLeagueOverride('990001'); setFeedMode('test');");
+    const test = ud.eval("renderMockFeedControls(false)");
+    assert(test.indexOf('data-mockfeed="start"') >= 0, "Start shown in Test mode");
+    assert(test.indexOf("mf-skip-n") < 0, "no free-type skip input (focus-safe presets)");
+    ud.eval("setLeagueOverride(''); setFeedMode('real');");
+    const real = ud.eval("renderMockFeedControls(false)");
+    assertEq(real.indexOf('data-mockfeed="start"'), -1, "Start hidden in Real mode");
+  });
+
+  // #2 HIGH — a mock seeds _espnIdToName with synthetic ids + a flag; entering
+  // Real mode must drop it so a same-session real draft fetches real names.
+  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); startMockFeed();");
+  test("#2 a mock seeds a flagged synthetic name map", () => {
+    assert(ud.eval("!!_espnIdToName && Object.keys(_espnIdToName).length > 0"), "names seeded");
+    assertEq(ud.eval("_espnNamesAreMock"), true, "flagged mock-seeded");
+  });
+  ud.eval("stopMockFeed({silent:true}); setLeagueOverride(''); setFeedMode('real');");
+  test("#2 entering Real mode clears the mock-seeded name map", () => {
+    assertEq(ud.eval("_espnIdToName"), null, "_espnIdToName nulled on entering Real mode");
+    assertEq(ud.eval("_espnNamesAreMock"), false, "flag cleared");
+  });
+
+  // #5 LOW — skip controls hidden while paused (a paused feed must not emit).
+  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); startMockFeed();");
+  const skipRunning = ud.eval("_mfSkipControls(false)");
+  ud.eval("pauseMockFeed()");
+  const skipPaused = ud.eval("_mfSkipControls(false)");
+  ud.eval("resumeMockFeed()");
+  const skipResumed = ud.eval("_mfSkipControls(false)");
+  ud.eval("stopMockFeed({silent:true})");
+  test("#5 skip controls show while running, vanish while paused", () => {
+    assert(skipRunning.indexOf('data-mockfeed="skipnom"') >= 0, "shown while running");
+    assertEq(skipPaused, "", "hidden while paused");
+    assert(skipResumed.length > 0, "return after resume");
+  });
+
+  // #3 HIGH (coverage) — exercise the REAL async name path draft.js runs for a
+  // live ESPN feed: a pick recorded before names load is a "Player <id>"
+  // placeholder, then a later successful fetch sweeps it to the real name.
+  ud.eval(
+    "_liveDraft.picks=[]; _liveDraft.deleted={}; _liveDraft.streamKey=null; " +
+    "_espnIdToName=null; _espnNamesLoading=null; _espnNamesAreMock=false; " +
+    "setLeagueOverride(''); setFeedMode('real'); " +
+    "fetchEspnPlayers = async () => ({ players: [] }); " +   // first fetch: no names
+    "_applyDraftFeed({ leagueId:1200, sport:'flb', startedAt: globalThis.Date.now(), updatedAt: globalThis.Date.now(), picks:[{playerId:33192, teamId:5, price:12, seq:1}] });"
+  );
+  await drain(); await drain();
+  test("#3 real feed records a placeholder when names aren't loaded yet", () => {
+    const pk = ud.liveDraft.picks.find(p => p.espnPlayerId === 33192);
+    assert(pk, "pick recorded through the async pipeline");
+    assertEq(pk.player, "Player 33192", "placeholder name before the real fetch resolves");
+  });
+  ud.eval(
+    "_espnIdToName=null; _espnNamesLoading=null; " +
+    "fetchEspnPlayers = async () => ({ players: [{ id:33192, fullName:'Real Guy' }] }); " +
+    "_ensureEspnNames();"
+  );
+  await drain(); await drain();
+  test("#3 a later successful fetch sweeps placeholders to real names", () => {
+    const pk = ud.liveDraft.picks.find(p => p.espnPlayerId === 33192);
+    assertEq(pk.player, "Real Guy", "placeholder swept to the real name");
   });
 
   summary("UD-native mock feed");

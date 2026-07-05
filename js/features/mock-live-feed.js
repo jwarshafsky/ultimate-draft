@@ -224,12 +224,12 @@ function _mfResetDraftState() {
 }
 
 function _mfSeedNames(nameById) {
-  // _espnIdToName is a top-level `let` in draft.js (shared global lexical
-  // scope). Seeding it here makes _ensureEspnNames() a no-op — no ESPN fetch —
-  // so synthetic picks resolve to real player names.
-  if (typeof _espnIdToName !== "undefined") {
-    _espnIdToName = Object.assign(_espnIdToName || {}, nameById);
-  }
+  // draft.js owns the id→name map + a flag marking it mock-seeded, so Real mode
+  // can drop it (a stale mock map otherwise makes a same-session real draft
+  // record every pick as "Player <id>"). Seeding it makes _ensureEspnNames() a
+  // no-op — no ESPN fetch — so synthetic picks resolve to real player names.
+  if (typeof _seedMockEspnNames === "function") _seedMockEspnNames(nameById);
+  else if (typeof _espnIdToName !== "undefined") _espnIdToName = Object.assign(_espnIdToName || {}, nameById);
 }
 
 function _mfArm(script) {
@@ -280,6 +280,16 @@ function _mfFinish() {
 
 function startMockFeed(opts) {
   opts = opts || {};
+  // GUARD (never wipe a real draft): a practice mock resets the pick list. Mock
+  // picks (team "espn:N") are disposable, but REAL/manual picks are not — starting
+  // a mock over them would erase Jeff's in-progress draft in memory AND on disk.
+  // Require an explicit confirm before clobbering any non-mock pick.
+  const realPicks = (typeof _liveDraft !== "undefined" && Array.isArray(_liveDraft.picks))
+    ? _liveDraft.picks.filter(p => !(typeof p.team === "string" && p.team.indexOf("espn:") === 0)) : [];
+  if (realPicks.length && typeof confirm === "function") {
+    if (!confirm("Start a practice mock? This will CLEAR " + realPicks.length + " recorded pick" +
+      (realPicks.length === 1 ? "" : "s") + " from your current draft — this can't be undone.")) return false;
+  }
   stopMockFeed({ silent: true });
   const script = buildMockFeedScript(opts);
   if (!script || !script.frames.length) {
@@ -397,22 +407,16 @@ function _mfSpeedSeg() {
     seg("1x", "1×") + seg("4x", "4×") + seg("instant", "Instant") + '</span>';
 }
 
-// Fast-forward buttons (only while a mock is active): skip the current lot,
-// skip N picks, skip to the end.
+// Fast-forward buttons — only while a mock is RUNNING (hidden when paused so a
+// paused feed can't emit picks behind a "⏸ Paused" label). Preset skip-counts
+// (not a free-type input, which a per-pick re-render would steal focus from).
 function _mfSkipControls(compact) {
-  if (!_mockFeed.active) return "";
-  const b = (act, label) => '<button class="btn ghost" data-mockfeed="' + act +
-    '" style="width:auto; padding:' + (compact ? "3px 8px" : "5px 10px") + ';">' + label + '</button>';
-  let s = b("skipnom", "⏭ Lot");
-  if (compact) {
-    s += b("skipn", "⏭ " + (_mockFeed.skipN || 10));
-  } else {
-    s += '<span class="small" style="display:inline-flex; align-items:center; gap:4px;">⏭ skip ' +
-      '<input id="mf-skip-n" type="number" min="1" max="500" value="' + (_mockFeed.skipN || 10) + '" style="width:56px;"> picks ' +
-      '<button class="btn ghost" data-mockfeed="skipn" style="width:auto; padding:5px 10px;">Go</button></span>';
-  }
-  s += b("skipend", "⏭⏭ To end");
-  return s;
+  if (!_mockFeed.active || _mockFeed.paused) return "";
+  const pad = compact ? "3px 8px" : "5px 10px";
+  const ff = (act, label) => '<button class="btn ghost" data-mockfeed="' + act + '" style="width:auto; padding:' + pad + ';">' + label + '</button>';
+  const sk = (n) => '<button class="btn ghost" data-mockskip="' + n + '" style="width:auto; padding:' + pad + ';">⏭ ' + n + '</button>';
+  const presets = compact ? [10, 25] : [5, 10, 25, 50];
+  return ff("skipnom", "⏭ Lot") + presets.map(sk).join("") + ff("skipend", "⏭⏭ To end");
 }
 
 // compact=true → an inline cluster for the Draft Mode top bar.
@@ -421,9 +425,15 @@ function renderMockFeedControls(compact) {
   const btn = (act, label, cls) => '<button class="btn ' + (cls || "ghost") + '" data-mockfeed="' + act +
     '" style="width:auto; padding:' + (compact ? "3px 10px" : "6px 14px") + ';">' + label + '</button>';
 
+  // In Real mode the practice-mock start button is HIDDEN — starting a mock
+  // resets the pick list, and this is the button Jeff's real-draft cockpit
+  // renders too, so a misclick during the real draft must be impossible.
+  const realMode = (typeof getFeedMode === "function") && getFeedMode() === "real";
   let controls = "";
-  if (!active) controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice mock"), "primary");
-  else {
+  if (!active) {
+    if (realMode) controls += '<span class="muted small">Switch the feed to <b>Test</b> to run a practice mock.</span>';
+    else controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice mock"), "primary");
+  } else {
     controls += paused ? btn("resume", "▶ Resume", "primary") : btn("pause", "⏸ Pause");
     controls += btn("stop", "■ Stop");
   }
@@ -455,7 +465,7 @@ function _mfTopbarHtml() { return renderMockFeedControls(true); }
 
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("click", (e) => {
-    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed]") : null;
+    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed],[data-mockskip]") : null;
     if (!t || !t.closest || !t.closest("#view-root")) return;
     if (t.dataset.mockfeed) {
       const a = t.dataset.mockfeed;
@@ -464,19 +474,11 @@ if (typeof document !== "undefined" && document.addEventListener) {
       else if (a === "resume") resumeMockFeed();
       else if (a === "stop") stopMockFeed();
       else if (a === "skipnom") skipMockNomination();
-      else if (a === "skipn") { const el = document.getElementById("mf-skip-n"); skipMockPicks(el ? el.value : _mockFeed.skipN); }
       else if (a === "skipend") skipMockToEnd();
+    } else if (t.dataset.mockskip) {
+      skipMockPicks(t.dataset.mockskip);
     } else if (t.dataset.mockspeed) {
       setMockFeedSpeed(t.dataset.mockspeed);
-    }
-  });
-  // Keep the skip-N count in sync as the user types (so the top-bar "⏭ N"
-  // button label matches without needing a click).
-  document.addEventListener("input", (e) => {
-    const el = e.target;
-    if (el && el.id === "mf-skip-n") {
-      const n = parseInt(el.value, 10);
-      if (isFinite(n) && n > 0) _mockFeed.skipN = Math.min(500, n);
     }
   });
 }
