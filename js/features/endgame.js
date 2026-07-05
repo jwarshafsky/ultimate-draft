@@ -36,7 +36,10 @@ function computeLiveTeamStates() {
     const spent = picks.reduce((s, p) => s + p.price, 0);
     const totalRoster = kept.length + picks.length;
     const slotsRemaining = LEAGUE.rosterSize - totalRoster;
-    const budget = LEAGUE.draftBudget - keptCost - spent;
+    // Base budget includes traded draft dollars / manual setup overrides —
+    // previously omitted here, so live max bids ignored budget trades.
+    const adj = (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id) : 0;
+    const budget = LEAGUE.draftBudget + adj - keptCost - spent;
     // True max bid: budget - (slotsRemaining - 1) reserved for $1 each
     const maxBid = Math.max(0, budget - Math.max(0, slotsRemaining - 1));
     // Position need: count of each pos filled across keepers + draft

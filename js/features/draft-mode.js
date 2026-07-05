@@ -21,6 +21,7 @@ function _draftModeOn() {
 function setDraftMode(on) {
   try { localStorage.setItem(DM_KEY, on ? "1" : "0"); } catch (e) {}
   document.body.classList.toggle("draft-mode", !!on);
+  if (!on && typeof _liveDraft !== "undefined") _liveDraft.manualView = false;   // Exit always lands on Draft Setup
   renderDraft();
 }
 document.addEventListener("keydown", (e) => {
@@ -297,7 +298,7 @@ function _dmTopBar(inflation) {
   html += '<span id="dm-feedchips" class="small" style="display:inline-flex; gap:10px;">' + _dmFeedChips() + '</span>';
   html += '<span style="flex:1;"></span>';
   html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
-  html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit (manual entry)</button>';
+  html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit to setup</button>';
   html += '</div>';
   return html;
 }

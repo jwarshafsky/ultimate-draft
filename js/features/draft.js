@@ -140,12 +140,9 @@ function computeLiveInflation() {
 
 function renderDraft() {
   const root = document.getElementById("view-root");
-  if (!getValues().length) {
-    root.innerHTML = '<div class="empty"><p>Live Draft requires projections.</p><p class="small">Import a FanGraphs CSV on the Data tab.</p></div>';
-    return;
-  }
+  const hasValues = getValues().length > 0;
 
-  const inflation = computeLiveInflation();
+  const inflation = hasValues ? computeLiveInflation() : null;
   const badge = document.getElementById("inflation-badge");
   if (inflation) {
     badge.textContent = "live infl " + inflation.multiplier.toFixed(2) + "×";
@@ -156,11 +153,23 @@ function renderDraft() {
   if (typeof ensureRotowireNews === "function") ensureRotowireNews();   // player news, best-effort
 
   // Fullscreen Draft Mode (draft-mode.js) — the draft-day cockpit.
-  if (typeof _draftModeOn === "function" && _draftModeOn()) {
+  if (typeof _draftModeOn === "function" && _draftModeOn() && hasValues) {
     renderDraftMode(root, inflation);
     return;
   }
   document.body.classList.remove("draft-mode");
+
+  // Default tab view = the pre-draft setup lobby (config, strategy, budgets,
+  // saved setups). The classic pick-by-pick layout below survives as the
+  // manual-entry fallback (_liveDraft.manualView).
+  if (!_liveDraft.manualView && typeof renderDraftSetup === "function") {
+    renderDraftSetup(root);
+    return;
+  }
+  if (!hasValues) {
+    root.innerHTML = '<div class="empty"><p>Live Draft requires projections.</p><p class="small">Import a FanGraphs CSV on the Data tab.</p></div>';
+    return;
+  }
 
   let html = '';
 
@@ -237,7 +246,8 @@ function renderDraftControls() {
       '<div class="small muted" style="margin-top:4px;">The Teams strip, bidder dropdown, and budgets below are <b>your real league\'s</b> slots — test mode only changes which league\'s pick feed is read. Watch <b>Recent Picks</b> (bottom right): each auto-pick appearing there as "Team N — Player — $" confirms the live feed works. Clear the Test league ID in Settings when done.</div></div>';
   }
   html += '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
-  html += '<b>Live Draft</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded</span>';
+  html += '<b>Manual Entry</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded · fallback view</span>';
+  html += '<button class="btn ghost" id="draft-back-setup" style="padding:3px 10px;">← Draft setup</button>';
   html += '<span style="flex:1;"></span>';
   html += '<button class="btn primary" id="draft-mode-enter" title="Fullscreen draft-day cockpit (Esc exits)">⛶ Draft Mode</button>';
   html += '<button class="btn ghost" id="draft-debrief"' + (n ? '' : ' disabled') + ' title="Post-draft recap">📋 Debrief</button>';
@@ -529,6 +539,7 @@ function wireDraftHandlers() {
   updateOtcMaxBidHint();
   // Prominent draft controls
   document.getElementById("draft-mode-enter")?.addEventListener("click", () => setDraftMode(true));
+  document.getElementById("draft-back-setup")?.addEventListener("click", () => { _liveDraft.manualView = false; renderDraft(); });
   document.getElementById("draft-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
   document.getElementById("draft-undo")?.addEventListener("click", () => {
     if (_liveDraft.picks.length) { _liveDraft.picks.pop(); saveLiveDraft(); renderDraft(); }

@@ -65,7 +65,9 @@ function collectKeepers() {
 function computeTeamBudgets() {
   const map = {};
   for (const t of LEAGUE.teams) {
-    const adj = (typeof getDraftDollarAdjustment === "function") ? getDraftDollarAdjustment(t.id) : 0;
+    // Manual override (Draft Setup) beats the traded-draft-dollars sheet.
+    const adj = (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id)
+      : (typeof getDraftDollarAdjustment === "function") ? getDraftDollarAdjustment(t.id) : 0;
     map[t.id] = { teamId: t.id, base: LEAGUE.draftBudget + adj, draftDollarAdj: adj, keepers: 0, spent: 0, remaining: 0, keeperCount: 0, minorCount: 0 };
   }
   const keepers = collectKeepers();
