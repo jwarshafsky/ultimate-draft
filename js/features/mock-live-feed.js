@@ -45,9 +45,15 @@ const _mockFeed = {
   soldLots: 0,
   lastEmitAt: 0,
   skipN: 10,              // how many picks the "skip N picks" control jumps
+  pumping: false,         // true during a fast-forward burst — suppresses per-frame renders
 };
 
 function mockFeedActive() { return !!_mockFeed.active; }
+// True while a skip/fast-forward is emitting frames back-to-back. Render sites
+// (updateDraftModeLive, processEspnPicks, feed-activity/diagnostics) skip during
+// the burst; _mfFastForward renders ONCE after the picks settle — avoids a
+// multi-second render storm and transient "SOLD with no pick" invariant flashes.
+function mockFeedPumping() { return !!_mockFeed.pumping; }
 
 // ---------------------------------------------------------------------------
 // Cadence samplers (all Math.random-driven so a seeded RNG makes them
@@ -188,6 +194,8 @@ function _mfMakeContext(script) {
 // NOMINATION/BID go to _onDraftEvents (the raw stream → hero/ticker/Supabase);
 // SOLD additionally pushes a cumulative pick snapshot to _applyDraftFeed (the
 // pick pipeline → processEspnPicks → the board).
+// Returns the _applyDraftFeed promise for a SOLD frame (else null) so a
+// fast-forward can await the async pick-adds before rendering.
 function _mfApplyFrame(ctx, fr, at) {
   const seq = ++ctx.seq;
   const ev = { seq, at, cmd: fr.cmd, teamId: fr.teamId, playerId: fr.playerId, amount: fr.amount, text: "" };
@@ -197,10 +205,10 @@ function _mfApplyFrame(ctx, fr, at) {
   if (fr.cmd === "SOLD") {
     ctx.picks.push({ playerId: fr.playerId, teamId: fr.teamId, price: fr.amount, seq, ts: at });
     if (typeof _applyDraftFeed === "function") {
-      _applyDraftFeed({ leagueId: ctx.leagueId, sport: ctx.sport, startedAt: ctx.startedAt, updatedAt: at, picks: ctx.picks.slice() });
+      return _applyDraftFeed({ leagueId: ctx.leagueId, sport: ctx.sport, startedAt: ctx.startedAt, updatedAt: at, picks: ctx.picks.slice() });
     }
   }
-  return seq;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +308,7 @@ function startMockFeed(opts) {
   _mfArm(script);
   _mockFeed.active = true;
   _mockFeed.paused = false;
+  _mockFeed.pumping = false;
   _mockFeed.gen++;
   if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
   _mfScheduleNext();
@@ -323,6 +332,7 @@ function stopMockFeed(opts) {
   const wasActive = _mockFeed.active;
   _mockFeed.active = false;
   _mockFeed.paused = false;
+  _mockFeed.pumping = false;
   _mockFeed.gen++;   // kill any scheduled step
   // Picks + event log are LEFT in place so Jeff can open Debrief / audit the
   // practice run; "Reset draft" (or starting another mock) clears them.
@@ -340,14 +350,15 @@ function getMockFeedSpeed() { return _mockFeed.speed; }
 // Fast-forward — emit pending frames back-to-back (no delays, ignoring speed)
 // through the SAME real pipeline, then resume normal playback where we landed.
 // Used by the skip controls.
-function _mfPump(stopAfter) {
+function _mfPump(stopAfter, promises) {
   const s = _mockFeed.script;
   if (!s || !_mockFeed.ctx) return true;
   let solds = 0;
   while (_mockFeed.idx < s.frames.length) {
     const fr = s.frames[_mockFeed.idx];
     const at = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
-    _mfApplyFrame(_mockFeed.ctx, fr, at);
+    const p = _mfApplyFrame(_mockFeed.ctx, fr, at);
+    if (promises && p && typeof p.then === "function") promises.push(p);
     _mockFeed.idx++;
     _mockFeed.lastEmitAt = at;
     if (fr.cmd === "SOLD") { _mockFeed.soldLots++; solds++; }
@@ -355,12 +366,21 @@ function _mfPump(stopAfter) {
   }
   return _mockFeed.idx >= s.frames.length;
 }
-function _mfFastForward(stopAfter) {
+async function _mfFastForward(stopAfter) {
   if (!_mockFeed.active || !_mockFeed.script) return;
-  _mockFeed.gen++;                         // cancel any in-flight scheduled step
-  const done = _mfPump(stopAfter);
+  _mockFeed.gen++;                          // cancel any in-flight scheduled step
+  const myGen = _mockFeed.gen;
+  _mockFeed.pumping = true;                 // suppress per-frame renders during the burst
+  const promises = [];
+  const done = _mfPump(stopAfter, promises);
+  // Wait for the async pick-adds (_applyDraftFeed → processEspnPicks) to settle,
+  // THEN render once — so the cockpit rebuilds a single time and the invariants
+  // panel never flashes transient "SOLD with no matching pick" warnings.
+  try { await Promise.all(promises); } catch (e) {}
+  _mockFeed.pumping = false;                // transient burst flag — always clear
+  if (_mockFeed.gen !== myGen) return;      // a pause/stop/re-skip mid-await now owns rendering
   _mfUpdateStatus();
-  if (done) { _mfFinish(); return; }       // reached the end → land on the final board
+  if (done) { _mfFinish(); return; }        // reached the end → land on the final board
   if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
   if (!_mockFeed.paused) _mfScheduleNext(); // resume live playback from the new spot
 }

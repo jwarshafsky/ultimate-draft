@@ -52,6 +52,32 @@ function _syncEligible(key) {
   return SYNC_PREFIXES.some(p => key.startsWith(p));
 }
 
+// Draft-context keys are DEVICE-LOCAL while a practice mock / test-league context
+// is active. A mock reuses the SAME keys the real draft does (it feeds the real
+// cockpit), so without this gate its synthetic picks / feed mode / override /
+// seat would mirror to Cloudflare KV and — via last-write-wins — overwrite a REAL
+// in-progress draft on another signed-in device, or flip that device into
+// mock/test context (which also bypasses the Real-mode reconcile). We skip both
+// push AND pull for these keys whenever this device is in a mock/test context, so
+// a throwaway practice run can never cross devices. Real drafts (real mode) still
+// sync normally. Also caught after a mock stops and mode drifts to 'off' by
+// sniffing leftover "espn:N" mock picks in the stored pick list.
+const _SYNC_DRAFT_KEYS = new Set(["ud_live_draft_v1", "ud_feed_mode", "ud_league_override", "ud_test_my_team"]);
+function _syncIsMockContext() {
+  try {
+    if (typeof mockFeedActive === "function" && mockFeedActive()) return true;
+    if (typeof draftTestMode === "function" && draftTestMode()) return true;
+    const raw = localStorage.getItem("ud_live_draft_v1");
+    if (raw) {
+      const v = JSON.parse(raw);
+      const picks = Array.isArray(v) ? v : (v && v.picks) || [];
+      if (picks.length && picks.every(p => p && typeof p.team === "string" && p.team.indexOf("espn:") === 0)) return true;
+    }
+  } catch (e) {}
+  return false;
+}
+function _syncDraftLocal(key) { return _SYNC_DRAFT_KEYS.has(key) && _syncIsMockContext(); }
+
 const _cloudSync = {
   user: null,
   dirty: new Set(),       // keys changed locally, awaiting push
@@ -72,7 +98,7 @@ const _udOrigRemoveItem = Storage.prototype.removeItem;
 
 Storage.prototype.setItem = function (key, value) {
   _udOrigSetItem.call(this, key, value);
-  if (this === window.localStorage && _syncEligible(key)) {
+  if (this === window.localStorage && _syncEligible(key) && !_syncDraftLocal(key)) {
     _cloudSync.dirty.add(key);
     _cloudSync.deleted.delete(key);
     _syncSchedulePush();
@@ -80,7 +106,7 @@ Storage.prototype.setItem = function (key, value) {
 };
 Storage.prototype.removeItem = function (key) {
   _udOrigRemoveItem.call(this, key);
-  if (this === window.localStorage && _syncEligible(key)) {
+  if (this === window.localStorage && _syncEligible(key) && !_syncDraftLocal(key)) {
     _cloudSync.deleted.add(key);
     _cloudSync.dirty.delete(key);
     _syncSchedulePush();
@@ -148,6 +174,9 @@ async function _syncPush() {
   let failed = false;
   try {
     for (const key of [..._cloudSync.dirty]) {
+      // Never push a draft-context key that turned device-local since it was
+      // queued (a mock started between the write and this flush).
+      if (_syncDraftLocal(key)) { _cloudSync.dirty.delete(key); continue; }
       const value = localStorage.getItem(key);
       if (value == null) { _cloudSync.dirty.delete(key); continue; }
       const at = Date.now();
@@ -204,11 +233,12 @@ async function syncPullNow(opts) {
     // First-run migration: local keys the cloud has never seen → queue push.
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && _syncEligible(k) && !(k in cloud)) _cloudSync.dirty.add(k);
+      if (k && _syncEligible(k) && !_syncDraftLocal(k) && !(k in cloud)) _cloudSync.dirty.add(k);
     }
 
     for (const [key, at] of Object.entries(cloud)) {
       if (!_syncEligible(key)) continue;                                       // never apply unknown keys
+      if (_syncDraftLocal(key)) continue;                                      // mock/test draft state stays device-local (don't let cloud clobber a running mock, or a mock clobber this device)
       if (_cloudSync.dirty.has(key) || _cloudSync.deleted.has(key)) continue; // local edit pending — it wins
       if (meta[key] === at) continue;                                          // already applied
       // First contact for this key on this device: if a local value already

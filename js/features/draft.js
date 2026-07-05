@@ -735,6 +735,12 @@ const FEED_MODE_KEY = "ud_feed_mode";
 function getFeedMode() { return localStorage.getItem(FEED_MODE_KEY) || "off"; }
 function setFeedMode(m) {
   const mode = (m === "test" || m === "real") ? m : "off";
+  // Leaving Test mode must halt a running practice mock — otherwise its timers
+  // keep emitting frames into a feed that now drops them, while the panel still
+  // reads "● Running". (startMockFeed/_mfArm set mode 'test', so this never
+  // stops the mock we're about to start.)
+  if (mode !== "test" && typeof mockFeedActive === "function" && mockFeedActive() &&
+      typeof stopMockFeed === "function") stopMockFeed({ silent: true });
   localStorage.setItem(FEED_MODE_KEY, mode);
   // "real" = your actual league (1200); clear any test-league override so
   // player-name lookups and team mapping use the real league.
@@ -980,6 +986,7 @@ setTimeout(() => {
 // Feed events arriving while the user is mid-keystroke shouldn't rebuild the
 // whole view — update the live bits of the feed panel in place instead.
 function _updateFeedActivityDom() {
+  if (typeof mockFeedPumping === "function" && mockFeedPumping()) return;   // suppressed during a fast-forward burst (avoids diagnostics/invariant flicker)
   const el = document.getElementById("feed-activity");
   if (el) el.innerHTML = _feedActivityHtml();
   if (typeof updateDraftDiagnostics === "function") updateDraftDiagnostics();
@@ -1292,7 +1299,7 @@ async function _applyDraftFeed(feed) {
   }));
   // processEspnPicks (espn.js) de-dupes by espnPlayerId, saves, and re-renders.
   if (typeof processEspnPicks === "function") processEspnPicks(raws);
-  if (updated && currentView === "draft") renderDraft();
+  if (updated && currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) renderDraft();
 }
 
 // Listen for the extension bridge's messages (same-window postMessage).

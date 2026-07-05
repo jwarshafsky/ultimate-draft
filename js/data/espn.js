@@ -419,6 +419,12 @@ function processEspnPicks(rawPicks) {
     if (manual) {
       manual.espnPlayerId = raw.playerId;
       manual.espnTeamId = raw.teamId;
+      // Re-key the team to the feed's winner too (same rule as the insert path):
+      // a manual pick recorded to my seat that the feed later attributes to
+      // another team must move to that team, or computeLiveTeamStates counts its
+      // price against BOTH teams (its `team` id AND espnTeamId) — corrupting
+      // budgets/max-bids and tripping the I-MONEY Σ invariant.
+      manual.team = (typeof draftTestMode === "function" && draftTestMode()) ? ("espn:" + raw.teamId) : espnTeamIdToOwnerId(raw.teamId);
       manual.espnSeq = raw.seq != null ? raw.seq : null;
       existing.add(raw.playerId);
       added++;   // state changed → save + re-render below
@@ -442,7 +448,8 @@ function processEspnPicks(rawPicks) {
   }
   if (added) {
     saveLiveDraft();
-    if (currentView === "draft") renderDraft();
+    // A mock fast-forward suppresses per-pick renders and rebuilds once at the end.
+    if (currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) renderDraft();
     // Notify any AI assistant listeners
     for (const fn of ESPN.listeners) {
       try { fn(rawPicks); } catch (e) { console.error(e); }

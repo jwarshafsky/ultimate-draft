@@ -472,6 +472,36 @@ async function run() {
     assertEq(pk.player, "Real Guy", "placeholder swept to the real name");
   });
 
+  // === Round 8 regression tests ==============================================
+
+  // #6 HIGH — a manual pick the feed later attributes to another team must MOVE
+  // to that team (team re-keyed), or its price double-counts → I-MONEY error.
+  ud.eval(
+    "setLeagueOverride('990001'); setFeedMode('test'); " +
+    "_liveDraft.picks=[{player:'Player 100005', team:'espn:5', price:20, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey=null; " +
+    "_espnIdToName = Object.assign(_espnIdToName||{}, {990055:'Player 100005'}); " +
+    "_applyDraftFeed({ leagueId:990001, sport:'flb', startedAt: globalThis.Date.now(), updatedAt: globalThis.Date.now(), picks:[{playerId:990055, teamId:8, price:25, seq:1}] });"
+  );
+  await drain(); await drain();
+  test("#6 feed-upgraded manual pick moves to the feed's team (no double-count)", () => {
+    const pk = ud.liveDraft.picks.find(p => p.espnPlayerId === 990055);
+    assert(pk, "manual pick upgraded with the ESPN identity");
+    assertEq(pk.espnTeamId, 8, "espnTeamId updated to the feed winner");
+    assertEq(pk.team, "espn:8", "team re-keyed to match espnTeamId (was espn:5)");
+    assertEq(ud.checkDraftInvariants().counts.error, 0, "no I-MONEY double-count");
+  });
+
+  // #7 MEDIUM — leaving Test mode must stop a running mock (else it keeps
+  // emitting into an off/real feed behind a "Running" label).
+  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); _liveDraft.picks=[]; _liveDraft.deleted={}; _liveDraft.streamKey=null; startMockFeed();");
+  const runningBefore = ud.eval("mockFeedActive()");
+  ud.eval("setFeedMode('off')");
+  const runningAfter = ud.eval("mockFeedActive()");
+  test("#7 setFeedMode('off') stops a running mock", () => {
+    assertEq(runningBefore, true, "mock is running");
+    assertEq(runningAfter, false, "leaving Test mode stopped it");
+  });
+
   summary("UD-native mock feed");
 }
 

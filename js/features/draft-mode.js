@@ -731,6 +731,7 @@ function _dmBottom() {
 
 // --- live in-place updates (no full re-render on every bid) ---
 function updateDraftModeLive() {
+  if (typeof mockFeedPumping === "function" && mockFeedPumping()) return;   // a fast-forward renders once when it finishes
   if (!_draftModeOn() || typeof currentView === "undefined" || currentView !== "draft") return;
   const lot = (getFeedMode() !== "off") ? currentLotFromEvents() : null;
   const otc = document.getElementById("dm-otc");
