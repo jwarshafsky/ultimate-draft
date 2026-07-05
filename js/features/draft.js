@@ -670,26 +670,41 @@ function soldCurrent() {
   renderDraft();
 }
 
+// A practice mock persists to a DEVICE-LOCAL key that is NOT on the cloud-sync
+// whitelist, so a throwaway run never touches — let alone syncs or clobbers —
+// the real draft's pick list. The real draft uses the synced key. Which key
+// applies is purely a function of the current context, so save and load always
+// agree (and reconcileDraftContext reloads the real key when leaving a mock).
+function _draftPersistKeys() {
+  const mock = (typeof draftTestMode === "function" && draftTestMode()) ||
+               (typeof mockFeedActive === "function" && mockFeedActive());
+  return mock
+    ? { main: "ud_live_draft_mock_v1", bk: "ud_live_draft_mock_bk_v1" }   // device-local (not in SYNC_EXACT_KEYS)
+    : { main: "ud_live_draft_v1", bk: "ud_live_draft_bk_v1" };            // real draft — synced
+}
+
 // Pick persistence is layered (P2R1 chaos-1: quota exhaustion silently lost
 // picks): main key → free the big event-log backup and retry → emergency
 // fallback key. The pick list is the one thing that must survive anything.
 function saveLiveDraft() {
+  const keys = _draftPersistKeys();
   const payload = JSON.stringify({ v: 2, at: Date.now(), picks: _liveDraft.picks, deleted: _liveDraft.deleted, streamKey: _liveDraft.streamKey || null });
   try {
-    localStorage.setItem("ud_live_draft_v1", payload);
-    try { localStorage.removeItem("ud_live_draft_bk_v1"); } catch (e2) {}
+    localStorage.setItem(keys.main, payload);
+    try { localStorage.removeItem(keys.bk); } catch (e2) {}
     return;
   } catch (e) {}
   try { localStorage.removeItem(_DLOG_LS_KEY); } catch (e2) {}   // Supabase holds the full stream
-  try { localStorage.setItem("ud_live_draft_v1", payload); _storageFail("events-backup dropped to save picks", {}); return; } catch (e) {}
-  try { localStorage.setItem("ud_live_draft_bk_v1", payload); _storageFail("picks (main key failed; emergency key in use)", {}); return; } catch (e) { _storageFail("picks", e); }
+  try { localStorage.setItem(keys.main, payload); _storageFail("events-backup dropped to save picks", {}); return; } catch (e) {}
+  try { localStorage.setItem(keys.bk, payload); _storageFail("picks (main key failed; emergency key in use)", {}); return; } catch (e) { _storageFail("picks", e); }
 }
 function loadLiveDraft() {
   try {
+    const keys = _draftPersistKeys();
     // The emergency key is only ever written when the main key failed, so
     // when both exist the newer one wins.
-    let raw = localStorage.getItem("ud_live_draft_v1");
-    const bk = localStorage.getItem("ud_live_draft_bk_v1");
+    let raw = localStorage.getItem(keys.main);
+    const bk = localStorage.getItem(keys.bk);
     if (bk) {
       try {
         const a = JSON.parse(raw || "null"), b = JSON.parse(bk);
@@ -697,12 +712,12 @@ function loadLiveDraft() {
       } catch (e2) { raw = bk; }
     }
     const v = JSON.parse(raw || "[]");
-    if (Array.isArray(v)) _liveDraft.picks = v;                      // legacy format (picks only)
+    if (Array.isArray(v)) { _liveDraft.picks = v; _liveDraft.deleted = {}; _liveDraft.streamKey = null; }   // legacy / empty
     else if (v && Array.isArray(v.picks)) {
       _liveDraft.picks = v.picks;
       _liveDraft.deleted = v.deleted || {};
       _liveDraft.streamKey = v.streamKey || null;
-    }
+    } else { _liveDraft.picks = []; _liveDraft.deleted = {}; _liveDraft.streamKey = null; }
   } catch {}
 }
 loadLiveDraft();
@@ -789,9 +804,6 @@ function reconcileDraftContext() {
   const foreignStream = !!(_liveDraft.streamKey && !_liveDraft.streamKey.startsWith(home));
   if (hasMockPicks || foreignStream) {
     const n = _liveDraft.picks.length;
-    _liveDraft.picks = [];
-    _liveDraft.deleted = {};
-    _liveDraft.streamKey = null;
     // The mock's event log goes with its picks — leaving it produced 40 stale
     // "SOLD with no matching pick" invariant warnings at the worst possible
     // moment: right before the real draft (P2R2 dress rehearsal F2).
@@ -800,9 +812,16 @@ function reconcileDraftContext() {
       _dlog.lastEventAt = 0; _dlog.initState = null;
       try { localStorage.removeItem(_DLOG_LS_KEY); } catch (e) {}
     }
-    saveLiveDraft();
+    // Discard the in-memory mock/foreign picks and RELOAD the real draft from its
+    // own (synced) key — which the mock never touched (mock picks persist to a
+    // device-local key). We must NOT write an empty list to the real key here:
+    // that write would mirror to Cloudflare KV and DESTROY the genuine real draft
+    // on every signed-in device (R9 r8-fix-audit). loadLiveDraft() now runs in
+    // real context, so it reads ud_live_draft_v1 → the real picks (or empty).
+    _liveDraft.picks = []; _liveDraft.deleted = {}; _liveDraft.streamKey = null;
+    loadLiveDraft();
     changed = true;
-    console.log("[draft] purged " + n + " mock-context picks + event log (Real mode)");
+    console.log("[draft] discarded " + n + " mock-context picks; reloaded the real draft (Real mode)");
   }
   return changed;
 }
@@ -1414,7 +1433,11 @@ function _describeDraftEvent(e) {
 function _feedStallState() {
   const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
   const quietMs = lastFrame ? Date.now() - lastFrame : 0;
-  if (!lastFrame || !draftTabOpen() || quietMs <= 30000) return { level: "ok", quietSecs: Math.round(quietMs / 1000), midLot: false };
+  // A stale event log restored from a finished/dead session (e.g. a reloaded
+  // practice mock) must not read as a LIVE stall once an unrelated ESPN tab
+  // later opens: a real mid-lot stall is seconds-to-minutes, never 20+ minutes.
+  const staleSession = quietMs > 20 * 60 * 1000;
+  if (!lastFrame || !draftTabOpen() || quietMs <= 30000 || staleSession) return { level: "ok", quietSecs: Math.round(quietMs / 1000), midLot: false };
   let last = null;
   for (let i = _dlog.events.length - 1; i >= 0; i--) {
     const c = _dlog.events[i].cmd;
@@ -1430,9 +1453,16 @@ function _feedActivityHtml() {
   let html = "";
   const last = _dlog.events.length ? _dlog.events[_dlog.events.length - 1] : null;
   if (last) {
-    const age = Math.max(0, Math.round((Date.now() - (last.at || 0)) / 1000));
-    html += '<div class="small muted" style="margin-top:4px;">Last activity ' +
-      (last.at ? age + "s ago" : "—") + ' · ' + esc(_describeDraftEvent(last)) +
+    const ageMs = Date.now() - (last.at || 0);
+    const age = Math.max(0, Math.round(ageMs / 1000));
+    // A restored log with no live tab/connection is a FINISHED capture (e.g. a
+    // reloaded mock) — label it as archived rather than presenting stale events
+    // as current activity.
+    const mockOn = typeof mockFeedActive === "function" && mockFeedActive();
+    const archived = !mockOn && !draftTabOpen() && !_feed.connected && last.at && ageMs > 5 * 60 * 1000;
+    html += '<div class="small muted" style="margin-top:4px;">' +
+      (archived ? 'Last capture (ended) · ' : 'Last activity ' + (last.at ? age + "s ago" : "—") + ' · ') +
+      esc(_describeDraftEvent(last)) +
       ' <span class="dim">(' + _dlog.events.length + ' events logged)</span></div>';
   }
   // Watchdog (pause-safe): red only when silence began MID-LOT.

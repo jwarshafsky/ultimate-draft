@@ -807,10 +807,15 @@ section("App engines — mock leftovers purged on entering Real mode");
 test("setFeedMode('real') clears picks from a non-home stream; manual picks survive", () => {
   const prevMode = global.getFeedMode();   // async suite may be mid-flight — restore its mode
   resetDraftState();
+  // Reconcile now DISCARDS mock/foreign picks and RELOADS the real draft from
+  // its own (synced) key (never writes an empty list there — that would clobber
+  // the cloud copy, R9). Clear the real key so the reload finds nothing → 0.
+  global.localStorage.removeItem("ud_live_draft_v1");
+  global.localStorage.removeItem("ud_live_draft_bk_v1");
   global._liveDraft.streamKey = "999777:12345";   // a mock stream
   global._liveDraft.picks.push({ player: "Paul Skenes", team: "espn:3", espnTeamId: 3, price: 40, espnPlayerId: 111, espnSeq: 1 });
   global.setFeedMode("real");
-  assertEq(global._liveDraft.picks.length, 0, "mock-stream picks purged");
+  assertEq(global._liveDraft.picks.length, 0, "mock-stream picks purged (real key empty)");
   assertEq(global._liveDraft.streamKey, null, "stream identity reset");
   // manual picks with no stream identity are kept
   global._liveDraft.picks.push({ player: "Manual Guy", team: "jeff", price: 5 });

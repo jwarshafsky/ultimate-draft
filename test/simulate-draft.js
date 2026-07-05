@@ -726,16 +726,17 @@ async function main() {
 
   // Rebuild the app sandbox from serialized state (appReload).
   function reloadApp() {
-    // Serialize what the app persists (localStorage keys) and rebuild.
-    const savedLive = app.localStore["ud_live_draft_v1"];
-    const savedDlog = app.localStore["ud_draft_events_v1"];
+    // Serialize what the app persists (localStorage keys) and rebuild. The sim
+    // runs in test mode, so picks persist to the DEVICE-LOCAL mock key; carry all
+    // draft keys across the rebuild so loadLiveDraft() finds them.
     const savedMode = app.localStore["ud_feed_mode"];
     const savedOverride = app.localStore["ud_league_override"];
     const newApp = makeAppSandbox(pool, leagueId);
-    if (savedLive !== undefined) newApp.localStore["ud_live_draft_v1"] = savedLive;
-    if (savedDlog !== undefined) newApp.localStore["ud_draft_events_v1"] = savedDlog;
-    if (savedMode !== undefined) newApp.localStore["ud_feed_mode"] = savedMode;
-    if (savedOverride !== undefined) newApp.localStore["ud_league_override"] = savedOverride;
+    for (const k of ["ud_live_draft_v1", "ud_live_draft_bk_v1", "ud_live_draft_mock_v1",
+                     "ud_live_draft_mock_bk_v1", "ud_draft_events_v1", "ud_feed_mode",
+                     "ud_league_override", "ud_test_my_team"]) {
+      if (app.localStore[k] !== undefined) newApp.localStore[k] = app.localStore[k];
+    }
     // Re-load persisted state into the fresh engines (loadLiveDraft/_dlogLoad
     // run in the concat-program scope). setFeedMode restores test mode.
     newApp.call("loadLiveDraft(); _dlogLoad();");

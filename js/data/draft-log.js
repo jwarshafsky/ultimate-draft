@@ -54,6 +54,12 @@ function logDraftEvents(meta, events, isMock) {
     const cached = _dlSessionCache()[key];
     DRAFT_LOG.sessionId = cached?.id || null;
     DRAFT_LOG.uploadedSeq = cached?.uploadedSeq || 0;
+    // Re-initialize is_mock PER SESSION from the incoming flag. Without this the
+    // session-global stayed false after a real draft, so a practice mock run in
+    // the same tab uploaded as is_mock=false — contaminating the human
+    // owner-tendency dataset with synthetic bot data (R9). The one-way guard
+    // below still allows a within-session test→real correction.
+    DRAFT_LOG.isMock = !!isMock;
   }
   const wasMock = DRAFT_LOG.isMock;
   // is_mock is ONE-WAY per session: a mock accidentally started in test mode

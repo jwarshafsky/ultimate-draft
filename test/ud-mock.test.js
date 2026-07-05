@@ -502,6 +502,34 @@ async function run() {
     assertEq(runningAfter, false, "leaving Test mode stopped it");
   });
 
+  // === Round 9 regression tests =============================================
+
+  // #R9-1 HIGH — a mock must NEVER touch the synced real-draft key; switching to
+  // Real reloads the real draft (never writes an empty list that would clobber
+  // the cloud copy on every device).
+  ud.eval(
+    "setLeagueOverride(''); setFeedMode('real'); " +
+    "_liveDraft.picks=[{player:'RealStar', team:'jeff', price:30, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey='1200:1'; saveLiveDraft();"
+  );
+  const realKeyBefore = ud.eval("localStorage.getItem('ud_live_draft_v1')");
+  sandbox.__confirmYes = true;                     // ok to clear the (real) picks for a mock
+  ud.eval("startMockFeed()");
+  ud.eval("skipMockPicks(3)");
+  await drain();
+  test("#R9-1 a running mock never writes the synced real-draft key", () => {
+    assertEq(ud.eval("localStorage.getItem('ud_live_draft_v1')"), realKeyBefore, "ud_live_draft_v1 untouched by the mock");
+    const mk = ud.eval("localStorage.getItem('ud_live_draft_mock_v1')");
+    assert(mk && JSON.parse(mk).picks.length >= 3, "mock picks persist to the device-local mock key");
+  });
+  ud.eval("stopMockFeed({silent:true}); setLeagueOverride(''); setFeedMode('real');");
+  await drain();
+  test("#R9-1 switching to Real reloads the real draft (no empty-clobber)", () => {
+    assertEq(ud.liveDraft.picks.length, 1, "real draft restored from its own key");
+    assertEq(ud.liveDraft.picks[0].player, "RealStar", "the real pick is back");
+    const rk = JSON.parse(ud.eval("localStorage.getItem('ud_live_draft_v1')"));
+    assertEq(rk.picks.length, 1, "real key was never emptied");
+  });
+
   summary("UD-native mock feed");
 }
 
