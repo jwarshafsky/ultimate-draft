@@ -16,8 +16,25 @@ global.window = { localStorage: global.localStorage };
 global.setTimeout = () => 0;          // defer uploads into the void
 global.clearTimeout = () => {};
 global.console = { log() {}, warn() {}, error() {} };
+
+// Controllable Supabase stub: the draft_sessions upsert can be held pending so a
+// test can rotate the session mid-await (R10 events-supabase-fidelity).
+let _sessionResolve = null, _sessionCalls = 0;
+const _eventUpserts = [];
 global.supabaseClient = {
-  from: () => ({ update: () => ({ eq: () => ({ then: () => {} }) }) }),
+  from(table) {
+    if (table === "draft_sessions") {
+      return {
+        update: () => ({ eq: () => ({ then: () => {} }) }),
+        upsert: () => ({ select: () => ({ single: () => new Promise((res) => {
+          _sessionCalls++;
+          const id = "sess-" + _sessionCalls;
+          _sessionResolve = () => res({ data: { id }, error: null });
+        }) }) }),
+      };
+    }
+    return { upsert: (rows) => { _eventUpserts.push(rows); return Promise.resolve({ error: null }); } };
+  },
 };
 
 loadScript(path.join(__dirname, "..", "js/data/draft-log.js"));
@@ -42,4 +59,23 @@ test("within-session test→real correction still flips is_mock to false", () =>
   assertEq(draftLogStatus().isMock, false, "one-way correction preserved");
 });
 
-summary("draft-log is_mock per session");
+// #R10-3 — a session rotation (real → mock in the same tab) that lands DURING an
+// in-flight session upsert must not stamp the new session with the old id, and
+// must not upload the new session's events under the old session_id.
+async function rotationTest() {
+  logDraftEvents({ leagueId: 1200, startedAt: 9000, sport: "flb" }, [ev(1)], false);   // session A (real)
+  const flushP = _dlFlush();               // awaits the (pending) session upsert
+  await Promise.resolve();                  // let _dlFlush reach the await
+  // Rotate to session B (mock) while A's upsert is still pending.
+  logDraftEvents({ leagueId: 990001, startedAt: 9001, sport: "flb" }, [ev(1)], true);
+  const eventsBefore = _eventUpserts.length;
+  if (_sessionResolve) _sessionResolve();   // now resolve A's upsert
+  await flushP;
+  test("#R10-3 a rotation mid-flush doesn't stamp the new session or misattribute events", () => {
+    assertEq(draftLogStatus().isMock, true, "current session is the mock (B)");
+    assertEq(draftLogStatus().sessionId, null, "the new mock session was NOT stamped with session A's id");
+    assertEq(_eventUpserts.length, eventsBefore, "no events uploaded under the old session_id");
+  });
+}
+
+rotationTest().then(() => summary("draft-log is_mock per session"));

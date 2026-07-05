@@ -676,9 +676,16 @@ function soldCurrent() {
 // applies is purely a function of the current context, so save and load always
 // agree (and reconcileDraftContext reloads the real key when leaving a mock).
 function _draftPersistKeys() {
-  const mock = (typeof draftTestMode === "function" && draftTestMode()) ||
-               (typeof mockFeedActive === "function" && mockFeedActive());
-  return mock
+  // ONLY the practice mock (its synthetic league 990001) uses the device-local
+  // key. A generic Settings/REST test-league override must NOT redirect here:
+  // its picks belong in the real key (the cloud-sync gate still keeps them
+  // device-local while the override is active). Conflating the two (keying off
+  // draftTestMode) made a stale override load the real draft from the EMPTY mock
+  // key and then clobber it on the next save (R10 critical).
+  const mockLeague = (typeof MOCK_FEED_LEAGUE_ID !== "undefined") ? MOCK_FEED_LEAGUE_ID : 990001;
+  const isMock = (typeof mockFeedActive === "function" && mockFeedActive()) ||
+                 (typeof ESPN !== "undefined" && ESPN && Number(ESPN.leagueId) === mockLeague);
+  return isMock
     ? { main: "ud_live_draft_mock_v1", bk: "ud_live_draft_mock_bk_v1" }   // device-local (not in SYNC_EXACT_KEYS)
     : { main: "ud_live_draft_v1", bk: "ud_live_draft_bk_v1" };            // real draft — synced
 }
@@ -792,9 +799,11 @@ function reconcileDraftContext() {
     changed = true;
     console.log("[draft] cleared mock-seeded ESPN name map (Real mode fetches real names)");
   }
+  let clearedOverride = false;
   if (typeof leagueOverrideActive === "function" && leagueOverrideActive() &&
       typeof setLeagueOverride === "function") {
     setLeagueOverride("");
+    clearedOverride = true;
     changed = true;
     console.log("[draft] cleared an aged test-league override (Real mode is league " +
       (typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + " only)");
@@ -822,6 +831,13 @@ function reconcileDraftContext() {
     loadLiveDraft();
     changed = true;
     console.log("[draft] discarded " + n + " mock-context picks; reloaded the real draft (Real mode)");
+  } else if (clearedOverride) {
+    // A stale override active at page load may have made loadLiveDraft() read the
+    // wrong (device-local mock) key. Now that we're in a clean real context,
+    // reload picks from the real key — WITHOUT touching the real event log — so a
+    // later save can't clobber the real draft with an empty list (R10 crit).
+    loadLiveDraft();
+    changed = true;
   }
   return changed;
 }
@@ -1004,6 +1020,21 @@ setTimeout(() => {
 
 // Feed events arriving while the user is mid-keystroke shouldn't rebuild the
 // whole view — update the live bits of the feed panel in place instead.
+// Render the Live Draft view for a new feed pick WITHOUT stealing an in-progress
+// keystroke. In Draft Mode we always render (the cockpit patches its own inputs'
+// carets); on the lobby/classic view a full rebuild would wipe a focused text
+// field (league URL, strategy, config name…), so skip it while the user is typing
+// — the next non-typing render catches up (R10 keyboard-focus). The mock's own
+// status line is patched separately via _mfUpdateStatus.
+function _renderDraftUnlessTyping() {
+  if (typeof _draftModeOn === "function" && _draftModeOn()) { renderDraft(); return; }
+  const ae = (typeof document !== "undefined") ? document.activeElement : null;
+  const typing = ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT") &&
+    typeof ae.closest === "function" && ae.closest("#view-root");
+  if (typing) return;
+  renderDraft();
+}
+
 function _updateFeedActivityDom() {
   if (typeof mockFeedPumping === "function" && mockFeedPumping()) return;   // suppressed during a fast-forward burst (avoids diagnostics/invariant flicker)
   const el = document.getElementById("feed-activity");
@@ -1116,7 +1147,10 @@ function _onDraftTabPresent(tab) {
   // (the number is the LEAGUE team id, not the draft-order position; auto-
   // detection removes the ambiguity entirely). Manual edits on Draft Setup
   // still work as an override until the next socket connect.
+  // A running UD practice mock owns the seat (script-mapped via setMyDraftEspnId);
+  // a stray ESPN draft-tab beat must not flip "my team" out from under it.
   if (tab.myTeamId != null && typeof draftTestMode === "function" && draftTestMode() &&
+      !(typeof mockFeedActive === "function" && mockFeedActive()) &&
       typeof getMyDraftEspnId === "function" && getMyDraftEspnId() !== tab.myTeamId) {
     setMyDraftEspnId(tab.myTeamId);
     if (currentView === "draft") renderDraft();
@@ -1318,7 +1352,7 @@ async function _applyDraftFeed(feed) {
   }));
   // processEspnPicks (espn.js) de-dupes by espnPlayerId, saves, and re-renders.
   if (typeof processEspnPicks === "function") processEspnPicks(raws);
-  if (updated && currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) renderDraft();
+  if (updated && currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) _renderDraftUnlessTyping();
 }
 
 // Listen for the extension bridge's messages (same-window postMessage).

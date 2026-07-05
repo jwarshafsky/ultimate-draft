@@ -221,7 +221,9 @@ function recommendBid(playerName) {
   const inflated = (typeof inflatedValue === "function") ? inflatedValue(val, inflation) : val.value;
   const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
   const st = me ? computeLiveTeamStates()[me.id] : null;
-  const maxBid = st ? st.maxBid : 999;
+  // No seat set in a mock → no personal max. Use null (not a $999 sentinel that
+  // would print "my max $999" and inflate walk/stretch in a $260 league, R10).
+  const maxBid = st ? st.maxBid : null;
   const reasons = [];
   let walk = Math.round(inflated);
   reasons.push("$" + val.value.toFixed(0) + " value ×" + (inflation ? inflation.multiplier.toFixed(2) : "1.00") + " inflation");
@@ -234,8 +236,8 @@ function recommendBid(playerName) {
     const need = (st.posCounts[posKey] || 0) === 0;
     if (need) { stretch += 1; reasons.push("fills your empty " + posKey + " slot"); }
   }
-  if (walk > maxBid) { walk = maxBid; reasons.push("capped by your max bid"); }
-  if (stretch > maxBid) stretch = maxBid;
+  if (maxBid != null && walk > maxBid) { walk = maxBid; reasons.push("capped by your max bid"); }
+  if (maxBid != null && stretch > maxBid) stretch = maxBid;
   if (stretch < walk) stretch = walk;
   return { walk: Math.max(1, walk), stretch: Math.max(1, stretch), maxBid, rationale: reasons.join(" · ") };
 }
@@ -455,7 +457,7 @@ function _dmRecoHtml(name, lot) {
   let html = '<div class="dm-reco-nums">';
   html += '<div><span class="muted small">walk-away</span><br><b class="dm-bignum">$' + r.walk + '</b></div>';
   html += '<div><span class="muted small">stretch</span><br><b class="dm-bignum" style="color:var(--warn);">$' + r.stretch + '</b></div>';
-  html += '<div><span class="muted small">my max</span><br><b class="dm-bignum muted">$' + r.maxBid + '</b></div>';
+  html += '<div><span class="muted small">my max</span><br><b class="dm-bignum muted">' + (r.maxBid != null ? '$' + r.maxBid : '<span title="set your team on Draft Setup">—</span>') + '</b></div>';
   html += '</div>';
   html += '<div class="small" style="margin-top:4px; color:' + vcolor + ';"><b>' + verdict + '</b> <span class="muted">at $' + high + '</span></div>';
   html += '<div class="muted small" style="margin-top:4px;">' + esc(r.rationale) + '</div>';

@@ -86,25 +86,31 @@ function _dlSchedule() {
 
 async function _dlEnsureSession() {
   if (DRAFT_LOG.sessionId) return DRAFT_LOG.sessionId;
+  // Snapshot the session identity BEFORE the await: a rotation (real draft →
+  // practice mock in the same tab) landing during the upsert must not stamp the
+  // NEW session with this row's id or is_mock (R10 events-supabase-fidelity).
+  const key = DRAFT_LOG.clientKey;
   const m = DRAFT_LOG.meta;
+  const isMock = DRAFT_LOG.isMock;
   const started = new Date(m.startedAt);
   const { data, error } = await supabaseClient
     .from("draft_sessions")
     .upsert({
-      client_key: DRAFT_LOG.clientKey,
+      client_key: key,
       league_id: m.leagueId,
       sport: m.sport,
       season: started.getFullYear(),
-      is_mock: DRAFT_LOG.isMock,
-      label: (m.sport === "ffl" ? "football" : "baseball") + " " + (DRAFT_LOG.isMock ? "mock" : "DRAFT") + " " + started.toISOString().slice(0, 10),
+      is_mock: isMock,
+      label: (m.sport === "ffl" ? "football" : "baseball") + " " + (isMock ? "mock" : "DRAFT") + " " + started.toISOString().slice(0, 10),
       started_at: started.toISOString(),
     }, { onConflict: "client_key" })
     .select("id")
     .single();
   if (error) throw error;
+  if (DRAFT_LOG.clientKey !== key) return data.id;   // rotated mid-await — leave the new session's state alone
   DRAFT_LOG.sessionId = data.id;
   const cache = _dlSessionCache();
-  cache[DRAFT_LOG.clientKey] = Object.assign({}, cache[DRAFT_LOG.clientKey], { id: data.id });
+  cache[key] = Object.assign({}, cache[key], { id: data.id });
   _dlSaveSessionCache(cache);
   return data.id;
 }
@@ -114,8 +120,12 @@ async function _dlFlush() {
   if (Date.now() < DRAFT_LOG.backoffUntil) { DRAFT_LOG.timer = setTimeout(() => { DRAFT_LOG.timer = null; _dlFlush(); }, 5000); return; }
   if (typeof supabaseClient === "undefined" || typeof currentUser === "undefined" || !currentUser) { _dlSchedule(); return; }
   DRAFT_LOG.flushing = true;
+  const flushKey = DRAFT_LOG.clientKey;   // the session this flush belongs to
   try {
     const sessionId = await _dlEnsureSession();
+    // Rotated during ensure (real→mock in the same tab)? Leave the queue for the
+    // new session's own flush — never upload it under this session_id (R10).
+    if (!sessionId || DRAFT_LOG.clientKey !== flushKey) return;
     const batch = DRAFT_LOG.queue.slice(0, 500);
     const rows = batch.map(e => ({
       session_id: sessionId,
@@ -131,6 +141,7 @@ async function _dlFlush() {
       .from("draft_events")
       .upsert(rows, { onConflict: "session_id,seq", ignoreDuplicates: true });
     if (error) throw error;
+    if (DRAFT_LOG.clientKey !== flushKey) return;   // rotated during the upload — don't advance the new session's queue/watermark
     DRAFT_LOG.queue.splice(0, batch.length);
     DRAFT_LOG.uploadedCount += batch.length;
     DRAFT_LOG.uploadedSeq = Math.max(DRAFT_LOG.uploadedSeq, ...batch.map(e => e.seq || 0));

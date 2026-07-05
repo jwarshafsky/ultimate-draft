@@ -530,6 +530,45 @@ async function run() {
     assertEq(rk.picks.length, 1, "real key was never emptied");
   });
 
+  // === Round 10 regression tests ===========================================
+
+  // #R10-1 CRITICAL — a GENERIC test-league override (not the mock league) must
+  // load the REAL draft key, not the empty mock key (which then clobbers it).
+  ud.eval(
+    "setLeagueOverride(''); setFeedMode('real'); " +
+    "_liveDraft.picks=[{player:'RealX', team:'jeff', price:20, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey='1200:9'; saveLiveDraft();"
+  );
+  ud.eval("setLeagueOverride('555777'); _liveDraft.picks=[]; loadLiveDraft();");
+  test("#R10-1 a generic test-league override loads the real draft (not the empty mock key)", () => {
+    assertEq(ud.eval("draftTestMode()"), true, "override makes it a test context");
+    assertEq(ud.liveDraft.picks.length, 1, "real draft loaded from the real key");
+    assertEq(ud.liveDraft.picks[0].player, "RealX", "real pick present, not empty");
+  });
+  ud.eval("localStorage.removeItem('ud_live_draft_mock_v1'); localStorage.removeItem('ud_live_draft_mock_bk_v1'); setLeagueOverride('990001'); _liveDraft.picks=[]; loadLiveDraft();");
+  test("#R10-1 the mock league (990001) loads the device-local mock key", () => {
+    assertEq(ud.liveDraft.picks.length, 0, "empty mock key loaded (NOT the real key's RealX pick)");
+    assertEq(JSON.parse(ud.eval("localStorage.getItem('ud_live_draft_v1')")).picks.length, 1, "real key still intact");
+  });
+
+  // #R10-2 HIGH — a stray ESPN draft-tab heartbeat must not steal a running
+  // mock's script-mapped seat.
+  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); _liveDraft.picks=[]; _liveDraft.deleted={}; _liveDraft.streamKey=null; startMockFeed();");
+  const seatDuringMock = ud.eval("getMyDraftEspnId()");
+  ud.eval("_onDraftTabPresent({ at: globalThis.Date.now(), leagueId: 990001, sport:'flb', myTeamId: 99 });");
+  test("#R10-2 a stray ESPN tab beat does not overwrite a running mock's seat", () => {
+    assertEq(ud.eval("getMyDraftEspnId()"), seatDuringMock, "seat unchanged during a mock");
+  });
+
+  // #R10-4 MEDIUM — no seat → recommendBid gives a null max (not a $999 sentinel
+  // that inflates walk/stretch in a $260 league).
+  ud.eval("setMyDraftEspnId(''); ");
+  const reco = JSON.parse(ud.eval("JSON.stringify(recommendBid(getValues()[0].name) || {})"));
+  test("#R10-4 recommendBid returns null max (no $999) when the seat is unset", () => {
+    assertEq(reco.maxBid, null, "no sentinel");
+    assert(reco.walk > 0 && reco.walk <= 260 && reco.stretch <= 260, "walk/stretch stay within a $260 league");
+  });
+  ud.eval("stopMockFeed({silent:true})");
+
   summary("UD-native mock feed");
 }
 

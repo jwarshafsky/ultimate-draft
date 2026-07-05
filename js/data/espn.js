@@ -448,8 +448,11 @@ function processEspnPicks(rawPicks) {
   }
   if (added) {
     saveLiveDraft();
-    // A mock fast-forward suppresses per-pick renders and rebuilds once at the end.
-    if (currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) renderDraft();
+    // A mock fast-forward suppresses per-pick renders and rebuilds once at the end;
+    // otherwise render without stealing a focused lobby text field (R10).
+    if (currentView === "draft" && !(typeof mockFeedPumping === "function" && mockFeedPumping())) {
+      if (typeof _renderDraftUnlessTyping === "function") _renderDraftUnlessTyping(); else renderDraft();
+    }
     // Notify any AI assistant listeners
     for (const fn of ESPN.listeners) {
       try { fn(rawPicks); } catch (e) { console.error(e); }

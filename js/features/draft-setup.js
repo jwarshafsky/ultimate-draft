@@ -86,6 +86,12 @@ function loadDraftConfig(id) {
     location.reload();
     return;
   }
+  // The mode/league switch above may have changed the persist context (real vs
+  // the device-local mock key). Reload _liveDraft from the NEW context's key so
+  // the displayed picks match it — otherwise a later save could write the prior
+  // context's picks into the wrong key (R10). The real draft stays safe in its
+  // own key and reloads when the real context is restored.
+  if (typeof loadLiveDraft === "function") loadLiveDraft();
   renderDraft();
 }
 
