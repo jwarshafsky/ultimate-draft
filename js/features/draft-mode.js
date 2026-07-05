@@ -401,6 +401,7 @@ function _dmHero() {
   // --- ticker ---
   html += '<div class="card dm-ticker-card"><div class="otc-label">Bidding</div>';
   html += '<div id="dm-bidline" class="dm-bidline">' + (lot ? _dmBidLine(lot) : '<span class="muted small">—</span>') + '</div>';
+  html += '<div id="dm-bidmeter">' + (lot ? _dmBidMeter(lot) : '') + '</div>';
   html += '<div id="dm-ticker" class="dm-ticker">' + (lot ? _dmTickerHtml(lot) : '') + '</div>';
   html += '</div>';
 
@@ -436,8 +437,45 @@ function _dmTempChip(temp) {
   return '<div class="small" style="margin-top:6px; color:' + color + ';"><b>' + label + '</b> <span class="muted">' + esc(temp.note) + '</span></div>';
 }
 
+// Fair value = the player's inflation-adjusted price. The live bid is read
+// against it as bargain (≤0.85×) → fair (0.85–1.15×) → overpay (>1.15×).
+function _dmFairValue(name) {
+  const val = (typeof getPlayerValue === "function") ? getPlayerValue(name) : null;
+  if (!val) return null;
+  if (typeof inflatedValue === "function" && typeof computeLiveInflation === "function") {
+    const f = inflatedValue(val, computeLiveInflation());
+    if (isFinite(f) && f > 0) return f;
+  }
+  return val.value > 0 ? val.value : null;
+}
+function _dmBidColor(bid, fair) {
+  if (!fair || fair <= 0) return "";
+  return bid <= fair * 0.85 ? "var(--good)" : bid <= fair * 1.15 ? "var(--warn)" : "var(--bad)";
+}
+
 function _dmBidLine(lot) {
-  return '<span class="dm-bignum">$' + lot.highBid + '</span> <span class="small">' + esc(_dmTeamLabel(lot.highTeamId)) + '</span>';
+  const fair = _dmFairValue(lot.name);
+  const color = _dmBidColor(lot.highBid, fair);
+  return '<span class="dm-bignum"' + (color ? ' style="color:' + color + ';"' : '') + '>$' + lot.highBid + '</span> <span class="small">' + esc(_dmTeamLabel(lot.highTeamId)) + '</span>';
+}
+
+// A bargain→fair→overpay gradient band with a marker at the current bid — moves
+// live as the auction climbs, so the room's price is readable at a glance.
+function _dmBidMeter(lot) {
+  const fair = _dmFairValue(lot.name);
+  if (!fair) return '';
+  const bid = Math.max(1, lot.highBid || 1);
+  const ceiling = Math.max(Math.ceil(fair * 1.8), Math.ceil(bid * 1.1), 6);
+  const pct = (v) => Math.max(0, Math.min(100, (v / ceiling) * 100));
+  const bargainEnd = pct(fair * 0.85), fairMid = pct(fair), overpayStart = pct(fair * 1.15), bidPct = pct(bid);
+  const grad = 'linear-gradient(90deg, var(--good) 0%, var(--good) ' + bargainEnd.toFixed(1) +
+    '%, var(--warn) ' + fairMid.toFixed(1) + '%, var(--bad) ' + overpayStart.toFixed(1) + '%, var(--bad) 100%)';
+  let h = '<div style="position:relative; height:13px; border-radius:7px; margin:8px 0 3px; background:' + grad + '; box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);">';
+  h += '<div title="fair $' + Math.round(fair) + '" style="position:absolute; left:' + fairMid.toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.6);"></div>';
+  h += '<div style="position:absolute; left:' + bidPct.toFixed(1) + '%; top:-6px; transform:translateX(-50%); font-size:12px; line-height:1; text-shadow:0 1px 2px rgba(0,0,0,.6);">▼</div>';
+  h += '</div>';
+  h += '<div class="small" style="display:flex; justify-content:space-between;"><span style="color:var(--good);">bargain</span><span style="color:var(--warn);">fair $' + Math.round(fair) + '</span><span style="color:var(--bad);">overpay</span></div>';
+  return h;
 }
 
 function _dmTickerHtml(lot) {
@@ -745,6 +783,8 @@ function updateDraftModeLive() {
   if (lot) {
     const bidline = document.getElementById("dm-bidline");
     if (bidline) bidline.innerHTML = _dmBidLine(lot);
+    const meter = document.getElementById("dm-bidmeter");
+    if (meter) meter.innerHTML = _dmBidMeter(lot);
     const ticker = document.getElementById("dm-ticker");
     if (ticker) ticker.innerHTML = _dmTickerHtml(lot);
     const temp = document.getElementById("dm-temp");
