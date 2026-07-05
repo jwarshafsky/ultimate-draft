@@ -136,6 +136,7 @@ function renderDraftSetup(root) {
 
   // === Practice vs bots (UD-native mock → the real cockpit) ===
   if (typeof renderMockFeedControls === "function") html += renderMockFeedControls(false);
+  if (typeof renderMockArchive === "function") html += renderMockArchive();
 
   // === Strategy ===
   const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : { text: "", brief: "" };

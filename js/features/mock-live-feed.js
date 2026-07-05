@@ -46,6 +46,9 @@ const _mockFeed = {
   lastEmitAt: 0,
   skipN: 10,              // how many picks the "skip N picks" control jumps
   pumping: false,         // true during a fast-forward burst — suppresses per-frame renders
+  myEspnId: null,         // the mock's seat, in memory only (ephemeral)
+  finished: false,        // reached the last lot (offer Save/Clear)
+  reviewId: null,         // saved-mock currently expanded in the archive list
 };
 
 function mockFeedActive() { return !!_mockFeed.active; }
@@ -218,12 +221,14 @@ function _mfApplyFrame(ctx, fr, at) {
 // Arm the app for a mock (no scheduling): test mode + synthetic league so the
 // cockpit runs generic Team-N / $260 / no keepers / full pool, a clean draft
 // stream, seeded names, and my seat. Shared by startMockFeed and the test.
+// Clear the IN-MEMORY draft view for the mock to write into. No disk writes —
+// an ephemeral mock never persists (saveLiveDraft no-ops while it's active), so
+// the real draft on disk is untouched and reloads when the mock is cleared.
 function _mfResetDraftState() {
   if (typeof _liveDraft !== "undefined") {
     _liveDraft.picks = [];
     _liveDraft.deleted = {};
     _liveDraft.streamKey = null;
-    if (typeof saveLiveDraft === "function") saveLiveDraft();
   }
   if (typeof _dlog !== "undefined") {
     _dlog.events = []; _dlog.leagueId = null; _dlog.startedAt = 0;
@@ -233,6 +238,8 @@ function _mfResetDraftState() {
     _feed.staleInfo = null; _feed.staleRetained = null; _feed.connected = false; _feed.count = 0;
   }
 }
+// The mock's seat, held in memory (never persisted) — read by getMyDraftEspnId.
+function mockFeedSeat() { return _mockFeed.myEspnId != null ? _mockFeed.myEspnId : null; }
 
 function _mfSeedNames(nameById) {
   // draft.js owns the id→name map + a flag marking it mock-seeded, so Real mode
@@ -244,11 +251,12 @@ function _mfSeedNames(nameById) {
 }
 
 function _mfArm(script) {
-  if (typeof setLeagueOverride === "function") setLeagueOverride(String(MOCK_FEED_LEAGUE_ID));
-  if (typeof setFeedMode === "function") setFeedMode("test");
+  // EPHEMERAL: no setFeedMode / setLeagueOverride / setMyDraftEspnId — nothing
+  // is persisted. mockFeedActive() drives the test context (generic Team-N /
+  // $260 / no keepers) in memory; the seat lives on _mockFeed.myEspnId.
   _mfResetDraftState();
   _mfSeedNames(script.nameById);
-  if (typeof setMyDraftEspnId === "function") setMyDraftEspnId(script.myEspnId);
+  _mockFeed.myEspnId = script.myEspnId;
   _mockFeed.script = script;
   _mockFeed.ctx = _mfMakeContext(script);
   _mockFeed.idx = 0;
@@ -282,65 +290,114 @@ function _mfScheduleNext() {
     _mfScheduleNext();
   }, _mfSpeedDelay(fr.dt));
 }
+// Playback reached the last lot. The mock stays ACTIVE (ephemeral context holds,
+// so saveLiveDraft keeps no-op'ing and the real draft on disk stays safe) until
+// Jeff saves or clears it — we only mark it finished (offer Save/Clear).
 function _mfFinish() {
-  _mockFeed.active = false;
+  _mockFeed.finished = true;
   _mockFeed.paused = false;
   _mockFeed.gen++;
   if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
 }
 
+function _mfRender() { if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft(); }
+
 function startMockFeed(opts) {
   opts = opts || {};
-  // GUARD (never wipe a real draft): a practice mock resets the pick list. Mock
-  // picks (team "espn:N") are disposable, but REAL/manual picks are not — starting
-  // a mock over them would erase Jeff's in-progress draft in memory AND on disk.
-  // Require an explicit confirm before clobbering any non-mock pick.
-  const realPicks = (typeof _liveDraft !== "undefined" && Array.isArray(_liveDraft.picks))
-    ? _liveDraft.picks.filter(p => !(typeof p.team === "string" && p.team.indexOf("espn:") === 0)) : [];
-  if (realPicks.length && typeof confirm === "function") {
-    if (!confirm("Start a practice mock? This will CLEAR " + realPicks.length + " recorded pick" +
-      (realPicks.length === 1 ? "" : "s") + " from your current draft — this can't be undone.")) return false;
-  }
-  stopMockFeed({ silent: true });
   const script = buildMockFeedScript(opts);
   if (!script || !script.frames.length) {
     if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice mock.");
     return false;
   }
   if (opts.speed) _mockFeed.speed = opts.speed;
-  _mfArm(script);
+  // A mock is ephemeral + non-destructive: your real draft is safe on disk and
+  // reloads when the mock is cleared, so no confirm is needed. Mark active BEFORE
+  // arming so any save during setup no-ops.
   _mockFeed.active = true;
+  _mockFeed.finished = false;
   _mockFeed.paused = false;
   _mockFeed.pumping = false;
   _mockFeed.gen++;
-  if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+  _mfArm(script);
+  _mfRender();
   _mfScheduleNext();
   return true;
 }
 function pauseMockFeed() {
-  if (!_mockFeed.active || _mockFeed.paused) return;
+  if (!_mockFeed.active || _mockFeed.finished || _mockFeed.paused) return;
   _mockFeed.paused = true;
   _mockFeed.gen++;   // invalidate the in-flight timer
-  if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+  _mfRender();
 }
 function resumeMockFeed() {
-  if (!_mockFeed.active || !_mockFeed.paused) return;
+  if (!_mockFeed.active || _mockFeed.finished || !_mockFeed.paused) return;
   _mockFeed.paused = false;
   _mockFeed.gen++;
-  if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+  _mfRender();
   _mfScheduleNext();
 }
+// "Stop" ends playback but KEEPS the result on screen (active) so Jeff can Save
+// or Clear it — it does not tear down the ephemeral context (that would let a
+// later save write the mock picks to the real key).
 function stopMockFeed(opts) {
   opts = opts || {};
-  const wasActive = _mockFeed.active;
-  _mockFeed.active = false;
+  if (!_mockFeed.active) return;
+  _mockFeed.finished = true;
   _mockFeed.paused = false;
   _mockFeed.pumping = false;
   _mockFeed.gen++;   // kill any scheduled step
-  // Picks + event log are LEFT in place so Jeff can open Debrief / audit the
-  // practice run; "Reset draft" (or starting another mock) clears them.
-  if (!opts.silent && wasActive && typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+  if (!opts.silent) _mfRender();
 }
+
+// Tear down the ephemeral mock entirely and restore the REAL draft from disk.
+// This is the ONLY place `active` goes false — up to here every save has no-op'd,
+// so the real draft in localStorage is exactly as Jeff left it.
+function clearMockDraft() {
+  _mockFeed.active = false;
+  _mockFeed.finished = false;
+  _mockFeed.paused = false;
+  _mockFeed.pumping = false;
+  _mockFeed.gen++;
+  _mockFeed.script = null; _mockFeed.ctx = null; _mockFeed.idx = 0; _mockFeed.soldLots = 0; _mockFeed.myEspnId = null;
+  if (typeof _liveDraft !== "undefined") { _liveDraft.picks = []; _liveDraft.deleted = {}; _liveDraft.streamKey = null; }
+  if (typeof _dlog !== "undefined") { _dlog.events = []; _dlog.leagueId = null; _dlog.startedAt = 0; _dlog.lastEventAt = 0; _dlog.initState = null; }
+  if (typeof _feed !== "undefined") { _feed.connected = false; _feed.count = 0; _feed.staleInfo = null; _feed.staleRetained = null; }
+  if (typeof _clearMockEspnNames === "function") _clearMockEspnNames();   // drop in-memory mock names so a real draft fetches real ones
+  if (typeof loadLiveDraft === "function") loadLiveDraft();               // mockFeedActive() now false → restores the real draft
+  _mfRender();
+}
+
+// Snapshot the finished mock into the shared "Saved mocks" archive (device-local,
+// reusing the Mock Draft tab's store + review UI), so Jeff can look back at the
+// result after the working slate is wiped.
+function saveMockToArchive(label) {
+  if (typeof getSavedMocks !== "function" || typeof computeMockStandings !== "function" || typeof _writeSavedMocks !== "function") return null;
+  const teams = (typeof draftTeams === "function") ? draftTeams() : [];
+  const states = {};
+  for (const t of teams) states[t.id] = { teamId: t.id, ownerName: t.owner, isMe: !!t.isMe, kept: [], drafted: [] };
+  for (const pk of (_liveDraft.picks || [])) {
+    const id = pk.team;
+    if (!states[id]) states[id] = { teamId: id, ownerName: (typeof draftTeamLabel === "function" ? draftTeamLabel(id) : String(id)), isMe: false, kept: [], drafted: [] };
+    const pv = (typeof getPlayerValue === "function") ? getPlayerValue(pk.player) : null;
+    states[id].drafted.push({ name: pk.player, pos: pk.pos || (pv ? pv.posKey : "?"), price: pk.price || 0, value: pv ? pv.value : 0 });
+  }
+  const st = computeMockStandings(states);
+  const mine = st.teams.find(t => t.isMe);
+  const tm = Object.values(states).find(x => x.isMe);
+  const rec = {
+    id: "mf" + Date.now(), ts: Date.now(),
+    label: label || ("Practice mock — " + new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+    anyData: st.anyData,
+    grade: (mine && typeof _mockGrade === "function") ? _mockGrade(mine.rank, st.N) : "—",
+    myRank: mine ? mine.rank : null, n: st.N, picks: (_liveDraft.picks || []).length,
+    standings: st.teams.map(t => ({ owner: t.owner, isMe: t.isMe, rank: t.rank, rotoPoints: Math.round((t.rotoPoints || 0) * 10) / 10, rosterValue: Math.round(t.rosterValue || 0), spent: t.spent || 0 })),
+    myRoster: tm ? tm.drafted.map(d => ({ name: d.name, pos: d.pos, price: d.price, value: d.value })) : [],
+  };
+  const l = getSavedMocks(); l.unshift(rec); while (l.length > 20) l.pop();
+  _writeSavedMocks(l);
+  return rec.id;
+}
+function saveAndClearMock() { const id = saveMockToArchive(); clearMockDraft(); return id; }
 function setMockFeedSpeed(s) {
   if (s !== "1x" && s !== "4x" && s !== "instant") return;
   _mockFeed.speed = s;
@@ -410,14 +467,13 @@ function _mfSpentSoFar() {
 }
 function _mfStatusText() {
   const s = _mockFeed.script;
-  if (!s) return "Idle — press Start to run a full auction against the bots.";
+  if (!_mockFeed.active || !s) return "Idle — press Start to run a full auction against the bots. It's a throwaway rehearsal — your real draft is never touched.";
   const total = s.totalLots, done = _mockFeed.soldLots;
-  if (_mockFeed.active) {
-    return (_mockFeed.paused ? "⏸ Paused" : "● Running") + " — lot <b>" + done + "</b> / " + total +
-      " · $" + _mfSpentSoFar() + " spent · " + esc(_mockFeed.speed);
+  if (_mockFeed.finished) {
+    return "✓ Done — " + done + " lots. Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> (keeps the result in your mocks list) or <b>Clear</b> to wipe the slate.";
   }
-  if (done >= total && total > 0) return "✓ Finished — " + total + " lots. Open Debrief to review, or Reset draft to clear.";
-  return "Stopped at lot " + done + " / " + total + ".";
+  return (_mockFeed.paused ? "⏸ Paused" : "● Running") + " — lot <b>" + done + "</b> / " + total +
+    " · $" + _mfSpentSoFar() + " spent · " + esc(_mockFeed.speed);
 }
 function _mfUpdateStatus() {
   const el = (typeof document !== "undefined") ? document.getElementById("mf-status") : null;
@@ -437,7 +493,7 @@ function _mfSpeedSeg() {
 // paused feed can't emit picks behind a "⏸ Paused" label). Preset skip-counts
 // (not a free-type input, which a per-pick re-render would steal focus from).
 function _mfSkipControls(compact) {
-  if (!_mockFeed.active || _mockFeed.paused) return "";
+  if (!_mockFeed.active || _mockFeed.paused || _mockFeed.finished) return "";
   const pad = compact ? "3px 8px" : "5px 10px";
   const ff = (act, label) => '<button class="btn ghost" data-mockfeed="' + act + '" style="width:auto; padding:' + pad + ';">' + label + '</button>';
   const sk = (n) => '<button class="btn ghost" data-mockskip="' + n + '" style="width:auto; padding:' + pad + ';">⏭ ' + n + '</button>';
@@ -451,14 +507,16 @@ function renderMockFeedControls(compact) {
   const btn = (act, label, cls) => '<button class="btn ' + (cls || "ghost") + '" data-mockfeed="' + act +
     '" style="width:auto; padding:' + (compact ? "3px 10px" : "6px 14px") + ';">' + label + '</button>';
 
-  // In Real mode the practice-mock start button is HIDDEN — starting a mock
-  // resets the pick list, and this is the button Jeff's real-draft cockpit
-  // renders too, so a misclick during the real draft must be impossible.
-  const realMode = (typeof getFeedMode === "function") && getFeedMode() === "real";
+  // A mock is ephemeral + non-destructive, so Start is always available (even in
+  // Real mode — the real draft is safe on disk and reloads when the mock clears).
+  const finished = _mockFeed.finished;
   let controls = "";
   if (!active) {
-    if (realMode) controls += '<span class="muted small">Switch the feed to <b>Test</b> to run a practice mock.</span>';
-    else controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice mock"), "primary");
+    controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice mock"), "primary");
+  } else if (finished) {
+    controls += btn("saveclear", (compact ? "💾 Save" : "💾 Save & clear"), "primary");
+    controls += btn("clear", (compact ? "🗑 Clear" : "🗑 Clear (discard)"));
+    controls += btn("start", (compact ? "🔄" : "🔄 New mock"));
   } else {
     controls += paused ? btn("resume", "▶ Resume", "primary") : btn("pause", "⏸ Pause");
     controls += btn("stop", "■ Stop");
@@ -489,16 +547,55 @@ function renderMockFeedControls(compact) {
 // Top-bar hook used by draft-mode.js _dmTopBar.
 function _mfTopbarHtml() { return renderMockFeedControls(true); }
 
+// "Saved mocks" archive card for the Draft Setup lobby. Reuses the Mock Draft
+// tab's store (getSavedMocks) + review renderer (renderSavedReview) so practice
+// and interactive mocks share one list.
+function renderMockArchive() {
+  if (typeof getSavedMocks !== "function") return "";
+  const list = getSavedMocks();
+  if (!list.length) return "";
+  const gc = (typeof _gradeColor === "function") ? _gradeColor : () => "inherit";
+  const ord = (typeof _ord === "function") ? _ord : (n) => String(n);
+  let html = '<div class="card"><h3 style="margin:0 0 6px;">📋 Saved mocks (' + list.length + ')</h3>';
+  html += '<p class="muted small" style="margin:0 0 6px;">Results from finished practice mocks (and the Mock Draft tab). The working slate is wiped after each — these are the keepsakes.</p>';
+  html += '<table style="font-size:12px;"><tbody>';
+  for (const m of list) {
+    const grade = m.grade || "—";
+    html += '<tr><td><b>' + esc(m.label) + '</b></td>';
+    html += '<td class="num" style="color:' + gc(grade) + ';">' + esc(grade) + '</td>';
+    html += '<td class="num dim">' + (m.myRank ? ord(m.myRank) + '/' + m.n : "—") + '</td>';
+    html += '<td><button class="btn ghost" data-mockarchive="review:' + esc(m.id) + '" style="width:auto; padding:2px 10px; font-size:11px;">Review</button> ';
+    html += '<button class="btn ghost" data-mockarchive="del:' + esc(m.id) + '" style="width:auto; padding:2px 8px; font-size:11px; color:var(--bad);">✕</button></td></tr>';
+  }
+  html += '</tbody></table>';
+  if (_mockFeed.reviewId && typeof renderSavedReview === "function") {
+    const rec = list.find(m => m.id === _mockFeed.reviewId);
+    if (rec) html += renderSavedReview(rec);
+  }
+  html += '</div>';
+  return html;
+}
+
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("click", (e) => {
-    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed],[data-mockskip]") : null;
+    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed],[data-mockskip],[data-mockarchive],#im-review-close") : null;
     if (!t || !t.closest || !t.closest("#view-root")) return;
+    if (t.id === "im-review-close") { _mockFeed.reviewId = null; _mfRender(); return; }
+    if (t.dataset.mockarchive) {
+      const s = String(t.dataset.mockarchive), i = s.indexOf(":"), act = s.slice(0, i), id = s.slice(i + 1);
+      if (act === "review") _mockFeed.reviewId = (_mockFeed.reviewId === id ? null : id);
+      else if (act === "del") { if (typeof deleteSavedMock === "function") deleteSavedMock(id); if (_mockFeed.reviewId === id) _mockFeed.reviewId = null; }
+      _mfRender();
+      return;
+    }
     if (t.dataset.mockfeed) {
       const a = t.dataset.mockfeed;
       if (a === "start") startMockFeed();
       else if (a === "pause") pauseMockFeed();
       else if (a === "resume") resumeMockFeed();
       else if (a === "stop") stopMockFeed();
+      else if (a === "saveclear") saveAndClearMock();
+      else if (a === "clear") clearMockDraft();
       else if (a === "skipnom") skipMockNomination();
       else if (a === "skipend") skipMockToEnd();
     } else if (t.dataset.mockskip) {

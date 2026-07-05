@@ -696,6 +696,11 @@ function _draftPersistKeys() {
 // picks): main key → free the big event-log backup and retry → emergency
 // fallback key. The pick list is the one thing that must survive anything.
 function saveLiveDraft() {
+  // A UD-native practice mock is EPHEMERAL — it lives only in memory and never
+  // touches disk (so it can't sync, clobber the real draft, or leave residue).
+  // The real draft stays safe in localStorage untouched; clearing the mock
+  // reloads it. (The extension test feed is NOT mockFeedActive and still saves.)
+  if (typeof mockFeedActive === "function" && mockFeedActive()) return;
   const keys = _draftPersistKeys();
   const payload = JSON.stringify({ v: 2, at: Date.now(), picks: _liveDraft.picks, deleted: _liveDraft.deleted, streamKey: _liveDraft.streamKey || null });
   try {
@@ -759,12 +764,9 @@ const FEED_MODE_KEY = "ud_feed_mode";
 function getFeedMode() { return localStorage.getItem(FEED_MODE_KEY) || "off"; }
 function setFeedMode(m) {
   const mode = (m === "test" || m === "real") ? m : "off";
-  // Leaving Test mode must halt a running practice mock — otherwise its timers
-  // keep emitting frames into a feed that now drops them, while the panel still
-  // reads "● Running". (startMockFeed/_mfArm set mode 'test', so this never
-  // stops the mock we're about to start.)
-  if (mode !== "test" && typeof mockFeedActive === "function" && mockFeedActive() &&
-      typeof stopMockFeed === "function") stopMockFeed({ silent: true });
+  // Changing the feed mode ends an ephemeral practice mock and restores the real
+  // draft (the mock doesn't touch the persisted feed mode itself).
+  if (typeof mockFeedActive === "function" && mockFeedActive() && typeof clearMockDraft === "function") clearMockDraft();
   localStorage.setItem(FEED_MODE_KEY, mode);
   // "real" = your actual league (1200); clear any test-league override so
   // player-name lookups and team mapping use the real league.
@@ -846,7 +848,10 @@ function reconcileDraftContext() {
 // A pick log shows generic "Team N" labels when this is a practice run — either
 // the REST test-league override OR the extension feed set to test mode.
 function draftTestMode() {
-  return (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
+  // A running UD-native mock is a test context (generic Team-N / $260 / no
+  // keepers) WITHOUT persisting any feed-mode/override to disk (ephemeral).
+  return (typeof mockFeedActive === "function" && mockFeedActive()) ||
+         (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
 }
 
 // ===========================================================================
@@ -861,6 +866,11 @@ function draftTestMode() {
 
 // Which ESPN team is ME in a mock (picked on the Draft Setup screen).
 function getMyDraftEspnId() {
+  // During an ephemeral mock the seat is held in memory (not persisted).
+  if (typeof mockFeedActive === "function" && mockFeedActive() && typeof mockFeedSeat === "function") {
+    const s = mockFeedSeat();
+    if (s != null) return s;
+  }
   const v = parseInt(localStorage.getItem("ud_test_my_team") || "", 10);
   return isFinite(v) && v > 0 ? v : null;
 }
@@ -966,6 +976,11 @@ function _seedMockEspnNames(map) {
   _espnIdToName = Object.assign(_espnIdToName || {}, map);
   _espnNamesAreMock = true;
 }
+// Drop the in-memory mock name map when a practice mock is cleared, so the next
+// real draft fetches real ESPN names.
+function _clearMockEspnNames() {
+  if (_espnNamesAreMock) { _espnIdToName = null; _espnNamesAreMock = false; }
+}
 let _draftTabStaleTimer = null;
 
 // The full draft-room event stream (nominations, bids, passes, sales…) mirrored
@@ -1047,6 +1062,7 @@ function _updateFeedActivityDom() {
 // Should this event stream be accepted + logged? Mirrors the pick-feed mode
 // rules: off = no; real = only your league; test = anything.
 function _dlogAccepts(leagueId) {
+  if (typeof mockFeedActive === "function" && mockFeedActive()) return true;   // ephemeral mock: accept its own events regardless of persisted feed mode
   const mode = getFeedMode();
   if (mode === "off") return false;
   if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
@@ -1090,11 +1106,17 @@ function _onDraftEvents(msg) {
   _dlog.events.push(...fresh);
   if (_dlog.events.length > 15000) _dlog.events.splice(0, _dlog.events.length - 15000);
   _dlog.lastEventAt = fresh[fresh.length - 1].at || Date.now();
-  _dlogPersistSoon();
-  // Mirror to Supabase (draft-log.js). Mock unless Real mode on your league.
-  if (typeof logDraftEvents === "function") {
-    logDraftEvents({ leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt },
-      fresh, getFeedMode() !== "real");
+  // A UD-native practice mock is EPHEMERAL: don't persist its events to disk and
+  // don't mirror synthetic bot events to Supabase (they have no human-tendency
+  // value and only risk contaminating that dataset). The extension ESPN mock is
+  // NOT mockFeedActive and is still logged (is_mock=true).
+  const _mockRun = typeof mockFeedActive === "function" && mockFeedActive();
+  if (!_mockRun) {
+    _dlogPersistSoon();
+    if (typeof logDraftEvents === "function") {
+      logDraftEvents({ leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt },
+        fresh, getFeedMode() !== "real");
+    }
   }
   _updateFeedActivityDom();
   if (typeof updateDraftModeLive === "function") updateDraftModeLive();
@@ -1264,11 +1286,16 @@ function _feedRequestSync() {
 }
 
 async function _applyDraftFeed(feed) {
+  if (!feed || !Array.isArray(feed.picks)) return;
+  const _mockRun = typeof mockFeedActive === "function" && mockFeedActive();
   const mode = getFeedMode();
-  if (mode === "off" || !feed || !Array.isArray(feed.picks)) return;
-  // In "real" mode, only accept picks from your actual league.
-  if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
-      String(feed.leagueId) !== String(UD_HOME_LEAGUE_ID)) return;
+  // An ephemeral mock feeds itself regardless of the persisted feed mode.
+  if (!_mockRun) {
+    if (mode === "off") return;
+    // In "real" mode, only accept picks from your actual league.
+    if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
+        String(feed.leagueId) !== String(UD_HOME_LEAGUE_ID)) return;
+  }
 
   // STALENESS GATE: chrome.storage keeps the last capture forever, and the
   // bridge re-pushes it on every page load. Old data must not present as a

@@ -196,7 +196,8 @@ function makeSandbox(seed) {
     " checkDraftInvariants: (typeof checkDraftInvariants==='function'?checkDraftInvariants:null)," +
     " buildMockFeedScript: (typeof buildMockFeedScript==='function'?buildMockFeedScript:null)," +
     " getMyDraftEspnId: (typeof getMyDraftEspnId==='function'?getMyDraftEspnId:null)," +
-    " arm: function(s){ _mfArm(s); return _mockFeed.ctx; }," +
+    " arm: function(s){ _mockFeed.active = true; _mockFeed.finished = false; _mfArm(s); return _mockFeed.ctx; }," +
+    " clearMock: function(){ if (typeof clearMockDraft==='function') clearMockDraft(); _mockFeed.active = false; _mockFeed.finished = false; _mockFeed.myEspnId = null; }," +
     " applyFrame: function(ctx, fr, adv){ if (adv) adv(fr.dt||0); return _mfApplyFrame(ctx, fr, globalThis.Date.now()); }," +
     " eval: function(code){ return eval(code); }" +
     "};\n";
@@ -346,12 +347,9 @@ async function run() {
     assertEq(ud.liveDraft.streamKey, script.leagueId + ":" + script.startedAt, "streamKey = leagueId:startedAt");
   });
 
-  test("all events logged to Supabase as is_mock=true", () => {
-    assert(logCalls.length > 0, "logDraftEvents should have been called");
-    assert(logCalls.every(c => c.isMock === true), "every log call must be is_mock=true");
-    const logged = logCalls.reduce((s, c) => s + c.n, 0);
-    assertEq(logged, script.frames.length, "logged event count == frames emitted");
-    assertEq(ud.dlog.events.length, script.frames.length, "_dlog holds every event");
+  test("ephemeral mock does NOT log to Supabase; events stay in memory only", () => {
+    assertEq(logCalls.length, 0, "a UD-native mock never calls logDraftEvents (no bot data in the DB)");
+    assertEq(ud.dlog.events.length, script.frames.length, "_dlog holds every event in memory");
   });
 
   // --- fast-forward / skip controls -------------------------------------
@@ -381,41 +379,38 @@ async function run() {
   ud.eval("skipMockToEnd()");
   await drain();
   test("skip to end completes the draft with clean invariants", () => {
-    assertEq(ud.eval("_mockFeed.active"), false, "mock is finished (inactive)");
+    assertEq(ud.eval("_mockFeed.finished"), true, "mock reached the end (finished)");
+    assertEq(ud.eval("_mockFeed.active"), true, "stays active until saved/cleared (ephemeral context holds)");
     assertEq(ud.eval("_mockFeed.soldLots"), ffTotal, "every lot resolved");
     assertEq(ud.liveDraft.picks.filter(p => p.espnPlayerId != null).length, ffTotal, "held picks == total lots");
     assertEq(ud.checkDraftInvariants().counts.error, 0, "zero invariant errors at the end");
   });
+  ud.clearMock();   // tear down the ephemeral mock before the regression tests
 
   // === Review-round regression tests (adversarial review, 2026-07-05) =========
 
-  // #1 CRITICAL — starting a mock must never silently wipe real/manual picks.
-  ud.eval("setLeagueOverride('990001'); setFeedMode('test'); _liveDraft.deleted={}; _liveDraft.streamKey=null; _liveDraft.picks=[{player:'Real Guy', team:'jeff', price:20, ts:1}];");
-  sandbox.__confirmYes = false;
-  const startedDenied = ud.eval("startMockFeed()");
-  test("#1 startMockFeed refuses to wipe real picks when the user cancels", () => {
-    assertEq(startedDenied, false, "returns false when confirm denied");
-    assertEq(ud.liveDraft.picks.length, 1, "the real pick is preserved");
-    assertEq(ud.liveDraft.picks[0].player, "Real Guy", "real pick untouched");
+  // #1 (ephemeral) — a mock is NON-DESTRUCTIVE: it never writes to disk, so
+  // starting one over a real draft leaves the real key untouched (no confirm),
+  // and clearing the mock reloads the real draft.
+  ud.eval("setLeagueOverride(''); setFeedMode('real'); _liveDraft.deleted={}; _liveDraft.streamKey='1200:1'; _liveDraft.picks=[{player:'Real Guy', team:'jeff', price:20, ts:1}]; saveLiveDraft();");
+  const realKeyB4 = ud.eval("localStorage.getItem('ud_live_draft_v1')");
+  const started1 = ud.eval("startMockFeed()");
+  test("#1 starting a mock is non-destructive — the real draft on disk is untouched", () => {
+    assertEq(started1, true, "starts without a confirm (ephemeral)");
+    assertEq(ud.eval("localStorage.getItem('ud_live_draft_v1')"), realKeyB4, "real key on disk untouched by the mock");
   });
-  sandbox.__confirmYes = true;
-  ud.eval("startMockFeed()");
-  test("#1 startMockFeed proceeds only after explicit confirmation", () => {
-    assert(ud.liveDraft.picks.every(p => typeof p.team === "string" && p.team.indexOf("espn:") === 0),
-      "after confirm, only mock (espn:N) picks remain — no real pick survived");
+  ud.eval("clearMockDraft()");
+  test("#1 clearing the mock restores the real draft", () => {
+    assertEq(ud.liveDraft.picks.length, 1, "real draft restored from disk");
+    assertEq(ud.liveDraft.picks[0].player, "Real Guy", "the real pick is back");
   });
-  ud.eval("stopMockFeed({silent:true})");
 
-  // #1 UI defense — the Start button is hidden in Real mode (the real-draft
-  // cockpit renders this control too; a misclick must be impossible).
-  test("#1 renderMockFeedControls hides Start in Real mode, shows it in Test", () => {
-    ud.eval("setLeagueOverride('990001'); setFeedMode('test');");
-    const test = ud.eval("renderMockFeedControls(false)");
-    assert(test.indexOf('data-mockfeed="start"') >= 0, "Start shown in Test mode");
-    assert(test.indexOf("mf-skip-n") < 0, "no free-type skip input (focus-safe presets)");
+  // #1 UI — Start is always available now (even in Real mode: a mock is safe).
+  test("#1 renderMockFeedControls shows Start (no hide-in-real; no free-type input)", () => {
     ud.eval("setLeagueOverride(''); setFeedMode('real');");
-    const real = ud.eval("renderMockFeedControls(false)");
-    assertEq(real.indexOf('data-mockfeed="start"'), -1, "Start hidden in Real mode");
+    const html = ud.eval("renderMockFeedControls(false)");
+    assert(html.indexOf('data-mockfeed="start"') >= 0, "Start shown even in Real mode (ephemeral, safe)");
+    assert(html.indexOf("mf-skip-n") < 0, "no free-type skip input (focus-safe presets)");
   });
 
   // #2 HIGH — a mock seeds _espnIdToName with synthetic ids + a flag; entering
@@ -509,21 +504,21 @@ async function run() {
   // the cloud copy on every device).
   ud.eval(
     "setLeagueOverride(''); setFeedMode('real'); " +
-    "_liveDraft.picks=[{player:'RealStar', team:'jeff', price:30, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey='1200:1'; saveLiveDraft();"
+    "_liveDraft.picks=[{player:'RealStar', team:'jeff', price:30, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey='1200:1'; saveLiveDraft(); " +
+    "localStorage.removeItem('ud_live_draft_mock_v1');"
   );
   const realKeyBefore = ud.eval("localStorage.getItem('ud_live_draft_v1')");
-  sandbox.__confirmYes = true;                     // ok to clear the (real) picks for a mock
   ud.eval("startMockFeed()");
   ud.eval("skipMockPicks(3)");
   await drain();
-  test("#R9-1 a running mock never writes the synced real-draft key", () => {
-    assertEq(ud.eval("localStorage.getItem('ud_live_draft_v1')"), realKeyBefore, "ud_live_draft_v1 untouched by the mock");
-    const mk = ud.eval("localStorage.getItem('ud_live_draft_mock_v1')");
-    assert(mk && JSON.parse(mk).picks.length >= 3, "mock picks persist to the device-local mock key");
+  test("#R9-1 an ephemeral mock writes NOTHING to disk (real key + mock key untouched)", () => {
+    assertEq(ud.eval("localStorage.getItem('ud_live_draft_v1')"), realKeyBefore, "real key untouched by the mock");
+    assertEq(ud.eval("localStorage.getItem('ud_live_draft_mock_v1')"), null, "no device-local key written either — memory-only");
+    assert(ud.liveDraft.picks.length >= 3, "mock picks live in memory");
   });
-  ud.eval("stopMockFeed({silent:true}); setLeagueOverride(''); setFeedMode('real');");
+  ud.eval("clearMockDraft();");
   await drain();
-  test("#R9-1 switching to Real reloads the real draft (no empty-clobber)", () => {
+  test("#R9-1 clearing the mock restores the real draft", () => {
     assertEq(ud.liveDraft.picks.length, 1, "real draft restored from its own key");
     assertEq(ud.liveDraft.picks[0].player, "RealStar", "the real pick is back");
     const rk = JSON.parse(ud.eval("localStorage.getItem('ud_live_draft_v1')"));
@@ -560,14 +555,15 @@ async function run() {
   });
 
   // #R10-4 MEDIUM — no seat → recommendBid gives a null max (not a $999 sentinel
-  // that inflates walk/stretch in a $260 league).
-  ud.eval("setMyDraftEspnId(''); ");
+  // that inflates walk/stretch in a $260 league). Seatless = mock active with no
+  // myEspnId.
+  ud.eval("_mockFeed.myEspnId = null; setMyDraftEspnId('');");
   const reco = JSON.parse(ud.eval("JSON.stringify(recommendBid(getValues()[0].name) || {})"));
   test("#R10-4 recommendBid returns null max (no $999) when the seat is unset", () => {
     assertEq(reco.maxBid, null, "no sentinel");
     assert(reco.walk > 0 && reco.walk <= 260 && reco.stretch <= 260, "walk/stretch stay within a $260 league");
   });
-  ud.eval("stopMockFeed({silent:true})");
+  ud.clearMock();
 
   // === Round 11 regression tests ===========================================
 
