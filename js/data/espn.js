@@ -407,9 +407,23 @@ function stopEspnPolling() {
 // features/draft.js). De-dupe by playerId.
 function processEspnPicks(rawPicks) {
   const existing = new Set(_liveDraft.picks.map(p => p.espnPlayerId).filter(Boolean));
+  const _penNk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   let added = 0;
   for (const raw of rawPicks) {
     if (existing.has(raw.playerId)) continue;
+    // Manual↔feed dedup (spec Q3): a pick recorded MANUALLY (no espnPlayerId)
+    // that the feed later delivers must not double-count — UPGRADE the manual
+    // pick in place (attach the ESPN identity) instead of adding a duplicate.
+    const manual = raw.playerName && _liveDraft.picks.find(p =>
+      p.espnPlayerId == null && _penNk(p.player) === _penNk(raw.playerName));
+    if (manual) {
+      manual.espnPlayerId = raw.playerId;
+      manual.espnTeamId = raw.teamId;
+      manual.espnSeq = raw.seq != null ? raw.seq : null;
+      existing.add(raw.playerId);
+      added++;   // state changed → save + re-render below
+      continue;
+    }
     _liveDraft.picks.push({
       player: raw.playerName,
       pos: getPlayerValue(raw.playerName)?.posKey || null,

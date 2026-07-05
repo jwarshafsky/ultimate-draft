@@ -221,9 +221,21 @@ function installGlobals(overrides) {
   // _applyDraftFeed can call it. Mirrors espn.js exactly.
   global.processEspnPicks = function (rawPicks) {
     const existing = new Set(global._liveDraft.picks.map((p) => p.espnPlayerId).filter(Boolean));
+    const _penNk = (typeof global.normalizePlayerName === "function") ? global.normalizePlayerName : (x => String(x || "").toLowerCase());
     let added = 0;
     for (const raw of rawPicks) {
       if (existing.has(raw.playerId)) continue;
+      // Manual↔feed dedup (spec Q3) — mirrors espn.js exactly.
+      const manual = raw.playerName && global._liveDraft.picks.find((p) =>
+        p.espnPlayerId == null && _penNk(p.player) === _penNk(raw.playerName));
+      if (manual) {
+        manual.espnPlayerId = raw.playerId;
+        manual.espnTeamId = raw.teamId;
+        manual.espnSeq = raw.seq != null ? raw.seq : null;
+        existing.add(raw.playerId);
+        added++;
+        continue;
+      }
       global._liveDraft.picks.push({
         player: raw.playerName,
         pos: global.getPlayerValue(raw.playerName)?.posKey || null,
@@ -733,4 +745,16 @@ test("watchdog: >30s silence mid-bidding is stalled (red)", () => {
   const st = global._feedStallState();
   assertEq(st.level, "stalled", "mid-lot silence must be stalled");
   assertEq(st.midLot, true, "mid-lot flag");
+});
+
+
+section("App engines — manual↔feed dedup (spec Q3)");
+
+test("a manual pick later delivered by the feed is UPGRADED, never duplicated", () => {
+  resetDraftState();
+  global._liveDraft.picks.push({ player: "Juan Soto", pos: "OF", team: "jeff", price: 38, ts: Date.now() });   // manual: no espnPlayerId
+  global.processEspnPicks([{ playerId: 39832, teamId: 5, bidAmount: 38, seq: 12, playerName: "Juan Soto" }]);
+  assertEq(global._liveDraft.picks.length, 1, "no duplicate pick");
+  assertEq(global._liveDraft.picks[0].espnPlayerId, 39832, "manual pick upgraded with ESPN id");
+  assertEq(global._liveDraft.picks[0].espnSeq, 12, "lot seq attached");
 });
