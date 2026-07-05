@@ -387,6 +387,20 @@ async function run() {
   });
   ud.clearMock();   // tear down the ephemeral mock before the regression tests
 
+  // #R12 — a speed change on a STOPPED/finished mock must NOT resume playback
+  // (setMockFeedSpeed must guard on finished like pause/resume do).
+  ud.eval("startMockFeed(); skipMockPicks(4);");
+  await drain();
+  ud.eval("stopMockFeed();");
+  const genAtStop = ud.eval("_mockFeed.gen");
+  ud.eval("setMockFeedSpeed('instant');");
+  test("#R12 a speed change on a finished mock cannot resume playback", () => {
+    assertEq(ud.eval("_mockFeed.finished"), true, "mock still finished after Stop");
+    assertEq(ud.eval("_mockFeed.gen"), genAtStop, "no reschedule (gen unchanged) — playback not resumed");
+    assert(ud.eval("renderMockFeedControls(false)").indexOf("data-mockspeed") < 0, "speed control hidden when finished");
+  });
+  ud.clearMock();
+
   // === Review-round regression tests (adversarial review, 2026-07-05) =========
 
   // #1 (ephemeral) — a mock is NON-DESTRUCTIVE: it never writes to disk, so

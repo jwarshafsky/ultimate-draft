@@ -273,10 +273,10 @@ function _mfSpeedDelay(dt) {
 }
 function _mfLater(fn, ms) {
   const g = _mockFeed.gen;
-  setTimeout(() => { if (_mockFeed.gen === g && _mockFeed.active && !_mockFeed.paused) fn(); }, ms);
+  setTimeout(() => { if (_mockFeed.gen === g && _mockFeed.active && !_mockFeed.paused && !_mockFeed.finished) fn(); }, ms);
 }
 function _mfScheduleNext() {
-  if (!_mockFeed.active || _mockFeed.paused || !_mockFeed.script) return;
+  if (!_mockFeed.active || _mockFeed.paused || _mockFeed.finished || !_mockFeed.script) return;
   const frames = _mockFeed.script.frames;
   if (_mockFeed.idx >= frames.length) { _mfFinish(); return; }
   const fr = frames[_mockFeed.idx];
@@ -401,7 +401,8 @@ function saveAndClearMock() { const id = saveMockToArchive(); clearMockDraft(); 
 function setMockFeedSpeed(s) {
   if (s !== "1x" && s !== "4x" && s !== "instant") return;
   _mockFeed.speed = s;
-  if (_mockFeed.active && !_mockFeed.paused) { _mockFeed.gen++; _mfScheduleNext(); }
+  // Don't resume a stopped/finished mock (finished!=paused) — matches pause/resume.
+  if (_mockFeed.active && !_mockFeed.paused && !_mockFeed.finished) { _mockFeed.gen++; _mfScheduleNext(); }
   _mfUpdateStatus();
   // Re-render so the segmented control's highlight matches the active speed
   // (the buttons are static HTML; without this the selection lags — R11).
@@ -522,10 +523,13 @@ function renderMockFeedControls(compact) {
     controls += btn("stop", "■ Stop");
   }
 
+  // Speed only matters before/during playback — hide it on a finished mock so it
+  // can't silently resume a stopped run.
+  const speedSeg = finished ? "" : _mfSpeedSeg();
   if (compact) {
     let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">';
     if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0) + '</b></span>';
-    s += controls + _mfSkipControls(true) + _mfSpeedSeg() + '</span>';
+    s += controls + _mfSkipControls(true) + speedSeg + '</span>';
     return s;
   }
 
@@ -534,7 +538,7 @@ function renderMockFeedControls(compact) {
   html += '<h3 style="margin:0;">🤖 Practice vs bots</h3>';
   html += '<span class="muted small">UD\'s own auction engine, feeding the real cockpit — no ESPN tab needed</span>';
   html += '<span style="flex:1;"></span>';
-  html += _mfSpeedSeg();
+  html += speedSeg;
   html += controls;
   html += '</div>';
   if (active) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
