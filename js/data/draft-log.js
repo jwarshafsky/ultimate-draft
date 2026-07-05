@@ -27,6 +27,8 @@ const DRAFT_LOG = {
   flushing: false,
   timer: null,
   backoffUntil: 0,
+  pendingDrains: [],      // outgoing sessions' un-uploaded events, drained under their OWN id
+  draining: false,
 };
 
 const _DL_SESSIONS_KEY = "ud_draft_sessions_v1";   // { clientKey: {id, uploadedSeq} } — local cache, NOT device-synced (client_key upsert makes cross-device safe)
@@ -44,6 +46,16 @@ function logDraftEvents(meta, events, isMock) {
   if (!meta || !meta.leagueId || !meta.startedAt || !Array.isArray(events) || !events.length) return;
   const key = String(meta.leagueId) + ":" + String(meta.startedAt);
   if (DRAFT_LOG.clientKey !== key) {
+    // Stash the OUTGOING session's un-uploaded events before we wipe the queue,
+    // so a rotation (real draft → mock in the same tab) doesn't silently drop the
+    // real session's last un-flushed events — they get drained under their own
+    // session_id (R11).
+    if (DRAFT_LOG.clientKey && DRAFT_LOG.queue.length) {
+      DRAFT_LOG.pendingDrains.push({
+        clientKey: DRAFT_LOG.clientKey, meta: DRAFT_LOG.meta, isMock: DRAFT_LOG.isMock,
+        sessionId: DRAFT_LOG.sessionId, uploadedSeq: DRAFT_LOG.uploadedSeq, queue: DRAFT_LOG.queue.slice(),
+      });
+    }
     // New session — reset state, pick up any previously-uploaded watermark.
     DRAFT_LOG.clientKey = key;
     DRAFT_LOG.meta = { leagueId: String(meta.leagueId), sport: meta.sport || null, startedAt: meta.startedAt };
@@ -77,6 +89,53 @@ function logDraftEvents(meta, events, isMock) {
   }
   if (DRAFT_LOG.queue.length > 20000) DRAFT_LOG.queue.splice(0, DRAFT_LOG.queue.length - 20000);
   _dlSchedule();
+  if (DRAFT_LOG.pendingDrains.length) _dlDrainPending();
+}
+
+// Drain the stashed events of rotated-away sessions, each under its OWN
+// session_id (never the current session's), so a real→mock rotation can't lose
+// or misattribute the previous session's tail (R11). Best-effort; re-queues on
+// failure for a later attempt.
+async function _dlDrainPending() {
+  if (DRAFT_LOG.draining || !DRAFT_LOG.pendingDrains.length || typeof supabaseClient === "undefined") return;
+  DRAFT_LOG.draining = true;
+  try {
+    const drains = DRAFT_LOG.pendingDrains.splice(0);
+    for (const d of drains) {
+      try {
+        let sessionId = d.sessionId || (_dlSessionCache()[d.clientKey] || {}).id || null;
+        if (!sessionId) {
+          const started = new Date(d.meta.startedAt);
+          const { data, error } = await supabaseClient.from("draft_sessions").upsert({
+            client_key: d.clientKey, league_id: d.meta.leagueId, sport: d.meta.sport,
+            season: started.getFullYear(), is_mock: d.isMock,
+            label: (d.meta.sport === "ffl" ? "football" : "baseball") + " " + (d.isMock ? "mock" : "DRAFT") + " " + started.toISOString().slice(0, 10),
+            started_at: started.toISOString(),
+          }, { onConflict: "client_key" }).select("id").single();
+          if (error) throw error;
+          sessionId = data.id;
+        }
+        const rows = d.queue
+          .filter(e => e && e.seq != null && e.seq > (d.uploadedSeq || 0))
+          .map(e => ({
+            session_id: sessionId, seq: e.seq, cmd: String(e.cmd || "?").slice(0, 24),
+            espn_team_id: Number.isFinite(e.teamId) ? e.teamId : null,
+            espn_player_id: Number.isFinite(e.playerId) ? e.playerId : null,
+            amount: Number.isFinite(e.amount) ? e.amount : null,
+            raw: (e.text || "").slice(0, 300) || null,
+            captured_at: e.at ? new Date(e.at).toISOString() : null,
+          }));
+        if (rows.length) {
+          const { error } = await supabaseClient.from("draft_events").upsert(rows, { onConflict: "session_id,seq", ignoreDuplicates: true });
+          if (error) throw error;
+        }
+      } catch (e) {
+        DRAFT_LOG.pendingDrains.push(d);   // couldn't drain now — retry later
+      }
+    }
+  } finally {
+    DRAFT_LOG.draining = false;
+  }
 }
 
 function _dlSchedule() {

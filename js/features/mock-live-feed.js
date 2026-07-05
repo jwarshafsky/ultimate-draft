@@ -144,7 +144,10 @@ function buildMockFeedScript(opts) {
   values.forEach((p, i) => { const id = 900001 + i; idByName[p.name] = id; nameById[id] = p.name; });
 
   // The engine decides everything real: who nominates, who wins, the price.
-  const result = (typeof runMockDraft === "function") ? runMockDraft(opts) : { picks: [] };
+  // noKeepers: a keeper-FREE $260 auction so the bots' budgets/slots match the
+  // generic keeper-free cockpit this feed drives (R11 — otherwise every bot's
+  // shown budget/max-bid was overstated by its real keeper cost).
+  const result = (typeof runMockDraft === "function") ? runMockDraft(Object.assign({}, opts, { noKeepers: true })) : { picks: [] };
   const enginePicks = result.picks || [];
 
   const startedAt = Date.now();
@@ -343,6 +346,9 @@ function setMockFeedSpeed(s) {
   _mockFeed.speed = s;
   if (_mockFeed.active && !_mockFeed.paused) { _mockFeed.gen++; _mfScheduleNext(); }
   _mfUpdateStatus();
+  // Re-render so the segmented control's highlight matches the active speed
+  // (the buttons are static HTML; without this the selection lags — R11).
+  if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
 }
 function getMockFeedSpeed() { return _mockFeed.speed; }
 

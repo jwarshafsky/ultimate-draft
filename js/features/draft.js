@@ -676,16 +676,18 @@ function soldCurrent() {
 // applies is purely a function of the current context, so save and load always
 // agree (and reconcileDraftContext reloads the real key when leaving a mock).
 function _draftPersistKeys() {
-  // ONLY the practice mock (its synthetic league 990001) uses the device-local
-  // key. A generic Settings/REST test-league override must NOT redirect here:
-  // its picks belong in the real key (the cloud-sync gate still keeps them
-  // device-local while the override is active). Conflating the two (keying off
-  // draftTestMode) made a stale override load the real draft from the EMPTY mock
-  // key and then clobber it on the next save (R10 critical).
+  // TEST-mode picks (the practice mock AND a Keeper Edge feed pointed at any mock
+  // room, incl. ESPN's pre-draft lobby on the HOME league) are throwaway and go
+  // to a DEVICE-LOCAL key — never the real synced key. The right signal is the
+  // FEED MODE being 'test', NOT "any league override" (a Settings dry-run keeps
+  // feed mode 'real' and must load the real draft — R10 crit) and NOT "league
+  // 990001 only" (a home-league test feed has no override — R11: its espn:N picks
+  // landed in the real key and reconcile's reload couldn't remove them).
   const mockLeague = (typeof MOCK_FEED_LEAGUE_ID !== "undefined") ? MOCK_FEED_LEAGUE_ID : 990001;
-  const isMock = (typeof mockFeedActive === "function" && mockFeedActive()) ||
-                 (typeof ESPN !== "undefined" && ESPN && Number(ESPN.leagueId) === mockLeague);
-  return isMock
+  const isTestPicks = (typeof getFeedMode === "function" && getFeedMode() === "test") ||
+                      (typeof mockFeedActive === "function" && mockFeedActive()) ||
+                      (typeof ESPN !== "undefined" && ESPN && Number(ESPN.leagueId) === mockLeague);
+  return isTestPicks
     ? { main: "ud_live_draft_mock_v1", bk: "ud_live_draft_mock_bk_v1" }   // device-local (not in SYNC_EXACT_KEYS)
     : { main: "ud_live_draft_v1", bk: "ud_live_draft_bk_v1" };            // real draft — synced
 }

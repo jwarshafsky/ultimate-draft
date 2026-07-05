@@ -37,7 +37,10 @@ const DEFAULT_PROFILE = {
 function buildMockTeamStates(opts) {
   const states = {};
   // Keepers come from the Keepers tab (predicted keepers), not league-site marks.
-  const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
+  // opts.noKeepers → a keeper-FREE auction ($260 / full rosters), so the sim
+  // matches the generic keeper-free cockpit the UD-native feed drives (R11).
+  const selections = (opts && opts.noKeepers) ? {}
+    : ((typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections());
   // Pre-compute history-derived profiles if available
   const historyProfiles = (typeof computeAllOwnerProfiles === "function") ? computeAllOwnerProfiles() : {};
   for (const t of LEAGUE.teams) {
@@ -402,13 +405,13 @@ function runBiddingRound(states, player, nominatorId, opening, inflation) {
 }
 
 // Recompute inflation given current draft state (kept + already drafted are out).
-function inflationForMockState(states) {
+function inflationForMockState(states, opts) {
   const draftedNames = new Set();
   let spent = 0;
   for (const s of Object.values(states)) {
     for (const d of s.drafted) { draftedNames.add(_mockNk(d.name)); spent += d.price; }
   }
-  const keptNames = _mockKeptSet();
+  const keptNames = (opts && opts.noKeepers) ? new Set() : _mockKeptSet();
   const values = getValues();
   const totalBudget = (LEAGUE.draftBudget * LEAGUE.numTeams)
     + (typeof getDraftDollarAdjustment === "function" ? LEAGUE.teams.reduce((s, t) => s + getDraftDollarAdjustment(t.id), 0) : 0);
@@ -500,7 +503,7 @@ function computePosScarcity(states, rosterable) {
 function runMockDraft(opts) {
   opts = opts || {};
   const states = buildMockTeamStates(opts);
-  const keptNames = _mockKeptSet();
+  const keptNames = opts.noKeepers ? new Set() : _mockKeptSet();
   // Pool: positive-value, not kept players. Sort by value desc for nomination defaults.
   let pool = getValues().filter(p => p.value > 0 && !keptNames.has(_mockNk(p.name))).slice();
   pool.sort((a, b) => b.value - a.value);
@@ -522,7 +525,7 @@ function runMockDraft(opts) {
     }
     if (!nominatorId) break;
 
-    const inflation = inflationForMockState(states);
+    const inflation = inflationForMockState(states, opts);
     const nominee = chooseNomination(states[nominatorId], pool, inflation);
     if (!nominee) break;
 

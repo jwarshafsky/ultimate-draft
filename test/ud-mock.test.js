@@ -569,6 +569,33 @@ async function run() {
   });
   ud.eval("stopMockFeed({silent:true})");
 
+  // === Round 11 regression tests ===========================================
+
+  // #R11-1 HIGH — a Test-mode feed on the HOME league (no override — e.g. Keeper
+  // Edge on ESPN's pre-draft mock lobby) must write to the DEVICE-LOCAL mock key,
+  // never the synced real key (else its espn:N picks land in the real draft and
+  // reconcile's reload can't remove them).
+  ud.eval(
+    "setLeagueOverride(''); setFeedMode('real'); " +
+    "_liveDraft.picks=[{player:'RealHome', team:'jeff', price:15, ts:1}]; _liveDraft.deleted={}; _liveDraft.streamKey='1200:1'; saveLiveDraft();"
+  );
+  const realKeyHome = ud.eval("localStorage.getItem('ud_live_draft_v1')");
+  ud.eval(
+    "localStorage.removeItem('ud_live_draft_mock_v1'); setLeagueOverride(''); setFeedMode('test'); " +   // home league, no override
+    "_liveDraft.picks=[{player:'X', team:'espn:3', price:5, ts:2, espnPlayerId:900500}]; saveLiveDraft();"
+  );
+  test("#R11-1 a home-league Test feed writes the device-local key, not the synced real key", () => {
+    assertEq(ud.eval("draftTestMode()"), true, "feed 'test' is a test context");
+    assertEq(ud.eval("localStorage.getItem('ud_live_draft_v1')"), realKeyHome, "real key untouched by home-league test picks");
+    const mk = JSON.parse(ud.eval("localStorage.getItem('ud_live_draft_mock_v1')"));
+    assert(mk && mk.picks.length === 1 && mk.picks[0].team === "espn:3", "test picks live in the device-local mock key");
+  });
+  ud.eval("setLeagueOverride(''); setFeedMode('real');");
+  test("#R11-1 switching to Real restores the real draft (home-league test picks gone)", () => {
+    assertEq(ud.liveDraft.picks.length, 1, "real draft restored");
+    assertEq(ud.liveDraft.picks[0].player, "RealHome", "the real pick is back, not the espn:N test pick");
+  });
+
   summary("UD-native mock feed");
 }
 
