@@ -117,7 +117,7 @@ function renderDraftSetup(root) {
   html += '</div>';
   // Mock drafts don't know which seat is yours — ESPN team ids are anonymous.
   // This selector powers max bid / recommendations / roster fit in Test mode.
-  if (typeof leagueOverrideActive === "function" && leagueOverrideActive()) {
+  if (typeof draftTestMode === "function" && draftTestMode()) {
     const my = (typeof getMyDraftEspnId === "function") ? getMyDraftEspnId() : null;
     html += '<div style="display:flex; gap:8px; align-items:center; margin-top:8px;">';
     html += '<label class="small muted">My team in this mock:</label>';
@@ -171,10 +171,13 @@ function _dsReadyChips() {
 }
 
 function _dsLeagueStatus() {
-  const test = (typeof leagueOverrideActive === "function") && leagueOverrideActive();
-  return test
-    ? '<span style="color:var(--warn);">TEST — league ' + esc(String(ESPN.leagueId)) + '</span>'
-    : '<span style="color:var(--good);">REAL — league ' + esc(String(ESPN.leagueId)) + '</span>';
+  const test = (typeof draftTestMode === "function") ? draftTestMode()
+    : ((typeof leagueOverrideActive === "function") && leagueOverrideActive());
+  if (test) {
+    const viaOverride = (typeof leagueOverrideActive === "function") && leagueOverrideActive();
+    return '<span style="color:var(--warn);">TEST — ' + (viaOverride ? 'league ' + esc(String(ESPN.leagueId)) : 'mock (any league)') + '</span>';
+  }
+  return '<span style="color:var(--good);">REAL — league ' + esc(String(ESPN.leagueId)) + '</span>';
 }
 
 function _dsKeepersBudgetsCard() {

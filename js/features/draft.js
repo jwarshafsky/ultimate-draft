@@ -670,16 +670,38 @@ function soldCurrent() {
   renderDraft();
 }
 
+// Pick persistence is layered (P2R1 chaos-1: quota exhaustion silently lost
+// picks): main key → free the big event-log backup and retry → emergency
+// fallback key. The pick list is the one thing that must survive anything.
 function saveLiveDraft() {
-  try { localStorage.setItem("ud_live_draft_v1", JSON.stringify({ v: 2, picks: _liveDraft.picks, deleted: _liveDraft.deleted })); } catch {}
+  const payload = JSON.stringify({ v: 2, at: Date.now(), picks: _liveDraft.picks, deleted: _liveDraft.deleted, streamKey: _liveDraft.streamKey || null });
+  try {
+    localStorage.setItem("ud_live_draft_v1", payload);
+    try { localStorage.removeItem("ud_live_draft_bk_v1"); } catch (e2) {}
+    return;
+  } catch (e) {}
+  try { localStorage.removeItem(_DLOG_LS_KEY); } catch (e2) {}   // Supabase holds the full stream
+  try { localStorage.setItem("ud_live_draft_v1", payload); _storageFail("events-backup dropped to save picks", {}); return; } catch (e) {}
+  try { localStorage.setItem("ud_live_draft_bk_v1", payload); _storageFail("picks (main key failed; emergency key in use)", {}); return; } catch (e) { _storageFail("picks", e); }
 }
 function loadLiveDraft() {
   try {
-    const v = JSON.parse(localStorage.getItem("ud_live_draft_v1") || "[]");
+    // The emergency key is only ever written when the main key failed, so
+    // when both exist the newer one wins.
+    let raw = localStorage.getItem("ud_live_draft_v1");
+    const bk = localStorage.getItem("ud_live_draft_bk_v1");
+    if (bk) {
+      try {
+        const a = JSON.parse(raw || "null"), b = JSON.parse(bk);
+        if (!a || (b.at || 0) >= (a.at || 0)) raw = bk;
+      } catch (e2) { raw = bk; }
+    }
+    const v = JSON.parse(raw || "[]");
     if (Array.isArray(v)) _liveDraft.picks = v;                      // legacy format (picks only)
     else if (v && Array.isArray(v.picks)) {
       _liveDraft.picks = v.picks;
       _liveDraft.deleted = v.deleted || {};
+      _liveDraft.streamKey = v.streamKey || null;
     }
   } catch {}
 }
@@ -839,13 +861,24 @@ let _draftTabStaleTimer = null;
 const _dlog = { leagueId: null, sport: null, startedAt: 0, events: [], lastEventAt: 0, initState: null };
 const _DLOG_LS_KEY = "ud_draft_events_v1";   // device-local backup (NOT synced — big + already mirrored to Supabase)
 
+// localStorage failures (quota) must be VISIBLE — silently dropped writes cost
+// picks on reload (P2R1 chaos-1). The events backup keeps a smaller slice than
+// the in-memory cap: Supabase holds the full stream, and headroom protects the
+// far-more-important pick list.
+let _storageFailAt = 0;
+function _storageFail(what, e) {
+  _storageFailAt = Date.now();
+  console.warn("[draft] localStorage write failed (" + what + "):", e && e.message);
+  if (typeof setStatus === "function") setStatus("draft", "storage full!", "bad");
+  if (typeof updateDraftDiagnostics === "function") updateDraftDiagnostics();
+}
 function _dlogPersist() {
   try {
     localStorage.setItem(_DLOG_LS_KEY, JSON.stringify({
       leagueId: _dlog.leagueId, sport: _dlog.sport, startedAt: _dlog.startedAt,
-      events: _dlog.events.slice(-15000),
+      events: _dlog.events.slice(-4000),
     }));
-  } catch (e) {}
+  } catch (e) { _storageFail("events", e); }
 }
 let _dlogPersistTimer = null;
 function _dlogPersistSoon() {
@@ -895,11 +928,27 @@ function _onDraftEvents(msg) {
   if (!msg || !msg.log || !Array.isArray(msg.events)) return;
   if (!_dlogAccepts(msg.log.leagueId)) return;
   const isNewStream = _dlog.leagueId !== msg.log.leagueId || _dlog.startedAt !== msg.log.startedAt;
+  // The pick list belongs to ONE draft (P2R1 state-1 / chaos-2): a rotated
+  // same-league re-draft or a cross-league switch must clear it, or draft #1's
+  // picks contaminate draft #2's board and re-drafted players get swallowed.
+  // First association (streamKey null, e.g. manual picks before the feed
+  // connects) adopts without clearing; INIT backfill refills current picks.
+  const streamKey = String(msg.log.leagueId) + ":" + String(msg.log.startedAt);
+  if (_liveDraft.streamKey && _liveDraft.streamKey !== streamKey) {
+    _liveDraft.picks = [];
+    _liveDraft.deleted = {};
+    _liveDraft.streamKey = streamKey;
+    saveLiveDraft();
+    if (currentView === "draft") renderDraft();
+  } else if (!_liveDraft.streamKey) {
+    _liveDraft.streamKey = streamKey;
+    saveLiveDraft();
+  }
   if (msg.full || isNewStream) {
     _dlog.leagueId = msg.log.leagueId; _dlog.sport = msg.log.sport; _dlog.startedAt = msg.log.startedAt;
     if (isNewStream) _dlog.events = [];
   }
-  const last = _dlog.events.length ? (_dlog.events[_dlog.events.length - 1].seq || 0) : 0;
+  const last = _dlog.events.reduce((m, e) => Math.max(m, e.seq || 0), 0);
   const fresh = msg.events.filter(e => e && e.seq != null && e.seq > last);
   if (!fresh.length) return;
   _dlog.events.push(...fresh);
@@ -955,8 +1004,21 @@ function _onDraftTabPresent(tab) {
   clearTimeout(_draftTabStaleTimer);
   // When beats stop, re-render once so the panel flips to "no draft tab".
   _draftTabStaleTimer = setTimeout(() => { if (currentView === "draft") renderDraft(); }, 26000);
-  if (!wasOpen && currentView === "draft") renderDraft();   // transition closed→open
-  else _updateFeedActivityDom();
+  if (!wasOpen) {
+    // Closed→open transition: a stale-gated capture must not absorb — clear
+    // the gate and re-request the feed so _applyDraftFeed re-runs with the
+    // tab now open (P2R1 state-3, spec S-053).
+    if (_feed.staleInfo) {
+      const retained = _feed.staleRetained;
+      _feed.staleInfo = null;
+      _feed.staleRetained = null;
+      if (retained) _applyDraftFeed(retained);   // heal immediately from the retained capture
+      _feedRequestSync();                        // and ask the extension for anything fresher
+    }
+    if (currentView === "draft") renderDraft();
+  } else {
+    _updateFeedActivityDom();
+  }
 }
 
 // Build an ESPN playerId → name map (kona_player_info) so socket picks, which
@@ -1049,11 +1111,13 @@ async function _applyDraftFeed(feed) {
   const freshest = Math.max(feed.updatedAt || 0, ...feed.picks.map(p => p.ts || 0), 0);
   if (freshest && Date.now() - freshest > 15 * 60 * 1000 && !draftTabOpen()) {
     _feed.staleInfo = { leagueId: feed.leagueId, count: feed.picks.length, at: freshest };
+    _feed.staleRetained = feed;   // kept so tab-open can heal without an extension round trip
     _feed.connected = false;
     if (currentView === "draft") _updateFeedActivityDom();
     return;   // don't ingest old picks
   }
   _feed.staleInfo = null;
+  _feed.staleRetained = null;
 
   _feed.connected = true;
   _feed.leagueId = feed.leagueId;
@@ -1304,6 +1368,7 @@ function _feedDiagBodyHtml() {
   rows.push(["Events logged", String(_dlog.events.length) + (_dlog.leagueId ? " (league " + _dlog.leagueId + ")" : "")]);
   rows.push(["Picks held", String(_liveDraft.picks.length) + " · tombstones " + Object.keys(_liveDraft.deleted).length]);
   if (_dlog.initState) rows.push(["ESPN state (INIT)", _dlog.initState.picks.length + " picks, " + fmtAge(_dlog.initState.at)]);
+  if (_storageFailAt) rows.push(["⚠ Storage", "a localStorage write FAILED " + Math.round((Date.now() - _storageFailAt) / 60000) + "m ago (quota?) — picks may not survive a reload; export the event log now"]);
   if (typeof draftLogStatus === "function") {
     const s = draftLogStatus();
     rows.push(["Supabase mirror", s.sessionId

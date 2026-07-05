@@ -678,10 +678,11 @@ SCENARIOS.twoLeaguesInterleaved = async function (ctx) {
   const app = makeAppSandbox(pool, 999123);
   app.setFeedMode("test");
 
-  // Two independent extension sandboxes (two ESPN tabs), each its own storage.
-  const backA = {}, backB = {};
-  const runnerA = makeRunner(777001, pool, app, backA);
-  const runnerB = makeRunner(888002, pool, app, backB);
+  // Two ESPN tabs (two extension instances) that SHARE one chrome.storage — the
+  // accurate model (both draft-bridge.js write the same udDraftFeed/Events keys).
+  const shared = {};
+  const runnerA = makeRunner(777001, pool, app, shared);
+  const runnerB = makeRunner(888002, pool, app, shared);
 
   // Interleave: league A sells a lot, league B sells a lot, A again.
   await emitLot(runnerA, lotFrames(pool[0].espnId, 1, [{ team: 1, price: 5 }], 1, 1, 5));

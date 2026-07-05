@@ -17,6 +17,23 @@ function _inflationKeeperSelections() {
     : getKeeperSelections();
 }
 
+// THE single source of keeper cost for all draft money math (P2R1 math-1:
+// endgame.js priced keepers from The League App contract while inflation used
+// the ESPN salary — the team strip and inflation badge disagreed on the same
+// screen). Next-year contract cost when The League App has one, else the
+// ESPN-derived salary, else $0.
+function keeperCostFor(name) {
+  if (typeof getLeagueContractByName === "function") {
+    const ci = getLeagueContractByName(name);
+    if (ci && typeof ci.cost === "number") return ci.cost;
+  }
+  if (typeof getCurrentKeeperSalary === "function") {
+    const p = getCurrentKeeperSalary(name);
+    if (typeof p === "number") return p;
+  }
+  return 0;
+}
+
 // Returns the kept-player cost for a player (if marked keeper or minorKeeper).
 // Minor leaguers keep at $0; ML keepers keep at their salary (from ESPN
 // current-year keeper pick price, or manual override).
@@ -24,10 +41,7 @@ function getKeptCost(playerName, teamId) {
   const sel = (_inflationKeeperSelections()[teamId] || {})[playerName];
   if (!sel) return null;
   if (sel.minorKeeper) return { cost: 0, kind: "minor" };
-  if (sel.keeper) {
-    const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(playerName) : null;
-    return { cost: typeof price === "number" ? price : 0, kind: "major" };
-  }
+  if (sel.keeper) return { cost: keeperCostFor(playerName), kind: "major" };
   return null;
 }
 
@@ -41,8 +55,7 @@ function collectKeepers() {
       if (flags.minorKeeper) {
         out.push({ name, teamId, cost: 0, kind: "minor" });
       } else if (flags.keeper) {
-        const price = (typeof getCurrentKeeperSalary === "function") ? getCurrentKeeperSalary(name) : null;
-        out.push({ name, teamId, cost: typeof price === "number" ? price : 0, kind: "major" });
+        out.push({ name, teamId, cost: keeperCostFor(name), kind: "major" });
       }
     }
   }

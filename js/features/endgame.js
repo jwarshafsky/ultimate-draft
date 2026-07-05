@@ -29,10 +29,9 @@ function computeLiveTeamStates() {
     const kept = Object.entries(teamSel)
       .filter(([_, f]) => f.keeper)   // minor keepers are stashed — no ML slot
       .map(([name]) => name);
-    const keptCost = kept.reduce((s, n) => {
-      const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(n) : null;
-      return s + (ci ? ci.cost : (getCurrentKeeperSalary(n) ?? 0));
-    }, 0);
+    // Same keeper-cost source as inflation.js (keeperCostFor) — the max bid
+    // Jeff bids against must agree with the inflation badge (spec S-104).
+    const keptCost = kept.reduce((s, n) => s + (typeof keeperCostFor === "function" ? keeperCostFor(n) : (getCurrentKeeperSalary(n) ?? 0)), 0);
     // Live picks for this team (mock teams also match on the raw ESPN id, so
     // picks recorded before a My-team change still count)
     const picks = (typeof _liveDraft !== "undefined" ? _liveDraft.picks : [])
@@ -44,8 +43,11 @@ function computeLiveTeamStates() {
     // previously omitted here, so live max bids ignored budget trades.
     const adj = test ? 0 : (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id) : 0;
     const budget = LEAGUE.draftBudget + adj - keptCost - spent;
-    // True max bid: budget - (slotsRemaining - 1) reserved for $1 each
-    const maxBid = Math.max(0, budget - Math.max(0, slotsRemaining - 1));
+    // True max bid: budget - (slotsRemaining - 1) reserved for $1 each.
+    // A FULL roster (0 slots) can't bid at all — leftover cash is not a bid
+    // (P2R1 math-2: a done team showed maxBid=$234 and polluted recommendBid
+    // and ownerInterest as a phantom competitor).
+    const maxBid = slotsRemaining <= 0 ? 0 : Math.max(0, budget - (slotsRemaining - 1));
     // Position need: count of each pos filled across keepers + draft
     const posCounts = {};
     for (const name of [...kept, ...picks.map(p => p.player)]) {

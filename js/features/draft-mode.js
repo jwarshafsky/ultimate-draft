@@ -41,17 +41,22 @@ document.addEventListener("keydown", (e) => {
 function currentLotFromEvents() {
   const evs = _dlog.events;
   let lot = null;
+  const soldIds = new Set();   // a trailing BID for an already-SOLD player must not reopen a lot (P2R1 state-2)
   for (const e of evs) {
     // SOLD closes only ITS lot — interleaved frames (NOM B before SOLD A
     // lands) must not blank the player actually on the clock. INIT marks a
     // socket reconnect: NOMINATION/BID during the gap are lost, so a pre-gap
     // lot can't be trusted — reset and let live frames rebuild it.
-    if (e.cmd === "SOLD") { if (!lot || e.playerId == null || lot.playerId === e.playerId) lot = null; continue; }
+    if (e.cmd === "SOLD") { if (e.playerId != null) soldIds.add(e.playerId); if (!lot || e.playerId == null || lot.playerId === e.playerId) lot = null; continue; }
     if (e.cmd === "INIT") { lot = null; continue; }
     if (e.cmd === "NOMINATION" && e.playerId != null && e.playerId > 1000) {
+      soldIds.delete(e.playerId);   // an explicit re-nomination (undo → re-auction) is legit
       lot = { playerId: e.playerId, nomTeamId: e.teamId, at: e.at, bids: [] };
     } else if ((e.cmd === "BID" || e.cmd === "BID_ACK") && e.playerId != null) {
-      if (!lot || lot.playerId !== e.playerId) lot = { playerId: e.playerId, nomTeamId: null, at: e.at, bids: [] };
+      if (!lot || lot.playerId !== e.playerId) {
+        if (soldIds.has(e.playerId)) continue;   // straggler bid for a completed pick — never reopen
+        lot = { playerId: e.playerId, nomTeamId: null, at: e.at, bids: [] };
+      }
       if (Number.isFinite(e.amount)) lot.bids.push({ teamId: e.teamId, amount: e.amount, at: e.at, ack: e.cmd === "BID_ACK" });
     }
   }

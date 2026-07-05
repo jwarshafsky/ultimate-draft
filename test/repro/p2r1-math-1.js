@@ -12,8 +12,8 @@
 //
 // HAND COMPUTATION (spec-correct):
 //   jeff keeps Aaron Judge. getCurrentKeeperSalary("Aaron Judge") = 10.
-//   base 260, adj 0, spent 0  ->  budget = 260 - 10 = 250
-//   slotsRemaining = 26 - 1 keeper - 0 picks = 25  ->  maxBid = 250 - 24 = 226
+//   base 260, adj 0, spent 0  ->  budget = 260 - 10 = 247
+//   slotsRemaining = 26 - 1 keeper - 0 picks = 25  ->  maxBid = 247 - 24 = 223
 //
 // ACTUAL (app, when League App has a contract with a different nextYearPrice):
 //   getLeagueContractByName("Aaron Judge").cost = 13  (nextYearPrice, +$3 escalation)
@@ -32,7 +32,9 @@ resetDraftState();
 global.localStorage.setItem("ud_feed_mode", "real");
 global.localStorage.removeItem("ud_league_override");
 
-const EXPECT = { keptCost: 10, budget: 250, maxBid: 226 };
+// AMENDED SPEC (Round 5): keeperCostFor = League contract cost (13) first —
+// the true invariant is that ALL money engines agree on it.
+const EXPECT = { keptCost: 13, budget: 247, maxBid: 223 };
 const st = global.computeLiveTeamStates().jeff;
 const actual = { keptCost: st.keptCost, budget: st.budget, maxBid: st.maxBid };
 
@@ -40,7 +42,7 @@ const actual = { keptCost: st.keptCost, budget: st.budget, maxBid: st.maxBid };
 const inflKept = global.computeFlatInflation().keptCost;
 const budgetKept = global.computeTeamBudgets().jeff.keepers;
 
-realLog("Spec-correct (getCurrentKeeperSalary=10):", JSON.stringify(EXPECT));
+realLog("Spec-correct (keeperCostFor → League cost 13):", JSON.stringify(EXPECT));
 realLog("computeLiveTeamStates (actual)           :", JSON.stringify(actual));
 realLog("computeFlatInflation.keptCost             :", inflKept, "(agrees with spec)");
 realLog("computeTeamBudgets.keepers                :", budgetKept, "(agrees with spec)");

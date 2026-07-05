@@ -366,3 +366,28 @@ These are genuinely ambiguous or where code and plan diverge — please decide:
 7. **No $0 sale prices** — a SOLD with missing/zero amount records at the $1 auction
    minimum, and any pick below $1 raises an I-FEED warning. $0 keeper contracts unaffected.
 8. **Injury flags SHOW in mocks** — confirmed; already the behavior (no mode gating).
+
+
+## Round 5 amendments (2026-07-05, synthesis of Phase 2 Round 1)
+
+- **S-030 / S-089 amended:** the single keeper-cost source for ALL draft money
+  math is `keeperCostFor(name)` = The League App contract cost (the actual
+  next-year keeper price) ?? ESPN-derived `getCurrentKeeperSalary` ?? $0.
+  `computeLiveTeamStates`, `collectKeepers`, `getKeptCost`, budgets and
+  inflation all use it; S-104 (one max-bid truth) is the governing invariant.
+- **S-095 enforced:** a team with 0 open slots has maxBid = 0 (leftover cash
+  is not a bid).
+- **New:** the app pick list is keyed to the feed stream identity
+  (leagueId:startedAt): a rotated same-league re-draft OR a cross-league
+  switch clears `_liveDraft.picks` + tombstones (manual Reset no longer
+  required); INIT backfill refills the current draft's picks.
+- **New:** a `BID`/`BID_ACK` for a player already SOLD earlier in the event
+  walk must NOT reopen a lot (phantom "On the Clock" for a completed pick).
+- **S-053 clarified:** the ESPN tab's closed→open transition clears
+  `staleInfo` and re-requests the feed (the stale state must not absorb).
+- **S-125 clarified:** all Test-mode lobby affordances (my-team selector,
+  status label, budget-table note) gate on `draftTestMode()`, not only the
+  league override.
+- **S-164 hardened:** localStorage write failures (quota) surface a visible
+  warning in the status bar + diagnostics; the event-log backup cap shrinks
+  to leave headroom for the pick list.

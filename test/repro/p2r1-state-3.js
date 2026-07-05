@@ -47,6 +47,7 @@ global._espnIdToName = { 39832: "Corbin Carroll" };
 
   // --- the ESPN draft tab now OPENS (heartbeat) ---
   global._onDraftTabPresent({ at: Date.now(), leagueId: 1200, sport: "flb" });
+  await new Promise(r => setTimeout(r, 20));   // healing re-applies the feed asynchronously
 
   const tabOpen = global.draftTabOpen();
   let failed = false;
