@@ -324,7 +324,8 @@ function _dmFeedChips() {
   const dot = (on, color) => '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (on ? color : "var(--text-3)") + ';margin-right:4px;vertical-align:middle;"></span>';
   const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
   const quiet = lastFrame ? (Date.now() - lastFrame) / 1000 : null;
-  const stalled = draftTabOpen() && lastFrame && quiet > 30;
+  const stalled = (typeof _feedStallState === "function") ? _feedStallState().level === "stalled"
+    : (draftTabOpen() && lastFrame && quiet > 30);
   let s = '<span>' + dot(_feed.extPresent, "var(--good)") + 'ext</span>';
   s += '<span>' + dot(draftTabOpen(), "var(--good)") + 'ESPN tab</span>';
   s += '<span>' + dot(lastFrame && quiet < 30, stalled ? "var(--bad)" : "var(--good)") + (lastFrame ? (stalled ? '<b style="color:var(--bad);">feed quiet ' + Math.round(quiet) + 's</b>' : 'feed ' + Math.round(quiet) + 's') : 'no data') + '</span>';

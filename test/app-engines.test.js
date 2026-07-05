@@ -698,3 +698,39 @@ section("App engines — processEspnPicks attribution (via _applyDraftFeed)");
 
   summary("App engines");
 })();
+
+
+// --------------------------------------------------------------------------
+// Pause-safe watchdog (_feedStallState) — spec Q4 revision 2026-07-05:
+// red "stalled" ONLY when silence began mid-lot; post-SOLD silence = pause.
+// --------------------------------------------------------------------------
+section("App engines — pause-safe watchdog (_feedStallState)");
+
+test("watchdog: >30s silence after a SOLD reads as quiet/pause, not stalled", () => {
+  const now = Date.now();
+  global._feed.tabAt = now;                  // ESPN tab open (beat fresh)
+  global._feed.lastFrameAt = now - 120000;   // 2 min of silence
+  global._dlog.events = [
+    { seq: 1, cmd: "NOMINATION", teamId: 2, playerId: 11, at: now - 200000 },
+    { seq: 2, cmd: "BID", teamId: 2, playerId: 11, amount: 5, at: now - 190000 },
+    { seq: 3, cmd: "SOLD", teamId: 2, playerId: 11, amount: 5, at: now - 120000 },
+  ];
+  global._dlog.lastEventAt = now - 120000;
+  const st = global._feedStallState();
+  assertEq(st.level, "quiet", "post-SOLD silence must be quiet");
+  assertEq(st.midLot, false, "not mid-lot");
+});
+
+test("watchdog: >30s silence mid-bidding is stalled (red)", () => {
+  const now = Date.now();
+  global._feed.tabAt = now;
+  global._feed.lastFrameAt = now - 45000;
+  global._dlog.events = [
+    { seq: 1, cmd: "NOMINATION", teamId: 2, playerId: 12, at: now - 60000 },
+    { seq: 2, cmd: "BID", teamId: 3, playerId: 12, amount: 7, at: now - 45000 },
+  ];
+  global._dlog.lastEventAt = now - 45000;
+  const st = global._feedStallState();
+  assertEq(st.level, "stalled", "mid-lot silence must be stalled");
+  assertEq(st.midLot, true, "mid-lot flag");
+});

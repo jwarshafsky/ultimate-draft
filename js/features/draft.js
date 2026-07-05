@@ -1217,6 +1217,24 @@ function _describeDraftEvent(e) {
   }
 }
 
+// Classify feed silence. Commissioner pauses are REAL-DRAFT-ONLY (mocks never
+// have them) and can't be rehearsed, so the watchdog must be pause-safe by
+// construction: silence is only a red "stalled" alarm when it began MID-LOT
+// (bidding was in flight — frames should never stop then). Silence after a
+// SOLD, or on an idle lot, reads as a pause/between-lots gap: muted, no alarm.
+function _feedStallState() {
+  const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
+  const quietMs = lastFrame ? Date.now() - lastFrame : 0;
+  if (!lastFrame || !draftTabOpen() || quietMs <= 30000) return { level: "ok", quietSecs: Math.round(quietMs / 1000), midLot: false };
+  let last = null;
+  for (let i = _dlog.events.length - 1; i >= 0; i--) {
+    const c = _dlog.events[i].cmd;
+    if (c === "NOMINATION" || c === "BID" || c === "BID_ACK" || c === "PASSED" || c === "SOLD" || c === "INIT") { last = c; break; }
+  }
+  const midLot = last === "NOMINATION" || last === "BID" || last === "BID_ACK" || last === "PASSED";
+  return { level: midLot ? "stalled" : "quiet", quietSecs: Math.round(quietMs / 1000), midLot };
+}
+
 function _feedActivityHtml() {
   const mode = getFeedMode();
   if (mode === "off") return "";
@@ -1228,14 +1246,15 @@ function _feedActivityHtml() {
       (last.at ? age + "s ago" : "—") + ' · ' + esc(_describeDraftEvent(last)) +
       ' <span class="dim">(' + _dlog.events.length + ' events logged)</span></div>';
   }
-  // Watchdog: tab beating + we HAVE seen socket frames + >30s of silence = the
-  // draft-room feed stalled (paused draft also looks like this — say both).
-  const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
-  const quiet = lastFrame ? Date.now() - lastFrame : 0;
-  if (draftTabOpen() && lastFrame && quiet > 30000) {
-    html += '<div class="small" style="margin-top:4px; color:var(--bad);"><b>⚠ No draft-room data for ' +
-      Math.round(quiet / 1000) + 's</b> — if the ESPN draft is clearly still running, reload the ESPN draft tab, then this tab ' +
-      '(the INIT backfill recovers anything missed). If the draft is just paused, ignore this.</div>';
+  // Watchdog (pause-safe): red only when silence began MID-LOT.
+  const stall = _feedStallState();
+  if (stall.level === "stalled") {
+    html += '<div class="small" style="margin-top:4px; color:var(--bad);"><b>⚠ Feed stalled mid-bidding (' +
+      stall.quietSecs + 's silent)</b> — reload the ESPN draft tab, then this tab ' +
+      '(the INIT backfill recovers anything missed).</div>';
+  } else if (stall.level === "quiet") {
+    html += '<div class="small muted" style="margin-top:4px;">Quiet ' + Math.round(stall.quietSecs / 60) +
+      'm — commissioner pause or between lots; picks resume automatically.</div>';
   }
   return html;
 }

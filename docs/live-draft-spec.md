@@ -354,8 +354,12 @@ These are genuinely ambiguous or where code and plan diverge — please decide:
    commissioner pauses must not blank the card; next frame self-heals regardless).
 3. **Manual entry** — remains a FALLBACK view, plus name-based dedup so a manual pick and
    its later feed copy can never double-count. (Dedup implementation: Phase 2 backlog.)
-4. **Watchdog** — keep 30 s; wording "stalled or paused"; VERIFY whether ESPN keeps sending
-   CLOCK frames through commissioner pauses at the next mock, then tune.
+4. **Watchdog (revised 2026-07-05)** — commissioner pauses can NEVER be rehearsed in a mock
+   (no commissioner) but WILL happen in the real draft and can exceed 30 s. The watchdog is
+   therefore pause-safe by construction: RED "stalled" only when >30 s of silence began
+   MID-LOT (last real event was NOMINATION/BID/BID_ACK/PASSED — frames never legitimately
+   stop there); silence after SOLD/INIT reads as a muted "commissioner pause or between
+   lots" note, no alarm.
 5. **My-team selector** — any league size: free number input (1–99), not a fixed 1–16 list.
 6. **AI output is ADVISORY, permanently** — no AI call may sit in the pick or money path;
    deterministic numbers (budgets/max bids/values) are the load-bearing, tested layer.
