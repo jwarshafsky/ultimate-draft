@@ -996,24 +996,34 @@ function _undoSuspects() {
 function draftTabOpen() { return _feed.tabAt && (Date.now() - _feed.tabAt) < 25000; }
 function _onDraftTabPresent(tab) {
   if (!tab) return;
+  // A beat is only a LIVE signal if it's recent. The extension re-pushes the
+  // last STORED beat on every full sync — after a finished mock that beat is
+  // hours old, and treating it as a "tab just opened" transition caused an
+  // infinite heal→ping→re-push→heal render storm (~13 renders/sec) that made
+  // the whole page unclickable (Jeff, Jul 5). Stale beats update fields only.
+  const beatFresh = !!tab.at && (Date.now() - tab.at) < 25000;
   const wasOpen = draftTabOpen();
-  _feed.tabAt = tab.at || Date.now();
+  _feed.tabAt = tab.at || 0;
   _feed.tabLeagueId = tab.leagueId || null;
   _feed.tabSport = tab.sport || null;
   if (tab.lastFrameAt) _feed.lastFrameAt = Math.max(_feed.lastFrameAt, tab.lastFrameAt);
+  if (!beatFresh) { _updateFeedActivityDom(); return; }
   clearTimeout(_draftTabStaleTimer);
   // When beats stop, re-render once so the panel flips to "no draft tab".
   _draftTabStaleTimer = setTimeout(() => { if (currentView === "draft") renderDraft(); }, 26000);
   if (!wasOpen) {
-    // Closed→open transition: a stale-gated capture must not absorb — clear
-    // the gate and re-request the feed so _applyDraftFeed re-runs with the
-    // tab now open (P2R1 state-3, spec S-053).
+    // Closed→open transition (fresh beat only): heal a stale-gated capture —
+    // clear the gate and re-apply so _applyDraftFeed re-runs with the tab now
+    // open (P2R1 state-3, spec S-053). Ping the extension at most every 10s.
     if (_feed.staleInfo) {
       const retained = _feed.staleRetained;
       _feed.staleInfo = null;
       _feed.staleRetained = null;
-      if (retained) _applyDraftFeed(retained);   // heal immediately from the retained capture
-      _feedRequestSync();                        // and ask the extension for anything fresher
+      if (retained) _applyDraftFeed(retained);
+      if (!_feed._lastHealPing || Date.now() - _feed._lastHealPing > 10000) {
+        _feed._lastHealPing = Date.now();
+        _feedRequestSync();
+      }
     }
     if (currentView === "draft") renderDraft();
   } else {

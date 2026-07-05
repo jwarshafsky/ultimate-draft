@@ -758,3 +758,45 @@ test("a manual pick later delivered by the feed is UPGRADED, never duplicated", 
   assertEq(global._liveDraft.picks[0].espnPlayerId, 39832, "manual pick upgraded with ESPN id");
   assertEq(global._liveDraft.picks[0].espnSeq, 12, "lot seq attached");
 });
+
+
+section("App engines — stale heartbeat must not trigger transition/heal (Jul 5 render storm)");
+
+test("hours-old stored beat: no renderDraft transition, no heal ping, staleInfo untouched", () => {
+  resetDraftState();
+  let renders = 0, pings = 0;
+  const origRender = global.renderDraft;
+  global.renderDraft = () => { renders++; };
+  const origPost = global.window.postMessage;
+  global.window.postMessage = (m) => { if (m && m.type === "ping") pings++; };
+  global.currentView = "draft";
+  global._feed.tabAt = 0;
+  global._feed.staleInfo = { leagueId: "999", count: 5, at: Date.now() - 3600000 };
+  global._feed.staleRetained = { leagueId: "999", sport: "flb", updatedAt: Date.now() - 3600000, picks: [] };
+  const staleBeat = { at: Date.now() - 2 * 3600 * 1000, leagueId: 999, sport: "flb" };
+  for (let i = 0; i < 50; i++) global._onDraftTabPresent(staleBeat);
+  global.renderDraft = origRender;
+  global.window.postMessage = origPost;
+  global.currentView = "x";
+  assertEq(renders, 0, "stale beats must never re-render");
+  assertEq(pings, 0, "stale beats must never ping the extension");
+  assert(!!global._feed.staleInfo, "stale gate stays set");
+});
+
+test("fresh beat heals ONCE (staleInfo cleared, single ping)", () => {
+  let pings = 0;
+  const origPost = global.window.postMessage;
+  global.window.postMessage = (m) => { if (m && m.type === "ping") pings++; };
+  const origRender = global.renderDraft;
+  global.renderDraft = () => {};
+  global._feed.tabAt = 0;
+  global._feed._lastHealPing = 0;
+  global._feed.staleInfo = { leagueId: "999", count: 5, at: Date.now() - 3600000 };
+  global._feed.staleRetained = null;
+  global._onDraftTabPresent({ at: Date.now(), leagueId: 999, sport: "flb" });
+  global._onDraftTabPresent({ at: Date.now(), leagueId: 999, sport: "flb" });
+  global.window.postMessage = origPost;
+  global.renderDraft = origRender;
+  assertEq(global._feed.staleInfo, null, "gate cleared by the fresh beat");
+  assertEq(pings, 1, "heal pings once (debounced)");
+});
