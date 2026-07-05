@@ -50,3 +50,10 @@ create policy ds_jeff_all on public.draft_sessions for all
 drop policy if exists de_jeff_all on public.draft_events;
 create policy de_jeff_all on public.draft_events for all
   using (public.my_team_id() = 'jeff') with check (public.my_team_id() = 'jeff');
+
+-- 2026-07-05: this project revokes default table privileges, so the original
+-- migration left the tables unreadable/unwritable by EVERY role — the app's
+-- mirror failed silently until these grants were applied.
+grant select, insert, update on public.draft_sessions to authenticated;
+grant select, insert on public.draft_events to authenticated;
+grant select on public.draft_sessions, public.draft_events to service_role;
