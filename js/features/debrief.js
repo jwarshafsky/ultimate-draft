@@ -167,6 +167,47 @@ function _dbPickTable(rows) {
   return html;
 }
 
+// ---------------------------------------------------------------------------
+// Post-draft AUDIT vs ESPN's official results (perfection plan Phase 3a).
+// ESPN's REST mDraftDetail is placeholder junk DURING a draft but accurate
+// once it ends — the one ground truth we can diff against. Zero diffs =
+// certified capture; any diff is a Phase-2-grade finding with the event log
+// as its fixture.
+async function runDraftAudit() {
+  const el = document.getElementById("debrief-audit-body");
+  if (el) el.innerHTML = '<span class="muted small">Fetching ESPN\'s official results…</span>';
+  let official;
+  try {
+    const data = await fetchEspnDraft();
+    official = (data.picks || []).filter(p => p && p.playerId > 0);
+  } catch (e) {
+    if (el) el.innerHTML = '<span class="small" style="color:var(--warn);">Could not fetch official results (' + esc(e.message) + '). ESPN\'s draft endpoint only fills AFTER the draft ends; check the proxy key in Settings.</span>';
+    return;
+  }
+  if (!official.length) {
+    if (el) el.innerHTML = '<span class="small" style="color:var(--warn);">ESPN returned no completed picks — the draft may still be running (the endpoint fills only after it ends).</span>';
+    return;
+  }
+  const ours = new Map(_liveDraft.picks.filter(p => p.espnPlayerId != null).map(p => [p.espnPlayerId, p]));
+  const diffs = [];
+  for (const op of official) {
+    const mine = ours.get(op.playerId);
+    if (!mine) { diffs.push("MISSING: we never recorded " + (op.playerName || ("player " + op.playerId)) + " ($" + op.bidAmount + " to ESPN team " + op.teamId + ")"); continue; }
+    if ((mine.price || 0) !== (op.bidAmount || 0)) diffs.push("PRICE: " + mine.player + " — ours $" + mine.price + " vs official $" + op.bidAmount);
+    if (mine.espnTeamId != null && op.teamId != null && mine.espnTeamId !== op.teamId) diffs.push("TEAM: " + mine.player + " — ours espn:" + mine.espnTeamId + " vs official espn:" + op.teamId);
+    ours.delete(op.playerId);
+  }
+  for (const [, mine] of ours) diffs.push("EXTRA: we recorded " + mine.player + " ($" + mine.price + ") but ESPN's official results don't include him");
+  if (el) {
+    el.innerHTML = diffs.length
+      ? '<div class="small" style="color:var(--bad);"><b>✗ ' + diffs.length + ' discrepanc' + (diffs.length === 1 ? 'y' : 'ies') + '</b> vs ESPN\'s official ' + official.length + ' picks:</div>' +
+        '<ul class="small" style="margin:4px 0 0 18px;">' + diffs.slice(0, 20).map(d => '<li>' + esc(d) + '</li>').join('') + '</ul>' +
+        (diffs.length > 20 ? '<div class="dim small">…and ' + (diffs.length - 20) + ' more</div>' : '') +
+        '<div class="muted small" style="margin-top:4px;">Export the event log (Live Draft ▸ Diagnostics) — it becomes the fixture for fixing this.</div>'
+      : '<div class="small" style="color:var(--good);"><b>✅ CERTIFIED — zero diffs.</b> All ' + official.length + ' official picks match our capture exactly (player, price, team).</div>';
+  }
+}
+
 // Overlay open/close.
 function openDebrief() {
   closeDebrief();
@@ -176,9 +217,13 @@ function openDebrief() {
   ov.innerHTML = '<div style="max-width:1100px; margin:0 auto; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:18px;">' +
     '<div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;"><h2 style="margin:0;">Post-Draft Debrief</h2><span style="flex:1;"></span>' +
     '<button class="btn ghost" id="debrief-close">✕ Close</button></div>' +
+    '<div class="card"><h3>Audit vs ESPN official results <span class="muted small">(fills only after the draft ends)</span></h3>' +
+    '<button class="btn" id="debrief-audit" style="width:auto; padding:5px 14px;">Run audit</button>' +
+    '<div id="debrief-audit-body" style="margin-top:6px;"></div></div>' +
     renderDebrief() + '</div>';
   document.body.appendChild(ov);
   document.getElementById("debrief-close")?.addEventListener("click", closeDebrief);
+  document.getElementById("debrief-audit")?.addEventListener("click", runDraftAudit);
   ov.addEventListener("click", (e) => { if (e.target === ov) closeDebrief(); });
 }
 function closeDebrief() {
