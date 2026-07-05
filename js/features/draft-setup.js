@@ -120,7 +120,7 @@ function renderDraftSetup(root) {
   if (typeof draftTestMode === "function" && draftTestMode()) {
     const my = (typeof getMyDraftEspnId === "function") ? getMyDraftEspnId() : null;
     html += '<div style="display:flex; gap:8px; align-items:center; margin-top:8px;">';
-    html += '<label class="small muted">My team in this mock:</label>';
+    html += '<label class="small muted">My team in this mock <span class="dim">(auto-detected from your ESPN draft tab when it connects; this is the league team id, not your draft-order spot)</span>:</label>';
     html += '<input id="ds-my-team" type="number" min="1" max="99" placeholder="—" value="' + (my != null ? my : '') + '" style="width:70px;" title="Your team number in the ESPN draft room (any league size)">';
     html += '<span class="muted small">check your team\'s position in the ESPN draft room</span>';
     html += '</div>';

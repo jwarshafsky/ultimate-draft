@@ -1025,6 +1025,16 @@ function _onDraftTabPresent(tab) {
   _feed.tabSport = tab.sport || null;
   if (tab.lastFrameAt) _feed.lastFrameAt = Math.max(_feed.lastFrameAt, tab.lastFrameAt);
   if (!beatFresh) { _updateFeedActivityDom(); return; }
+  // Auto-detect "my team" in mocks: the extension reads the ESPN team id this
+  // browser drafts as straight from the socket JOIN URL — no manual seat entry
+  // (the number is the LEAGUE team id, not the draft-order position; auto-
+  // detection removes the ambiguity entirely). Manual edits on Draft Setup
+  // still work as an override until the next socket connect.
+  if (tab.myTeamId != null && typeof draftTestMode === "function" && draftTestMode() &&
+      typeof getMyDraftEspnId === "function" && getMyDraftEspnId() !== tab.myTeamId) {
+    setMyDraftEspnId(tab.myTeamId);
+    if (currentView === "draft") renderDraft();
+  }
   clearTimeout(_draftTabStaleTimer);
   // When beats stop, re-render once so the panel flips to "no draft tab".
   _draftTabStaleTimer = setTimeout(() => { if (currentView === "draft") renderDraft(); }, 26000);
