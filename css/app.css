@@ -478,11 +478,25 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 
 .dm-bottom { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg-2); }
 
-/* Ultrawide: let the hero breathe and give the side rail more room */
+/* Ultrawide: go HORIZONTAL — the side rail becomes a 2-col (then 3-col) grid
+   of cards so panels spread across the width instead of stacking into a long
+   scroll (Jeff: ESPN lives on the other monitor; use the whole width here). */
 @media (min-width: 1900px) {
-  .dm-main { grid-template-columns: minmax(0, 1fr) 480px; }
+  .dm-main { grid-template-columns: minmax(0, 1fr) minmax(760px, 920px); }
   .dm-hero { grid-template-columns: minmax(420px, 1.4fr) minmax(280px, 1fr) minmax(320px, 1fr); }
   .dm-player { font-size: 36px; }
+  .dm-side { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .dm-side > .card { height: fit-content; }
+  /* let the board's BPA tables actually use their zone */
+  .dm-bpa { gap: 20px; }
+}
+@media (min-width: 2500px) {
+  .dm-main { grid-template-columns: minmax(0, 1fr) minmax(1150px, 1380px); }
+  .dm-side { grid-template-columns: 1fr 1fr 1fr; }
+}
+/* Bottom zone spreads horizontally too when open */
+@media (min-width: 1900px) {
+  .dm-bottom-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: start; }
 }
 /* Narrow fallback (laptop) — stack, nothing hidden */
 @media (max-width: 1100px) {

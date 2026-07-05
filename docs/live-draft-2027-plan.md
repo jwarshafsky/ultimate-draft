@@ -168,3 +168,30 @@ individual pick manually**, with the deletion remembered so the feed doesn't re-
   human tendency profiles.
 - New localStorage keys → `SYNC_EXACT_KEYS` (CLAUDE.md convention #3); bump `?v=` via
   `scripts/bump.sh`; check globals.
+
+
+## Backlog addition (Jeff, 2026-07-05): UD-native mock → Live Draft feed
+
+Run Ultimate Draft's OWN mock engine as a Live Draft feed source, so Jeff can
+rehearse the full cockpit (hero, ticker, reco, budgets, invariants, debrief,
+audit-except-ESPN) without opening ESPN at all.
+
+- **Wiring:** the mock engine emits the SAME event objects the extension does
+  (NOMINATION/BID/SOLD with seq + timestamps) into `_onDraftEvents` /
+  `_applyDraftFeed` under a synthetic leagueId (test mode, generic teams, my
+  seat = mock's user slot). Zero new render paths — the cockpit can't tell it
+  from ESPN.
+- **Cadence = measured ESPN reality** (from the captured 198-lot mock of
+  2026-07-04, 2,320 events in draft_events):
+  - lot duration: ~25s nearly constant (p25 25 / med 25 / p75 25 / p95 28) —
+    ESPN's clock dominates; model as clock-driven, not bid-driven
+  - bids/lot: median 1, mean 5.9, p95 18 — heavily bimodal ($1 uncontested vs
+    bidding wars); sample from the empirical distribution, not the mean
+  - inter-bid: med 0.56s / p75 1.2s / p95 4.5s (log-normal-ish)
+  - increments: median $1, mean $2.56, p90 $6
+  - between lots: ~2s fixed
+  - refresh these numbers from draft_events as more mocks land (a
+    `deriveCadence(sessionId)` helper reading Supabase)
+- **Also:** a speed control (1× real / 4× / instant) since 198 lots × 27s ≈
+  90 min at true speed; existing mock-engine owner profiles drive WHO bids,
+  the cadence model drives WHEN.

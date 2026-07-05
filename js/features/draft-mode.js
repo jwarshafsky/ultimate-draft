@@ -718,10 +718,10 @@ function _dmStandingsHtml() {
 function _dmBottom() {
   let html = '<details class="dm-bottom"><summary class="small muted" style="cursor:pointer;">Pick tracker · teams · feed</summary>';
   html += '<div style="margin-top:8px;">';
-  html += renderDraftFeedPanel();
-  html += '<div class="card" style="padding:8px;"><h3 style="margin:0 0 6px;">Teams</h3>' + renderTeamStrip() + '</div>';
   if (isEndgame()) html += renderEndgamePanel();
-  html += '<div class="dm-main" style="grid-template-columns:1fr 1fr;">';
+  html += '<div class="dm-bottom-grid">';
+  html += '<div>' + renderDraftFeedPanel() + '</div>';
+  html += '<div class="card" style="padding:8px;"><h3 style="margin:0 0 6px;">Teams</h3>' + renderTeamStrip() + '</div>';
   html += '<div>' + renderRecentPicks() + '</div>';
   html += '</div>';
   html += '</div></details>';
