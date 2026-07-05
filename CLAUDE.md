@@ -13,7 +13,13 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
 2. **One global namespace** — a duplicate top-level `function` shadows by load
    order; a duplicate `const` throws and disables that whole file. Run
    `scripts/check-globals.sh` after adding top-level names.
-3. **Device-sync whitelist** — user-authored localStorage keys are mirrored to
+3. **Tests before push** — `bash scripts/test.sh` (51+ headless tests driving the
+   REAL extension + engine files) and `node test/simulate-draft.js --seed 7 --all`
+   (chaos simulator + invariants) must pass before any push. Every bug found gets
+   a failing test/fixture BEFORE its fix. Confirmed-but-unfixed bugs may be
+   temporarily allowlisted in simulate-draft.js KNOWN_BUGS; remove on fix.
+
+4. **Device-sync whitelist** — user-authored localStorage keys are mirrored to
    Cloudflare KV via `js/data/cloud-sync.js` (SYNC_EXACT_KEYS / SYNC_PREFIXES)
    so state follows Jeff across devices. A new user-data key not added there
    silently stays device-local. Don't whitelist refetchable caches.

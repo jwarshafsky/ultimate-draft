@@ -1096,7 +1096,9 @@ async function _applyDraftFeed(feed) {
     if (seqChanged || pk.price !== p.price || pk.espnTeamId !== p.teamId) {
       pk.price = p.price;
       pk.espnTeamId = p.teamId;
-      pk.team = espnTeamIdToOwnerId(p.teamId);
+      // Same owner-mapping rule as processEspnPicks: mock re-sales must stay
+      // on generic espn:N teams, never a real leaguemate's ledger.
+      pk.team = draftTestMode() ? ("espn:" + p.teamId) : espnTeamIdToOwnerId(p.teamId);
       pk.espnSeq = p.seq != null ? p.seq : pk.espnSeq;
       updated++;
     }
@@ -1290,7 +1292,9 @@ function _feedDiagBodyHtml() {
       : (s.pending ? s.pending + " events pending (session not started)" : "idle")]);
     if (s.lastError) rows.push(["Mirror error", s.lastError + " (retrying)"]);
   }
-  return rows.map(r => '<div><span class="muted">' + r[0] + ':</span> ' + esc(String(r[1])) + '</div>').join("");
+  let html = rows.map(r => '<div><span class="muted">' + r[0] + ':</span> ' + esc(String(r[1])) + '</div>').join("");
+  if (typeof renderInvariantsLine === "function") html += '<div style="margin-top:2px;">' + renderInvariantsLine() + '</div>';
+  return html;
 }
 
 function updateDraftDiagnostics() {
