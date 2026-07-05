@@ -10,6 +10,8 @@
 // (treated as the actual keepers); see getEffectiveKeeperSelections. Falls back
 // to the raw league-site marks if that helper isn't loaded.
 function _inflationKeeperSelections() {
+  // Mocks have no keepers — inflation starts from a clean $260×12 pool.
+  if (typeof draftTestMode === "function" && draftTestMode()) return {};
   return (typeof getEffectiveKeeperSelections === "function")
     ? getEffectiveKeeperSelections()
     : getKeeperSelections();
@@ -66,7 +68,9 @@ function computeTeamBudgets() {
   const map = {};
   for (const t of LEAGUE.teams) {
     // Manual override (Draft Setup) beats the traded-draft-dollars sheet.
-    const adj = (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id)
+    // Mocks: flat $260, no adjustments.
+    const adj = (typeof draftTestMode === "function" && draftTestMode()) ? 0
+      : (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id)
       : (typeof getDraftDollarAdjustment === "function") ? getDraftDollarAdjustment(t.id) : 0;
     map[t.id] = { teamId: t.id, base: LEAGUE.draftBudget + adj, draftDollarAdj: adj, keepers: 0, spent: 0, remaining: 0, keeperCount: 0, minorCount: 0 };
   }

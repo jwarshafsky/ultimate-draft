@@ -74,7 +74,7 @@ function estimatePlayerReturn(name, onDone) {
   if (!news || !news.injured) return null;
   const key = _rwNk(name);
   const cached = _returnEstCache[key];
-  if (cached && cached !== "pending") return cached.text;
+  if (cached && cached !== "pending") return cached.failed ? "estimate unavailable" : cached.text;
   if (cached === "pending" || !ESPN.proxyUrl) return null;
   _returnEstCache[key] = "pending";
   const body = {
@@ -92,7 +92,11 @@ function estimatePlayerReturn(name, onDone) {
       _returnEstCache[key] = { text };
       if (text && typeof onDone === "function") onDone(text);
     })
-    .catch(e => { console.warn("[rotowire] return estimate failed:", e.message); delete _returnEstCache[key]; });
+    .catch(e => {
+      console.warn("[rotowire] return estimate failed:", e.message);
+      _returnEstCache[key] = { text: null, failed: true };   // next lot render shows "unavailable"; a page reload retries
+      if (typeof onDone === "function") onDone(null);
+    });
   return null;
 }
 
@@ -124,6 +128,7 @@ function wirePlayerNewsBlock(name) {
   if (!news || !news.injured) return;
   estimatePlayerReturn(name, (text) => {
     const el = document.getElementById(_returnEstId(name));
-    if (el && text) el.innerHTML = '<b style="color:var(--warn);">' + esc(text) + '</b>';
+    if (!el) return;
+    el.innerHTML = text ? '<b style="color:var(--warn);">' + esc(text) + '</b>' : '<span class="dim">return estimate unavailable</span>';
   });
 }

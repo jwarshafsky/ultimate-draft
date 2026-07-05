@@ -40,7 +40,7 @@ const AUCTION_STRATEGY = `AUCTION STRATEGY PLAYBOOK — apply these; they are ho
 
 // Build a compact prompt with everything Claude needs to give useful advice.
 function buildAiContext() {
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
   if (!me) return null;
   const inflation = computeLiveInflation() || computeTieredInflation();
   const myRoster = getMyRoster();

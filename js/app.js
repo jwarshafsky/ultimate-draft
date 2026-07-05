@@ -21,6 +21,12 @@ const VIEWS = {
 };
 
 function switchView(name) {
+  // Leaving the draft tab: drop fullscreen chrome + the manual-entry flag so
+  // a later return lands on the setup lobby, not a half-hidden shell.
+  if (name !== "draft") {
+    document.body.classList.remove("draft-mode");
+    if (typeof _liveDraft !== "undefined") _liveDraft.manualView = false;
+  }
   if (!VIEWS[name]) name = "overview";
   currentView = name;
   // Keep the tab in the URL so a reload lands where you were.
@@ -47,10 +53,13 @@ function rerender() {
   _rerenderQueued = true;
   requestAnimationFrame(() => {
     _rerenderQueued = false;
-    // Don't clobber an in-progress paste/import on the Data tab.
+    // Don't clobber an in-progress edit ANYWHERE — a background realtime
+    // event mid-keystroke (Data-tab paste, Draft Setup strategy text, league
+    // URL, budget cells, Draft Mode search) must not rebuild the view and eat
+    // the user's typing.
     const ae = document.activeElement;
-    if (currentView === "data" && ae && ae.closest("#view-root") &&
-        (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT")) return;
+    if (ae && ae.closest("#view-root") &&
+        (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.tagName === "SELECT")) return;
     switchView(currentView);
   });
 }

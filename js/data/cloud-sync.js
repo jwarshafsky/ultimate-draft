@@ -259,7 +259,10 @@ async function syncPullNow(opts) {
   if (_cloudSync.dirty.size || _cloudSync.deleted.size) _syncSchedulePush(0);
 
   if (changed && (!opts || opts.reloadOnChange !== false)) {
-    const auctionLive = (typeof _liveDraft !== "undefined") && _liveDraft.current;
+    // "Live auction" = a manual lot OR a feed-driven lot in Draft Mode —
+    // reloading mid-bidding on the second device is how picks get clobbered.
+    const auctionLive = ((typeof _liveDraft !== "undefined") && _liveDraft.current) ||
+      (typeof currentLotFromEvents === "function" && (() => { try { return !!currentLotFromEvents(); } catch (e) { return false; } })());
     if (!auctionLive) location.reload();
   }
   return changed;

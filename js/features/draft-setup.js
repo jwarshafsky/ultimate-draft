@@ -67,6 +67,13 @@ function saveDraftConfig(label) {
 function loadDraftConfig(id) {
   const cfg = _dsConfigs().find(c => c.id === id);
   if (!cfg) return;
+  // Ask about roster state FIRST — cancelling must not leave a half-applied
+  // mix of new league/strategy with old keepers.
+  const hasRosterState = cfg.keepers || cfg.callups;
+  let restoreRoster = false;
+  if (hasRosterState) {
+    restoreRoster = confirm('"' + cfg.label + '" includes keeper picks and call-up overrides. Restore those too? (Replaces your current keeper checkboxes; the page reloads to apply.)\n\nOK = everything · Cancel = just league/mode/strategy/budgets');
+  }
   if (cfg.leagueUrl) localStorage.setItem("ud_league_url_v1", cfg.leagueUrl);
   _dsApplyLeague({ leagueId: cfg.leagueId, sport: "flb" });
   setFeedMode(cfg.feedMode || "off");
@@ -75,8 +82,7 @@ function loadDraftConfig(id) {
     setDraftStrategyText(cfg.strategyText || "");   // persists text + brief together
   }
   if (typeof replaceBudgetAdjustments === "function") replaceBudgetAdjustments(cfg.budgetAdj || {});
-  const hasRosterState = cfg.keepers || cfg.callups;
-  if (hasRosterState && confirm('"' + cfg.label + '" also saved keeper picks and call-up overrides. Restore them too? (Replaces your current keeper checkboxes; the page reloads to apply.)')) {
+  if (restoreRoster) {
     if (cfg.keepers) localStorage.setItem("ud_my_keepers_v1", cfg.keepers);
     if (cfg.callups) localStorage.setItem("ud_callups_v1", cfg.callups);
     location.reload();
@@ -110,7 +116,20 @@ function renderDraftSetup(root) {
   html += '<input id="ds-league-url" placeholder="https://fantasy.espn.com/baseball/draft?leagueId=…" value="' + esc(localStorage.getItem("ud_league_url_v1") || "") + '" style="flex:1; min-width:320px;">';
   html += '<button class="btn" id="ds-league-apply" style="width:auto; padding:6px 14px;">Apply</button>';
   html += '<span class="small" id="ds-league-status">' + _dsLeagueStatus() + '</span>';
-  html += '</div></div>';
+  html += '</div>';
+  // Mock drafts don't know which seat is yours — ESPN team ids are anonymous.
+  // This selector powers max bid / recommendations / roster fit in Test mode.
+  if (typeof leagueOverrideActive === "function" && leagueOverrideActive()) {
+    const my = (typeof getMyDraftEspnId === "function") ? getMyDraftEspnId() : null;
+    html += '<div style="display:flex; gap:8px; align-items:center; margin-top:8px;">';
+    html += '<label class="small muted">My team in this mock:</label>';
+    html += '<select id="ds-my-team"><option value="">— not set —</option>';
+    for (let i = 1; i <= 16; i++) html += '<option value="' + i + '"' + (my === i ? ' selected' : '') + '>Team ' + i + '</option>';
+    html += '</select>';
+    html += '<span class="muted small">check your team\'s position in the ESPN draft room</span>';
+    html += '</div>';
+  }
+  html += '</div>';
   html += renderDraftFeedPanel();
 
   // === Strategy ===
@@ -165,7 +184,7 @@ function _dsLeagueStatus() {
 
 function _dsKeepersBudgetsCard() {
   let html = '<div class="card"><h3 style="margin:0 0 6px;">Keepers & budgets</h3>';
-  html += '<p class="muted small" style="margin:0 0 6px;">Keeper picks come from the <a href="#" id="ds-goto-keepers">Keepers tab</a>. Draft-$ shows the traded-dollars sheet; type in <b>Manual</b> to override a team\'s adjustment (blank = use sheet).</p>';
+  html += '<p class="muted small" style="margin:0 0 6px;">Keeper picks come from the <a href="#" id="ds-goto-keepers">Keepers tab</a>. Draft-$ shows the traded-dollars sheet; type in <b>Manual</b> to override a team\'s adjustment (blank = use sheet). <b>Ignored in Test mode</b> — mocks use generic $260 teams with no keepers.</p>';
   if (typeof computeTeamBudgets !== "function") return html + '</div>';
   const budgets = computeTeamBudgets();
   html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">ML keep</th><th class="num">MiL</th><th class="num">Keeper $</th><th class="num">Sheet $±</th><th class="num">Manual $±</th><th class="num">Budget</th></tr></thead><tbody>';
@@ -241,16 +260,12 @@ function wireDraftSetup() {
     renderDraft();
   };
   document.getElementById("ds-league-apply")?.addEventListener("click", applyLeague);
+  document.getElementById("ds-my-team")?.addEventListener("change", (e) => {
+    if (typeof setMyDraftEspnId === "function") setMyDraftEspnId(e.target.value);
+  });
   document.getElementById("ds-league-url")?.addEventListener("keydown", (e) => { if (e.key === "Enter") applyLeague(); });
 
-  // Feed panel (rendered by renderDraftFeedPanel)
-  document.querySelectorAll("[data-feedmode]").forEach(b => b.addEventListener("click", () => {
-    setFeedMode(b.dataset.feedmode);
-    if (b.dataset.feedmode !== "off") _feedRequestSync();
-    renderDraft();
-  }));
-  document.getElementById("feed-download-log")?.addEventListener("click", () => { if (typeof downloadDraftLog === "function") downloadDraftLog(); });
-  document.getElementById("feed-resync")?.addEventListener("click", () => { _feedRequestSync(); });
+  // Feed-panel buttons are wired once via delegation in draft.js.
 
   // Strategy
   document.getElementById("ds-strategy-save")?.addEventListener("click", () => {
@@ -275,7 +290,11 @@ function wireDraftSetup() {
   // Budget overrides — save on change, refresh the Budget column.
   document.querySelectorAll(".ds-badj").forEach(inp => inp.addEventListener("change", () => {
     setManualBudgetAdjustment(inp.dataset.team, inp.value);
-    renderDraft();
+    // Patch just this row's Budget cell — a full re-render would steal focus
+    // and break tabbing across cells.
+    const b = computeTeamBudgets()[inp.dataset.team];
+    const cell = inp.closest("tr")?.querySelector("td:last-child b");
+    if (b && cell) cell.textContent = "$" + b.remaining;
   }));
 
   // Call-ups

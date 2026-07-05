@@ -25,7 +25,14 @@ function setDraftMode(on) {
   renderDraft();
 }
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && _draftModeOn() && typeof currentView !== "undefined" && currentView === "draft") setDraftMode(false);
+  if (e.key !== "Escape") return;
+  // Esc closes the debrief overlay first, never fires while typing in a
+  // field (the "clear this box" instinct must not tear down the cockpit).
+  if (document.getElementById("debrief-overlay")) { closeDebrief(); return; }
+  const t = e.target, ae = document.activeElement;
+  const isField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+  if (isField(t) || isField(ae)) return;
+  if (_draftModeOn() && typeof currentView !== "undefined" && currentView === "draft") setDraftMode(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -35,7 +42,12 @@ function currentLotFromEvents() {
   const evs = _dlog.events;
   let lot = null;
   for (const e of evs) {
-    if (e.cmd === "SOLD") { lot = null; continue; }
+    // SOLD closes only ITS lot — interleaved frames (NOM B before SOLD A
+    // lands) must not blank the player actually on the clock. INIT marks a
+    // socket reconnect: NOMINATION/BID during the gap are lost, so a pre-gap
+    // lot can't be trusted — reset and let live frames rebuild it.
+    if (e.cmd === "SOLD") { if (!lot || e.playerId == null || lot.playerId === e.playerId) lot = null; continue; }
+    if (e.cmd === "INIT") { lot = null; continue; }
     if (e.cmd === "NOMINATION" && e.playerId != null && e.playerId > 1000) {
       lot = { playerId: e.playerId, nomTeamId: e.teamId, at: e.at, bids: [] };
     } else if ((e.cmd === "BID" || e.cmd === "BID_ACK") && e.playerId != null) {
@@ -45,13 +57,18 @@ function currentLotFromEvents() {
   }
   if (!lot) return null;
   const lastAt = lot.bids.length ? lot.bids[lot.bids.length - 1].at : lot.at;
-  if (lastAt && Date.now() - lastAt > 5 * 60 * 1000) return null;   // stale (paused/ended)
+  // Quiet lots go IDLE, not blank — every real auction has commissioner
+  // pauses, and blanking the hero mid-pause looks like a sync failure. Only a
+  // very old lot (>60 min) is treated as ended.
+  const quietMs = lastAt ? Date.now() - lastAt : 0;
+  if (quietMs > 60 * 60 * 1000) return null;
+  const idle = quietMs > 5 * 60 * 1000;
   const name = _resolveEspnName(lot.playerId);
   const top = lot.bids.reduce((m, b) => (b.amount > (m ? m.amount : 0) ? b : m), null);
   return {
     playerId: lot.playerId, name, nomTeamId: lot.nomTeamId,
     bids: lot.bids, highBid: top ? top.amount : 1, highTeamId: top ? top.teamId : lot.nomTeamId,
-    lastAt,
+    lastAt, idle: idle, idleMin: idle ? Math.round(quietMs / 60000) : 0,
   };
 }
 
@@ -69,7 +86,7 @@ function ownerInterest(playerName, opts) {
   const inflation = computeLiveInflation();
   const inflated = (typeof inflatedValue === "function") ? inflatedValue(val, inflation) : val.value;
   const states = computeLiveTeamStates();
-  const meId = (typeof getMyTeam === "function") ? getMyTeam()?.id : null;
+  const meId = (typeof getMyTeam === "function") ? (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam())?.id : null;
   const out = [];
   for (const st of Object.values(states)) {
     if (st.teamId === meId || st.slotsRemaining <= 0) continue;
@@ -112,7 +129,7 @@ function _dmInterestHtml(name) {
 const _FIT_NOTABLE = { R: 85, HR: 25, RBI: 85, SB: 15, QS: 10, K: 165, SV_HLD: 12 };
 let _fitCtx = null, _fitCtxKey = -1;
 function _fitContext() {
-  const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+  const me = (typeof getMyTeam === "function") ? (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam()) : null;
   if (!me) return null;
   // Recompute only when my roster/picks change (cheap invalidation key).
   const key = (typeof _liveDraft !== "undefined" ? _liveDraft.picks.length : 0) * 1000 + (getMyRoster().length);
@@ -190,7 +207,7 @@ function recommendBid(playerName) {
   if (!val) return null;
   const inflation = computeLiveInflation();
   const inflated = (typeof inflatedValue === "function") ? inflatedValue(val, inflation) : val.value;
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
   const st = me ? computeLiveTeamStates()[me.id] : null;
   const maxBid = st ? st.maxBid : 999;
   const reasons = [];
@@ -222,7 +239,7 @@ function computeLiveProjStandings() {
   const inflMult = computeLiveInflation()?.multiplier || 1;
   const pool = availableDraftPool();
   const money = {}, slots = {}, fills = {};
-  for (const t of LEAGUE.teams) {
+  for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
     const st = states[t.id];
     money[t.id] = Math.max(0, st ? st.budget : 0);
     slots[t.id] = Math.max(0, st ? st.slotsRemaining : 0);
@@ -231,7 +248,7 @@ function computeLiveProjStandings() {
   for (const p of pool) {
     const est = Math.max(1, Math.round((p.value || 0) * inflMult));
     let best = null, bestPerSlot = -1;
-    for (const t of LEAGUE.teams) {
+    for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
       if (slots[t.id] <= 0) continue;
       const afford = money[t.id] - (slots[t.id] - 1);   // $1 reserved per other slot
       if (afford < est && !(est <= 1)) continue;
@@ -240,7 +257,7 @@ function computeLiveProjStandings() {
     }
     if (best == null) {
       // Nobody can afford him at estimate — richest open team gets him at max
-      for (const t of LEAGUE.teams) {
+      for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
         if (slots[t.id] <= 0) continue;
         const perSlot = money[t.id] / slots[t.id];
         if (perSlot > bestPerSlot) { bestPerSlot = perSlot; best = t.id; }
@@ -254,7 +271,7 @@ function computeLiveProjStandings() {
   }
   // Synthesize mock-engine-shaped states so computeMockStandings does the roto math.
   const synth = {};
-  for (const t of LEAGUE.teams) {
+  for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
     const sel = selections[t.id] || {};
     const kept = Object.entries(sel)
       .filter(([name, f]) => f.keeper || (f.minorKeeper && typeof isCalledUp === "function" && isCalledUp(name)))
@@ -288,7 +305,7 @@ function renderDraftMode(root, inflation) {
 }
 
 function _dmTopBar(inflation) {
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
   const st = me ? computeLiveTeamStates()[me.id] : null;
   let html = '<div class="card dm-topbar">';
   html += '<b>DRAFT MODE</b>';
@@ -351,6 +368,7 @@ function _dmHero() {
     html += '<div id="dm-interest">' + _dmInterestHtml(name) + '</div>';
     const temp = lot ? lotTemperature(lot) : null;
     html += '<div id="dm-temp">' + (temp ? _dmTempChip(temp) : '') + '</div>';
+    if (lot && lot.idle) html += '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>';
   }
   html += '</div>';
 
@@ -457,7 +475,7 @@ function _dmPoolRows(inflation) {
   else if (_DM_FLEX[m]) pool = pool.filter(p => _DM_FLEX[m].includes(p.posKey));
   else if (m !== "BPA") pool = pool.filter(p => p.posKey === m);
   if (_dmState.needsOnly) {
-    const me = getMyTeam();
+    const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
     const st = me ? computeLiveTeamStates()[me.id] : null;
     if (st) pool = pool.filter(p => (st.posCounts[p.posKey] || 0) === 0);
   }
@@ -646,10 +664,7 @@ function wireDraftMode() {
   document.getElementById("dm-needs")?.addEventListener("change", (e) => { _dmState.needsOnly = e.target.checked; renderDraft(); });
   document.querySelectorAll(".pool-nominate").forEach(b => b.addEventListener("click", () => startAuction(b.dataset.name, 1)));
   document.querySelectorAll("#view-root .player-name").forEach(el => el.addEventListener("click", () => openNoteEditor(el.dataset.player)));
-  // Feed panel + call-ups + picks live in the bottom zone — reuse their wiring.
-  document.querySelectorAll("[data-feedmode]").forEach(b => b.addEventListener("click", () => { setFeedMode(b.dataset.feedmode); if (b.dataset.feedmode !== "off") _feedRequestSync(); renderDraft(); }));
-  document.getElementById("feed-download-log")?.addEventListener("click", downloadDraftLog);
-  document.getElementById("feed-resync")?.addEventListener("click", () => { _feedRequestSync(); });
+  // Feed-panel buttons are wired once via delegation in draft.js.
   document.querySelectorAll(".live-revert").forEach(b => b.addEventListener("click", () => {
     const idx = parseInt(b.dataset.idx, 10);
     if (confirm("Revert to before pick #" + (idx + 1) + "?")) revertToPick(idx);

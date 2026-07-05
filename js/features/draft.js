@@ -24,7 +24,7 @@ const _liveDraft = {
 };
 
 function getMyLiveDraftPicks() {
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : getMyTeam();
   if (!me) return [];
   return _liveDraft.picks.filter(p => p.team === me.id).map(p => p.player);
 }
@@ -300,7 +300,7 @@ function renderOnTheClockPanel() {
     html += '<button class="btn ghost" data-bid-add="5">+$5</button>';
     html += '</div>';
     html += '<select id="otc-team" style="margin-top: 6px;">';
-    for (const t of LEAGUE.teams) {
+    for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
       html += '<option value="' + t.id + '"' + (t.id === _liveDraft.highBidder ? ' selected' : '') + '>' + esc(t.owner) + '</option>';
     }
     html += '</select>';
@@ -453,14 +453,8 @@ function renderLiveSourcesPanel() {
 // === Event wiring ===
 
 function wireDraftHandlers() {
-  // Live pick feed mode (off / test / real)
-  document.querySelectorAll("[data-feedmode]").forEach(b => {
-    b.addEventListener("click", () => {
-      setFeedMode(b.dataset.feedmode);
-      if (b.dataset.feedmode !== "off") _feedRequestSync();   // ask the extension for current picks
-      renderDraft();
-    });
-  });
+  // Feed-panel buttons (mode, download, resync, clear, undo-suspects) are
+  // wired once via document-level delegation near the top of this file.
   // Click player name to open note editor
   document.querySelectorAll("#view-root .player-name").forEach(el => {
     el.addEventListener("click", () => openNoteEditor(el.dataset.player));
@@ -496,7 +490,7 @@ function wireDraftHandlers() {
     if (res.status === "drafted") {
       const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
       const pk = _liveDraft.picks.find(p => _nk(p.player) === _nk(res.name));
-      const who = pk ? (getTeam(pk.team)?.owner || pk.team) : "someone";
+      const who = pk ? ((typeof draftTeamLabel === "function" ? draftTeamLabel(pk.team) : null) || getTeam(pk.team)?.owner || pk.team) : "someone";
       alert(res.name + " was already drafted by " + who + (pk ? " for $" + pk.price : "") + ".");
       return;
     }
@@ -568,22 +562,6 @@ function wireDraftHandlers() {
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => {
     _liveDraft.showAllPicks = !_liveDraft.showAllPicks;
-    renderDraft();
-  });
-  // Feed diagnostics + commissioner-undo reconciliation
-  document.getElementById("feed-download-log")?.addEventListener("click", downloadDraftLog);
-  document.getElementById("feed-resync")?.addEventListener("click", () => { _feedRequestSync(); });
-  document.getElementById("undo-remove-suspects")?.addEventListener("click", () => {
-    const suspects = _undoSuspects();
-    if (!suspects.length) return;
-    const names = suspects.map(s => s.pk.player).join(", ");
-    if (!confirm("Remove " + suspects.length + " pick" + (suspects.length === 1 ? "" : "s") + " (" + names + ")? ESPN's own draft state no longer includes them.")) return;
-    // Delete from highest index down so earlier indexes stay valid.
-    for (const { pk, idx } of suspects.slice().sort((a, b) => b.idx - a.idx)) {
-      if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : true);
-      _liveDraft.picks.splice(idx, 1);
-    }
-    saveLiveDraft();
     renderDraft();
   });
   if (_liveDraft.current && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(_liveDraft.current.player);
@@ -658,7 +636,8 @@ function startAuction(playerName, openBid) {
   const val = getPlayerValue(playerName);
   _liveDraft.current = { player: playerName, posKey: val?.posKey || null, value: val?.value || 0 };
   _liveDraft.highBid = openBid || 1;
-  _liveDraft.highBidder = getMyTeam()?.id || LEAGUE.teams[0].id;
+  const _saTeams = (typeof draftTeams === "function") ? draftTeams() : LEAGUE.teams;
+  _liveDraft.highBidder = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam())?.id || _saTeams[0].id;
   renderDraft();
 }
 
@@ -714,7 +693,7 @@ loadLiveDraft();
 function deletePickAt(index) {
   const pk = _liveDraft.picks[index];
   if (!pk) return;
-  if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : true);
+  if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : -Date.now());
   _liveDraft.picks.splice(index, 1);
   saveLiveDraft();
   renderDraft();
@@ -747,8 +726,111 @@ function draftTestMode() {
   return (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
 }
 
-const _feed = { extPresent: false, connected: false, leagueId: null, sport: null, count: 0, at: 0,
-  tabAt: 0, tabLeagueId: null, tabSport: null, lastFrameAt: 0 };
+// ===========================================================================
+// DRAFT CONTEXT — real league vs mock.
+// In a mock (test mode) the room is 12 strangers: generic "Team N" teams from
+// the ESPN team ids in the feed, $260 budgets, NO keepers, FULL player pool.
+// Real-league names/budgets/keepers apply only when NOT in test mode. Five
+// engine functions branch on this (draftExcludedNames, _inflationKeeperSelections,
+// computeLiveTeamStates, teamOpenSlotProfile, processEspnPicks); everything
+// else — owner interest, standings, nominations, AI, endgame — inherits.
+// ===========================================================================
+
+// Which ESPN team is ME in a mock (picked on the Draft Setup screen).
+function getMyDraftEspnId() {
+  const v = parseInt(localStorage.getItem("ud_test_my_team") || "", 10);
+  return isFinite(v) && v > 0 ? v : null;
+}
+function setMyDraftEspnId(v) {
+  const n = parseInt(v, 10);
+  if (isFinite(n) && n > 0) localStorage.setItem("ud_test_my_team", String(n));
+  else localStorage.removeItem("ud_test_my_team");
+}
+
+// Teams in the CURRENT draft context. Test mode: generic teams from the ESPN
+// team ids observed in picks/events (default 1..12), $260, keeper-free.
+let _draftTeamsCache = null, _draftTeamsKey = "";
+function draftTeams() {
+  if (!draftTestMode()) return LEAGUE.teams;
+  const key = "t" + _liveDraft.picks.length + ":" + (typeof _dlog !== "undefined" ? _dlog.events.length : 0) + ":" + (getMyDraftEspnId() || 0);
+  if (_draftTeamsCache && _draftTeamsKey === key) return _draftTeamsCache;
+  const ids = new Set();
+  for (const p of _liveDraft.picks) if (p.espnTeamId != null) ids.add(p.espnTeamId);
+  if (typeof _dlog !== "undefined") {
+    for (const e of _dlog.events) if (e.teamId != null && e.teamId >= 1 && e.teamId <= 20) ids.add(e.teamId);
+  }
+  if (!ids.size) for (let i = 1; i <= 12; i++) ids.add(i);
+  const my = getMyDraftEspnId();
+  if (my != null) ids.add(my);   // your seat exists even before it bids
+  _draftTeamsCache = [...ids].sort((a, b) => a - b).map(n => ({
+    id: "espn:" + n, espnTeamId: n, name: "Team " + n, owner: "Team " + n, isMe: n === my,
+  }));
+  _draftTeamsKey = key;
+  return _draftTeamsCache;
+}
+
+// "Me" in the current draft context. In a mock this is null until the My-team
+// selector on Draft Setup is set — me-specific panels degrade gracefully.
+function getMyDraftTeam() {
+  if (!draftTestMode()) return getMyTeam();
+  return draftTeams().find(t => t.isMe) || null;
+}
+
+// Short label for a draft-context team id (handles "espn:N" ids).
+function draftTeamLabel(teamId) {
+  const t = draftTeams().find(x => x.id === teamId);
+  if (t) return t.owner;
+  return (typeof getTeam === "function" && getTeam(teamId)?.owner) || String(teamId || "?");
+}
+
+const _feed = { extPresent: false, extAt: 0, connected: false, leagueId: null, sport: null, count: 0, at: 0,
+  tabAt: 0, tabLeagueId: null, tabSport: null, lastFrameAt: 0, staleInfo: null };
+
+// The feed panel renders in three different views (setup lobby, Draft Mode's
+// bottom zone, classic manual view). Its buttons are wired ONCE here via
+// document-level delegation so they work everywhere and survive innerHTML
+// rebuilds — per-view wiring kept missing one (the commissioner-undo button
+// was dead outside the classic view).
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("button, a");
+  if (!t || !t.closest("#view-root, #debrief-overlay")) return;
+  if (t.dataset && t.dataset.feedmode) {
+    setFeedMode(t.dataset.feedmode);
+    if (t.dataset.feedmode !== "off") _feedRequestSync();
+    renderDraft();
+  } else if (t.id === "feed-download-log") {
+    downloadDraftLog();
+  } else if (t.id === "feed-resync") {
+    _feedRequestSync();
+  } else if (t.id === "feed-clear-stale") {
+    if (confirm("Clear the captured feed? Removes the old capture from the extension's storage and this app's event log. Your recorded picks are NOT touched (use Reset draft for that).")) {
+      clearCapturedFeed();
+    }
+  } else if (t.id === "undo-remove-suspects") {
+    const suspects = _undoSuspects();
+    if (!suspects.length) return;
+    const names = suspects.map(s => s.pk.player).join(", ");
+    if (!confirm("Remove " + suspects.length + " pick" + (suspects.length === 1 ? "" : "s") + " (" + names + ")? ESPN's own draft state no longer includes them.")) return;
+    for (const { pk, idx } of suspects.slice().sort((a, b) => b.idx - a.idx)) {
+      if (pk.espnPlayerId != null) _liveDraft.deleted[pk.espnPlayerId] = (pk.espnSeq != null ? pk.espnSeq : -Date.now());
+      _liveDraft.picks.splice(idx, 1);
+    }
+    saveLiveDraft();
+    renderDraft();
+  }
+});
+
+// Ask the extension (ud-bridge holds the chrome.storage keys) to wipe the
+// captured feed; clear our own mirrors when it confirms.
+function clearCapturedFeed() {
+  try { window.postMessage({ source: "ud-app", type: "clearFeed" }, location.origin); } catch (e) {}
+}
+function _onFeedCleared() {
+  _dlog.leagueId = null; _dlog.startedAt = 0; _dlog.events = []; _dlog.lastEventAt = 0; _dlog.initState = null;
+  try { localStorage.removeItem(_DLOG_LS_KEY); } catch (e) {}
+  _feed.connected = false; _feed.count = 0; _feed.leagueId = null; _feed.staleInfo = null; _feed.lastFrameAt = 0;
+  if (currentView === "draft") renderDraft();
+}
 let _espnIdToName = null;
 let _draftTabStaleTimer = null;
 
@@ -839,7 +921,14 @@ function _onDraftInit(init) {
   if (!init || !Array.isArray(init.picks)) return;
   if (!_dlogAccepts(init.leagueId)) return;
   _dlog.initState = init;
-  if (currentView === "draft") renderDraft();   // may surface an undo warning
+  if (currentView !== "draft") return;
+  // Draft Mode mid-lot: patch in place (a full rebuild wipes search/scroll);
+  // the undo-suspects warning lives in the bottom feed panel either way.
+  if (typeof _draftModeOn === "function" && _draftModeOn()) {
+    if (typeof updateDraftModeLive === "function") updateDraftModeLive();
+  } else {
+    renderDraft();
+  }
 }
 
 // Picks we hold (from the feed) that ESPN's own latest full state no longer
@@ -876,24 +965,54 @@ function _onDraftTabPresent(tab) {
 // carry only playerId, can be named. Best-effort; unresolved → "Player <id>".
 // The same payload carries injuryStatus — kept in a name-keyed map so the
 // on-the-clock card can flag DTD/IL players.
+// IMPORTANT: only assign the map on SUCCESS — a failed fetch must retry on the
+// next call, not poison the whole session with "Player 12345" names. After a
+// late success, sweep already-recorded placeholder picks and fix their names.
 let _espnInjuryByName = {};
+let _espnNamesLoading = null;
 async function _ensureEspnNames() {
   if (_espnIdToName) return;
-  _espnIdToName = {};
-  try {
-    if (typeof fetchEspnPlayers !== "function") return;
-    const data = await fetchEspnPlayers();
-    const list = data.players || data.playerPool || [];
-    const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
-    for (const e of list) {
-      const p = e.player || e;
-      if (!p || p.id == null) continue;
-      const name = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
-      _espnIdToName[p.id] = name;
-      const inj = p.injuryStatus || e.injuryStatus;
-      if (name && inj && inj !== "ACTIVE") _espnInjuryByName[_nk(name)] = inj;
+  if (_espnNamesLoading) return _espnNamesLoading;
+  _espnNamesLoading = (async () => {
+    try {
+      if (typeof fetchEspnPlayers !== "function") return;
+      const data = await fetchEspnPlayers();
+      const list = data.players || data.playerPool || [];
+      const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+      const map = {};
+      for (const e of list) {
+        const p = e.player || e;
+        if (!p || p.id == null) continue;
+        const name = p.fullName || ((p.firstName || "") + " " + (p.lastName || "")).trim();
+        map[p.id] = name;
+        const inj = p.injuryStatus || e.injuryStatus;
+        if (name && inj && inj !== "ACTIVE") _espnInjuryByName[_nk(name)] = inj;
+      }
+      if (Object.keys(map).length) {
+        _espnIdToName = map;
+        _fixPlaceholderNames();
+      }
+    } catch (e) { /* names are best-effort; next call retries */ }
+    finally { _espnNamesLoading = null; }
+  })();
+  return _espnNamesLoading;
+}
+
+// Rewrite any "Player 12345" picks recorded while the name map was missing.
+function _fixPlaceholderNames() {
+  if (!_espnIdToName) return;
+  let fixed = 0;
+  for (const pk of _liveDraft.picks) {
+    if (pk.espnPlayerId != null && /^Player \d+$/.test(pk.player || "") && _espnIdToName[pk.espnPlayerId]) {
+      pk.player = _espnIdToName[pk.espnPlayerId];
+      pk.pos = getPlayerValue(pk.player)?.posKey || pk.pos;
+      fixed++;
     }
-  } catch (e) { /* names are best-effort */ }
+  }
+  if (fixed) {
+    saveLiveDraft();
+    if (currentView === "draft") renderDraft();
+  }
 }
 
 // Short human label for an ESPN injury status, or null if healthy/unknown.
@@ -926,6 +1045,18 @@ async function _applyDraftFeed(feed) {
   if (mode === "real" && typeof UD_HOME_LEAGUE_ID !== "undefined" &&
       String(feed.leagueId) !== String(UD_HOME_LEAGUE_ID)) return;
 
+  // STALENESS GATE: chrome.storage keeps the last capture forever, and the
+  // bridge re-pushes it on every page load. Old data must not present as a
+  // live draft ("● Live — capturing…") or silently refill cleared picks.
+  const freshest = Math.max(feed.updatedAt || 0, ...feed.picks.map(p => p.ts || 0), 0);
+  if (freshest && Date.now() - freshest > 15 * 60 * 1000 && !draftTabOpen()) {
+    _feed.staleInfo = { leagueId: feed.leagueId, count: feed.picks.length, at: freshest };
+    _feed.connected = false;
+    if (currentView === "draft") _updateFeedActivityDom();
+    return;   // don't ingest old picks
+  }
+  _feed.staleInfo = null;
+
   _feed.connected = true;
   _feed.leagueId = feed.leagueId;
   _feed.sport = feed.sport;
@@ -942,7 +1073,13 @@ async function _applyDraftFeed(feed) {
   const alive = feed.picks.filter(p => {
     const dead = _liveDraft.deleted[p.playerId];
     if (dead == null) return true;
-    if (dead !== true && p.seq != null && String(p.seq) !== String(dead)) {
+    // seq tombstone: a different lot seq = genuine re-auction → resurrect.
+    // negative tombstone = deletion timestamp (pick had no seq): resurrect
+    // only if the feed record was written AFTER the deletion.
+    const isReAuction = (typeof dead === "number" && dead < 0)
+      ? ((p.ts || 0) > -dead)
+      : (dead !== true && p.seq != null && String(p.seq) !== String(dead));
+    if (isReAuction) {
       delete _liveDraft.deleted[p.playerId];
       tombstonesChanged = true;
       return true;
@@ -982,7 +1119,9 @@ window.addEventListener("message", (ev) => {
   const d = ev.data;
   if (!d || d.source !== "keeper-edge") return;
   _feed.extPresent = true;
-  if (d.type === "draftFeed") _applyDraftFeed(d.feed);
+  _feed.extAt = Date.now();
+  if (d.type === "feedCleared") _onFeedCleared();
+  else if (d.type === "draftFeed") _applyDraftFeed(d.feed);
   else if (d.type === "draftEvents") _onDraftEvents(d);
   else if (d.type === "draftInit") _onDraftInit(d.init);
   else if (d.type === "draftTab") _onDraftTabPresent(d.tab);
@@ -1011,7 +1150,13 @@ function renderDraftFeedPanel() {
   detect += '</div>';
 
   let status, cls;
-  if (!_feed.extPresent) {
+  if (_feed.staleInfo && !_feed.connected) {
+    const age = Math.round((Date.now() - _feed.staleInfo.at) / 3600000);
+    cls = "muted";
+    status = "Last capture: league <b>" + esc(String(_feed.staleInfo.leagueId)) + "</b> — " + _feed.staleInfo.count +
+      " picks, " + (age < 1 ? "under an hour" : age < 48 ? age + "h" : Math.round(age / 24) + "d") + " ago (not live). " +
+      '<button class="btn ghost" id="feed-clear-stale" style="padding:1px 8px; font-size:11px;">🗑 Clear captured feed</button>';
+  } else if (!_feed.extPresent) {
     cls = "warn"; status = "Load/reload Keeper Edge (chrome://extensions), then reopen this tab.";
   } else if (mode === "off") {
     cls = "muted"; status = tabOpen
@@ -1089,7 +1234,7 @@ function _feedActivityHtml() {
   const quiet = lastFrame ? Date.now() - lastFrame : 0;
   if (draftTabOpen() && lastFrame && quiet > 30000) {
     html += '<div class="small" style="margin-top:4px; color:var(--bad);"><b>⚠ No draft-room data for ' +
-      Math.round(quiet / 1000) + 's</b> — if the ESPN draft is clearly still running, reload the ESPN draft tab ' +
+      Math.round(quiet / 1000) + 's</b> — if the ESPN draft is clearly still running, reload the ESPN draft tab, then this tab ' +
       '(the INIT backfill recovers anything missed). If the draft is just paused, ignore this.</div>';
   }
   return html;
@@ -1125,6 +1270,7 @@ function _feedDiagnosticsHtml() {
   html += '<div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">';
   html += '<button class="btn ghost" id="feed-download-log" style="padding:3px 10px; font-size:11px;">⬇ Download event log</button>';
   html += '<button class="btn ghost" id="feed-resync" style="padding:3px 10px; font-size:11px;">↻ Re-sync from extension</button>';
+  html += '<button class="btn ghost" id="feed-clear-stale" style="padding:3px 10px; font-size:11px;">🗑 Clear captured feed</button>';
   html += '</div></details>';
   return html;
 }
@@ -1175,4 +1321,12 @@ function downloadDraftLog() {
 }
 
 // Keep the activity/watchdog ages fresh without full re-renders.
-setInterval(() => { if (typeof currentView !== "undefined" && currentView === "draft") _updateFeedActivityDom(); }, 10000);
+setInterval(() => {
+  // An extension reload/crash kills both content-script bridges silently —
+  // expire the "connected" dot when we haven't heard anything for 60s.
+  if (_feed.extPresent && _feed.extAt && Date.now() - _feed.extAt > 60000) {
+    _feed.extPresent = false;
+    if (typeof currentView !== "undefined" && currentView === "draft") renderDraft();
+  }
+  if (typeof currentView !== "undefined" && currentView === "draft") _updateFeedActivityDom();
+}, 10000);

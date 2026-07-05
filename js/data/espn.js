@@ -413,7 +413,9 @@ function processEspnPicks(rawPicks) {
     _liveDraft.picks.push({
       player: raw.playerName,
       pos: getPlayerValue(raw.playerName)?.posKey || null,
-      team: espnTeamIdToOwnerId(raw.teamId),
+      // Mock picks belong to generic "espn:N" teams, never to real owners
+      // (the old mapping put strangers' picks on real leaguemates' ledgers).
+      team: (typeof draftTestMode === "function" && draftTestMode()) ? ("espn:" + raw.teamId) : espnTeamIdToOwnerId(raw.teamId),
       espnTeamId: raw.teamId,          // raw ESPN id — for honest labels in test mode
       price: raw.bidAmount || 0,
       ts: Date.now(),

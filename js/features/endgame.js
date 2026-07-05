@@ -21,8 +21,10 @@ function computeLiveTeamStates() {
   // Keepers come from the Keepers tab (your predicted keepers), not the
   // league-site marks. ML draft slots are filled by major keepers AND
   // called-up minor leaguers; stashed minors stay off the ML roster.
-  const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();
-  for (const t of LEAGUE.teams) {
+  const test = (typeof draftTestMode === "function") && draftTestMode();
+  const selections = test ? {} : ((typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections());
+  const teams = (typeof draftTeams === "function") ? draftTeams() : LEAGUE.teams;
+  for (const t of teams) {
     const teamSel = selections[t.id] || {};
     const kept = Object.entries(teamSel)
       .filter(([name, f]) => f.keeper || (f.minorKeeper && typeof isCalledUp === "function" && isCalledUp(name)))
@@ -31,14 +33,16 @@ function computeLiveTeamStates() {
       const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(n) : null;
       return s + (ci ? ci.cost : (getCurrentKeeperSalary(n) ?? 0));
     }, 0);
-    // Live picks for this team
-    const picks = (typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).filter(p => p.team === t.id);
+    // Live picks for this team (mock teams also match on the raw ESPN id, so
+    // picks recorded before a My-team change still count)
+    const picks = (typeof _liveDraft !== "undefined" ? _liveDraft.picks : [])
+      .filter(p => p.team === t.id || (t.espnTeamId != null && p.espnTeamId === t.espnTeamId));
     const spent = picks.reduce((s, p) => s + p.price, 0);
     const totalRoster = kept.length + picks.length;
     const slotsRemaining = LEAGUE.rosterSize - totalRoster;
     // Base budget includes traded draft dollars / manual setup overrides —
     // previously omitted here, so live max bids ignored budget trades.
-    const adj = (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id) : 0;
+    const adj = test ? 0 : (typeof getBudgetAdjustment === "function") ? getBudgetAdjustment(t.id) : 0;
     const budget = LEAGUE.draftBudget + adj - keptCost - spent;
     // True max bid: budget - (slotsRemaining - 1) reserved for $1 each
     const maxBid = Math.max(0, budget - Math.max(0, slotsRemaining - 1));
@@ -111,7 +115,7 @@ function competitionProfile(player, states, myId, opts) {
 // `maxCompetitorBid`. So my expected cost is in the range [$1, maxCompetitorBid+1]."
 function endgameNominationRecommendations() {
   const states = computeLiveTeamStates();
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : getMyTeam();
   if (!me) return { state: "no-team", recs: [] };
   const myState = states[me.id];
   if (myState.slotsRemaining === 0) return { state: "done", recs: [] };
@@ -192,7 +196,7 @@ function endgameNominationRecommendations() {
 // execute MY shortlist.
 function endgameOptimizer() {
   const states = computeLiveTeamStates();
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : getMyTeam();
   if (!me) return { state: "no-team" };
   const myState = states[me.id];
   if (!myState || myState.slotsRemaining <= 0) return { state: "done" };

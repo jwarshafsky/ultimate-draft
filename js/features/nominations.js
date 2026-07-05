@@ -11,8 +11,10 @@
 // positions. Used to decide who's hurt by which nomination.
 function teamOpenSlotProfile() {
   const profile = {};
-  const selections = getKeeperSelections();
-  for (const t of LEAGUE.teams) {
+  const test = (typeof draftTestMode === "function") && draftTestMode();
+  const selections = test ? {} : getKeeperSelections();
+  const teams = (typeof draftTeams === "function") ? draftTeams() : LEAGUE.teams;
+  for (const t of teams) {
     const sel = selections[t.id] || {};
     const kept = Object.entries(sel).filter(([_, f]) => f.keeper).map(([n]) => n);
     const posCounts = {};
@@ -56,7 +58,7 @@ function setNomGoal(g) { _nomGoal = NOM_GOALS.some(x => x.id === g) ? g : "all";
 function suggestNominations(opts) {
   opts = opts || {};
   const goal = opts.goal || null;
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : getMyTeam();
   if (!me) return [];
   const myProfile = teamOpenSlotProfile()[me.id];
   const values = getValues();

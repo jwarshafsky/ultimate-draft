@@ -84,6 +84,9 @@ function isStashedMinor(name) { return callupStatus(name) === "stashed"; }
 // occupies a projected ML roster slot, never whether he's auctionable.
 // Normalized names.
 function draftExcludedNames() {
+  // Mock drafts (test mode) have a FULL pool: no keepers, no MiL exclusions —
+  // those are real-league constructs and the mock room is 12 strangers.
+  if (typeof draftTestMode === "function" && draftTestMode()) return new Set();
   const out = new Set();
   for (const r of listMinorLeaguers()) out.add(r.key);
   if (typeof collectKeepers === "function") {

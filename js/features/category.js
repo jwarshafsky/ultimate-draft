@@ -89,7 +89,7 @@ function projectTeamCategories(playerNames) {
 // any drafted picks tracked separately). For now, just keepers + drafted from
 // live draft state if available.
 function getMyRoster() {
-  const me = getMyTeam();
+  const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
   if (!me) return [];
   // Keepers from the Keepers tab (your predicted keepers), not league-site marks.
   const selAll = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections();

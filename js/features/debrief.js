@@ -69,7 +69,7 @@ function renderDebrief() {
   if (!picks.length) return '<p class="muted">No picks recorded yet — the debrief fills in as the draft runs.</p>';
 
   const reads = _dbLotReads();
-  const meId = (typeof getMyTeam === "function") ? getMyTeam()?.id : null;
+  const meId = (typeof getMyTeam === "function") ? (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam())?.id : null;
 
   // Per-pick enrichment.
   const rows = picks.map(p => {
