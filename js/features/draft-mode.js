@@ -350,7 +350,7 @@ function _dmFeedChips() {
 }
 
 function _dmHero() {
-  const lot = (getFeedMode() !== "off") ? currentLotFromEvents() : null;
+  const lot = (getFeedMode() !== "off" || (typeof mockFeedActive === "function" && mockFeedActive())) ? currentLotFromEvents() : null;
   const manual = _liveDraft.current;
   // "Player NNNNN" = an unresolved placeholder id (ESPN sends a sentinel like
   // 25000 when no one has nominated yet, per Jeff's mock; it also appears
@@ -630,7 +630,7 @@ function _dmTable(players, inflation) {
     // With a live feed, nominations happen on ESPN — a manual ▶ here looks
     // dead (Jeff: "arrows don't do anything"). Make the action useful: 🎯
     // toggles the player as a target (feeds fit/reco/nomination goals).
-    if (getFeedMode() !== "off") {
+    if (getFeedMode() !== "off" || (typeof mockFeedActive === "function" && mockFeedActive())) {
       const isTgt = (typeof getPlayerNote === "function") && (getPlayerNote(p.name)?.tags || []).includes("target");
       html += '<td><button class="btn ghost dm-target" data-name="' + esc(p.name) + '" title="' + (isTgt ? "Un-flag target" : "Flag as target") + '" style="padding:1px 7px; font-size:10px;' + (isTgt ? 'color:var(--good);' : '') + '">🎯</button></td>';
     } else {
@@ -773,7 +773,7 @@ function _dmBottom() {
 function updateDraftModeLive() {
   if (typeof mockFeedPumping === "function" && mockFeedPumping()) return;   // a fast-forward renders once when it finishes
   if (!_draftModeOn() || typeof currentView === "undefined" || currentView !== "draft") return;
-  const lot = (getFeedMode() !== "off") ? currentLotFromEvents() : null;
+  const lot = (getFeedMode() !== "off" || (typeof mockFeedActive === "function" && mockFeedActive())) ? currentLotFromEvents() : null;
   const otc = document.getElementById("dm-otc");
   if (!otc) return;
   // Player changed (new nomination / sold) → full re-render for fresh panels.

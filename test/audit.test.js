@@ -45,4 +45,19 @@ test("zero diffs certifies; each diff class detected", async () => {
   assert(el2.innerHTML.includes("CERTIFIED"), "clean audit certifies: " + el2.innerHTML.slice(0, 80));
 });
 
+// R13: a UD-native practice mock (leagueId 990001, synthetic ids, ESPN.leagueId
+// left at home) must NOT run the ESPN official-results audit — it would diff the
+// mock against the real league. The guard is synchronous (returns before the
+// first await), so a sync test body suffices.
+test("a UD practice mock skips the ESPN audit (shows a note, no fetch)", () => {
+  global.mockFeedActive = () => true;
+  let fetched = false;
+  global.fetchEspnDraft = async () => { fetched = true; return { picks: [] }; };
+  const el = elFor();
+  runDraftAudit();
+  assert(!fetched, "must NOT fetch ESPN during a UD practice mock");
+  assert(el.innerHTML.toLowerCase().includes("practice mock"), "shows the not-applicable note: " + el.innerHTML.slice(0, 90));
+  global.mockFeedActive = () => false;
+});
+
 (async () => { await new Promise(r => setTimeout(r, 100)); summary(); })();

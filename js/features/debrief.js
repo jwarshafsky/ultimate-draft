@@ -175,6 +175,16 @@ function _dbPickTable(rows) {
 // as its fixture.
 async function runDraftAudit() {
   const el = document.getElementById("debrief-audit-body");
+  // The ESPN official-results audit fetches ESPN.leagueId and diffs it against
+  // the recorded picks. A UD-native practice mock is ephemeral (leagueId 990001,
+  // synthetic player ids) but leaves ESPN.leagueId at the HOME league, so the
+  // diff would meaninglessly compare the mock against the real league's draft.
+  // (An ESPN mock via the extension DOES set ESPN.leagueId to match, so the
+  // audit stays valid there — guard on mockFeedActive() only, not draftTestMode.)
+  if (typeof mockFeedActive === "function" && mockFeedActive()) {
+    if (el) el.innerHTML = '<span class="small muted">The ESPN official-results audit only applies to a real ESPN draft/mock — not a UD practice mock.</span>';
+    return;
+  }
   if (el) el.innerHTML = '<span class="muted small">Fetching ESPN\'s official results…</span>';
   let official;
   try {
@@ -214,12 +224,16 @@ function openDebrief() {
   const ov = document.createElement("div");
   ov.id = "debrief-overlay";
   ov.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:9999; overflow:auto; padding:24px;";
+  const isMockCtx = (typeof mockFeedActive === "function" && mockFeedActive());
+  const auditCard = isMockCtx
+    ? '<div class="card"><h3>Audit vs ESPN official results</h3><span class="small muted">Only applies to a real ESPN draft/mock — not a UD practice mock.</span></div>'
+    : '<div class="card"><h3>Audit vs ESPN official results <span class="muted small">(fills only after the draft ends)</span></h3>' +
+      '<button class="btn" id="debrief-audit" style="width:auto; padding:5px 14px;">Run audit</button>' +
+      '<div id="debrief-audit-body" style="margin-top:6px;"></div></div>';
   ov.innerHTML = '<div style="max-width:1100px; margin:0 auto; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:18px;">' +
     '<div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;"><h2 style="margin:0;">Post-Draft Debrief</h2><span style="flex:1;"></span>' +
     '<button class="btn ghost" id="debrief-close">✕ Close</button></div>' +
-    '<div class="card"><h3>Audit vs ESPN official results <span class="muted small">(fills only after the draft ends)</span></h3>' +
-    '<button class="btn" id="debrief-audit" style="width:auto; padding:5px 14px;">Run audit</button>' +
-    '<div id="debrief-audit-body" style="margin-top:6px;"></div></div>' +
+    auditCard +
     renderDebrief() + '</div>';
   document.body.appendChild(ov);
   document.getElementById("debrief-close")?.addEventListener("click", closeDebrief);
