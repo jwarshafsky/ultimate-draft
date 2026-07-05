@@ -230,6 +230,17 @@ function _invCheckFeed(v) {
     seenPid.add(pk.espnPlayerId);
   }
 
+  // Auction minimum is $1 — a pick priced below that is a parse gap or a bad
+  // manual entry ($0 exists only on keeper contracts, never sale prices).
+  for (const pk of picks) {
+    if (!(pk.price >= 1)) {
+      v.push({
+        id: "I-FEED", severity: "warn",
+        detail: "pick '" + (pk.player || pk.espnPlayerId) + "' priced $" + pk.price + " — below the $1 auction minimum (parse gap?)",
+      });
+    }
+  }
+
   // Every SOLD event should map to a held pick (by playerId) OR a tombstone
   // (deleted via commissioner undo). A SOLD with neither is a missing pick.
   // Only judged for events carrying a playerId. A later SOLD of the same

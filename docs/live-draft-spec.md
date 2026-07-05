@@ -342,3 +342,23 @@ These are genuinely ambiguous or where code and plan diverge — please decide:
    `kona_player_info` map fetched for the *current* league context. In a Test mock
    on a throwaway league, should injury flags still show (they'd come from the
    override league's player pool), or be suppressed?
+
+
+---
+
+## Answers to the Open Questions (Jeff, 2026-07-05)
+
+1. **Two stale thresholds** — KEEP BOTH: 15 min governs the status DISPLAY ("not live"),
+   1 h governs the extension's same-league re-draft ROTATION (data safety). Different jobs.
+2. **Idle/ended windows** — keep 5-min "paused"; "ended" raised to **2 hours** (long
+   commissioner pauses must not blank the card; next frame self-heals regardless).
+3. **Manual entry** — remains a FALLBACK view, plus name-based dedup so a manual pick and
+   its later feed copy can never double-count. (Dedup implementation: Phase 2 backlog.)
+4. **Watchdog** — keep 30 s; wording "stalled or paused"; VERIFY whether ESPN keeps sending
+   CLOCK frames through commissioner pauses at the next mock, then tune.
+5. **My-team selector** — any league size: free number input (1–99), not a fixed 1–16 list.
+6. **AI output is ADVISORY, permanently** — no AI call may sit in the pick or money path;
+   deterministic numbers (budgets/max bids/values) are the load-bearing, tested layer.
+7. **No $0 sale prices** — a SOLD with missing/zero amount records at the $1 auction
+   minimum, and any pick below $1 raises an I-FEED warning. $0 keeper contracts unaffected.
+8. **Injury flags SHOW in mocks** — confirmed; already the behavior (no mode gating).

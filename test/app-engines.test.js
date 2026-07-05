@@ -229,7 +229,7 @@ function installGlobals(overrides) {
         pos: global.getPlayerValue(raw.playerName)?.posKey || null,
         team: (typeof global.draftTestMode === "function" && global.draftTestMode()) ? ("espn:" + raw.teamId) : global.espnTeamIdToOwnerId(raw.teamId),
         espnTeamId: raw.teamId,
-        price: raw.bidAmount || 0,
+        price: (raw.bidAmount > 0 ? raw.bidAmount : 1),
         ts: Date.now(),
         espnPlayerId: raw.playerId,
         espnSeq: raw.seq != null ? raw.seq : null,
@@ -412,7 +412,7 @@ test("currentLot: INIT clears the lot (reconnect boundary)", () => {
   assertEq(global.currentLotFromEvents(), null, "INIT resets the lot");
 });
 
-test("currentLot: quiet >5min → idle:true; quiet >60min → null (ended)", () => {
+test("currentLot: quiet >5min → idle:true; quiet >2h → null (ended)", () => {
   setRealMode(); resetDraftState();
   const old = Date.now() - 6 * 60 * 1000;   // 6 min ago
   global._dlog.events = [
@@ -422,12 +422,12 @@ test("currentLot: quiet >5min → idle:true; quiet >60min → null (ended)", () 
   const idleLot = global.currentLotFromEvents();
   assert(idleLot && idleLot.idle === true, "6-min-quiet lot goes idle, not blank");
 
-  const ancient = Date.now() - 61 * 60 * 1000;
+  const ancient = Date.now() - 121 * 60 * 1000;
   global._dlog.events = [
     { seq: 1, at: ancient, cmd: "NOMINATION", teamId: 6, playerId: 39832 },
     { seq: 2, at: ancient, cmd: "BID", teamId: 6, playerId: 39832, amount: 5 },
   ];
-  assertEq(global.currentLotFromEvents(), null, "61-min-quiet lot treated as ended");
+  assertEq(global.currentLotFromEvents(), null, "121-min-quiet lot treated as ended");
 });
 
 // =====================================================================

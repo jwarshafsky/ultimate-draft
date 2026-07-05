@@ -417,7 +417,9 @@ function processEspnPicks(rawPicks) {
       // (the old mapping put strangers' picks on real leaguemates' ledgers).
       team: (typeof draftTestMode === "function" && draftTestMode()) ? ("espn:" + raw.teamId) : espnTeamIdToOwnerId(raw.teamId),
       espnTeamId: raw.teamId,          // raw ESPN id — for honest labels in test mode
-      price: raw.bidAmount || 0,
+      // Auction minimum is $1 — a SOLD frame with a missing/zero amount is a
+      // parse gap, never a real price ($0 exists only on keeper contracts).
+      price: (raw.bidAmount > 0 ? raw.bidAmount : 1),
       ts: Date.now(),
       espnPlayerId: raw.playerId,
       espnSeq: raw.seq != null ? raw.seq : null,   // ESPN lot seq — distinguishes a re-sale from a repeated frame

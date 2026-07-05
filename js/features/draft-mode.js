@@ -61,7 +61,7 @@ function currentLotFromEvents() {
   // pauses, and blanking the hero mid-pause looks like a sync failure. Only a
   // very old lot (>60 min) is treated as ended.
   const quietMs = lastAt ? Date.now() - lastAt : 0;
-  if (quietMs > 60 * 60 * 1000) return null;
+  if (quietMs > 2 * 60 * 60 * 1000) return null;   // 2h: long commissioner pauses must not blank the card (Jeff, spec Q2)
   const idle = quietMs > 5 * 60 * 1000;
   const name = _resolveEspnName(lot.playerId);
   const top = lot.bids.reduce((m, b) => (b.amount > (m ? m.amount : 0) ? b : m), null);

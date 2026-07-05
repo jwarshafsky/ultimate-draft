@@ -121,9 +121,7 @@ function renderDraftSetup(root) {
     const my = (typeof getMyDraftEspnId === "function") ? getMyDraftEspnId() : null;
     html += '<div style="display:flex; gap:8px; align-items:center; margin-top:8px;">';
     html += '<label class="small muted">My team in this mock:</label>';
-    html += '<select id="ds-my-team"><option value="">— not set —</option>';
-    for (let i = 1; i <= 16; i++) html += '<option value="' + i + '"' + (my === i ? ' selected' : '') + '>Team ' + i + '</option>';
-    html += '</select>';
+    html += '<input id="ds-my-team" type="number" min="1" max="99" placeholder="—" value="' + (my != null ? my : '') + '" style="width:70px;" title="Your team number in the ESPN draft room (any league size)">';
     html += '<span class="muted small">check your team\'s position in the ESPN draft room</span>';
     html += '</div>';
   }
