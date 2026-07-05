@@ -54,7 +54,6 @@ function saveDraftConfig(label) {
     strategyBrief: strat.brief || "",
     budgetAdj: (() => { try { return JSON.parse(localStorage.getItem("ud_budget_adj_v1") || "{}"); } catch (e) { return {}; } })(),
     keepers: localStorage.getItem("ud_my_keepers_v1") || null,
-    callups: localStorage.getItem("ud_callups_v1") || null,
   };
   const list = _dsConfigs().filter(c => c.label !== cfg.label);   // same name replaces
   list.unshift(cfg);
@@ -69,10 +68,10 @@ function loadDraftConfig(id) {
   if (!cfg) return;
   // Ask about roster state FIRST — cancelling must not leave a half-applied
   // mix of new league/strategy with old keepers.
-  const hasRosterState = cfg.keepers || cfg.callups;
+  const hasRosterState = !!cfg.keepers;
   let restoreRoster = false;
   if (hasRosterState) {
-    restoreRoster = confirm('"' + cfg.label + '" includes keeper picks and call-up overrides. Restore those too? (Replaces your current keeper checkboxes; the page reloads to apply.)\n\nOK = everything · Cancel = just league/mode/strategy/budgets');
+    restoreRoster = confirm('"' + cfg.label + '" includes keeper picks. Restore those too? (Replaces your current keeper checkboxes; the page reloads to apply.)\n\nOK = everything · Cancel = just league/mode/strategy/budgets');
   }
   if (cfg.leagueUrl) localStorage.setItem("ud_league_url_v1", cfg.leagueUrl);
   _dsApplyLeague({ leagueId: cfg.leagueId, sport: "flb" });
@@ -84,7 +83,6 @@ function loadDraftConfig(id) {
   if (typeof replaceBudgetAdjustments === "function") replaceBudgetAdjustments(cfg.budgetAdj || {});
   if (restoreRoster) {
     if (cfg.keepers) localStorage.setItem("ud_my_keepers_v1", cfg.keepers);
-    if (cfg.callups) localStorage.setItem("ud_callups_v1", cfg.callups);
     location.reload();
     return;
   }
@@ -150,7 +148,6 @@ function renderDraftSetup(root) {
   html += _dsKeepersBudgetsCard();
 
   // === Call-ups ===
-  if (typeof renderCallupsPanel === "function") html += renderCallupsPanel({ collapsed: true });
 
   // === Saved configurations ===
   html += _dsConfigsCard();
@@ -298,7 +295,6 @@ function wireDraftSetup() {
   }));
 
   // Call-ups
-  if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
 
   // Configs
   document.getElementById("ds-config-save")?.addEventListener("click", () => {

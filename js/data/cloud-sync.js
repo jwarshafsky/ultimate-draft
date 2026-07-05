@@ -27,7 +27,6 @@ const SYNC_EXACT_KEYS = new Set([
   "ud_proj_hitters_v1", "ud_proj_pitchers_v1", "ud_proj_meta_v1",
   "ud_manual_values_v1", "ud_use_manual_values_v1",
   "ud_my_keepers_v1", "ud_my_keepers_src_v1",
-  "ud_callups_v1",
   "ud_draft_strategy_v1",
   "ud_draft_configs_v1", "ud_budget_adj_v1", "ud_league_url_v1",
   "ud_keeper_inflation_v1",

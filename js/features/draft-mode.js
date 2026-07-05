@@ -274,7 +274,7 @@ function computeLiveProjStandings() {
   for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
     const sel = selections[t.id] || {};
     const kept = Object.entries(sel)
-      .filter(([name, f]) => f.keeper || (f.minorKeeper && typeof isCalledUp === "function" && isCalledUp(name)))
+      .filter(([_, f]) => f.keeper)   // minor keepers are stashed — no ML slot
       .map(([name]) => ({ name }));
     const picks = _liveDraft.picks.filter(p => p.team === t.id).map(p => ({ name: p.player, price: p.price, value: getPlayerValue(p.player)?.value || 0 }));
     synth[t.id] = { teamId: t.id, ownerName: t.owner, isMe: !!t.isMe, kept, drafted: [...picks, ...fills[t.id]] };
@@ -612,7 +612,6 @@ function _dmBottom() {
   if (isEndgame()) html += renderEndgamePanel();
   html += '<div class="dm-main" style="grid-template-columns:1fr 1fr;">';
   html += '<div>' + renderRecentPicks() + '</div>';
-  html += '<div>' + (typeof renderCallupsPanel === "function" ? renderCallupsPanel({ collapsed: true }) : '') + '</div>';
   html += '</div>';
   html += '</div></details>';
   return html;
@@ -675,7 +674,6 @@ function wireDraftMode() {
     if (pk && confirm("Delete pick #" + (idx + 1) + " (" + pk.player + ")?")) deletePickAt(idx);
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => { _liveDraft.showAllPicks = !_liveDraft.showAllPicks; renderDraft(); });
-  if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
   if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   if (typeof wireAiPanel === "function") wireAiPanel();
 }

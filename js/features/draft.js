@@ -221,7 +221,6 @@ function renderDraft() {
   html += '</div>';
 
   // Call-ups (collapsed) — flip a stashed minor leaguer onto an ML roster
-  if (typeof renderCallupsPanel === "function") html += renderCallupsPanel({ collapsed: true });
 
   // ESPN proxy + live controls — moved to bottom (less frequently changed)
   html += renderLiveSourcesPanel();
@@ -477,7 +476,6 @@ function wireDraftHandlers() {
       startAuction(b.dataset.name, 1);
     });
   });
-  if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
   if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   // Nominate via input — validated against the pool so a typo can't create a
   // ghost player (which would corrupt live inflation).

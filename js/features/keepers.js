@@ -408,7 +408,6 @@ function renderKeepers() {
     html += '<div class="empty"><p>Loading rosters from The League App…</p><p class="small">If this persists, click “Refresh rosters”.</p></div>';
   }
 
-  if (typeof renderCallupsPanel === "function") html += renderCallupsPanel();
 
   root.innerHTML = html;
 
@@ -416,7 +415,6 @@ function renderKeepers() {
   updateInflationBadge();
 
   _wireKeepers();
-  if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderKeepers);
 }
 
 // Eligibility cell: contract status badge + a manual "ineligible" toggle for

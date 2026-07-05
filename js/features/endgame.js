@@ -27,7 +27,7 @@ function computeLiveTeamStates() {
   for (const t of teams) {
     const teamSel = selections[t.id] || {};
     const kept = Object.entries(teamSel)
-      .filter(([name, f]) => f.keeper || (f.minorKeeper && typeof isCalledUp === "function" && isCalledUp(name)))
+      .filter(([_, f]) => f.keeper)   // minor keepers are stashed — no ML slot
       .map(([name]) => name);
     const keptCost = kept.reduce((s, n) => {
       const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(n) : null;
