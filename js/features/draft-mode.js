@@ -326,6 +326,7 @@ function _dmTopBar(inflation) {
   if (st) html += '<span class="small">My budget <b>$' + st.budget + '</b> · ' + st.slotsRemaining + ' slots · max bid <b style="color:var(--accent);">$' + st.maxBid + '</b></span>';
   html += '<span id="dm-feedchips" class="small" style="display:inline-flex; gap:10px;">' + _dmFeedChips() + '</span>';
   html += '<span style="flex:1;"></span>';
+  if (typeof _mfTopbarHtml === "function") html += _mfTopbarHtml();   // mirrored practice-mock controls
   html += '<button class="btn ghost" id="dm-endgame" title="Force the endgame tools on (auto-detection stays as fallback)">' + ((typeof isEndgameForced === "function" && isEndgameForced()) ? '🔥 Endgame: ON' : 'Endgame: auto') + '</button>';
   html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit to setup</button>';

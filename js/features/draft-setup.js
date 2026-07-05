@@ -128,6 +128,9 @@ function renderDraftSetup(root) {
   html += '</div>';
   html += renderDraftFeedPanel();
 
+  // === Practice vs bots (UD-native mock → the real cockpit) ===
+  if (typeof renderMockFeedControls === "function") html += renderMockFeedControls(false);
+
   // === Strategy ===
   const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : { text: "", brief: "" };
   html += '<div class="card"><h3 style="margin:0 0 6px;">Draft strategy</h3>';
