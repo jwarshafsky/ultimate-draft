@@ -211,6 +211,19 @@ function getProjection(name) {
   if (h) return { ...h, type: "H" };
   const p = _projections.pitchers.find(p => p.name === name);
   if (p) return { ...p, type: "P" };
+  // In-season the preseason store is empty — the Data tab's ROS sources are
+  // the live projections (same fallback the Keepers/Values tabs use). Without
+  // this, projected standings / category pace / scorecards claimed "no
+  // projections" while the Data tab was fully loaded (Jeff's Jul 4 mock).
+  if (typeof activeProjSource === "function" && typeof getRosLine === "function") {
+    const src = activeProjSource();
+    if (src && src !== "preseason") {
+      const rh = getRosLine(src, name, "H");
+      if (rh) return rh;                                   // carries type:"H"
+      const rp = getRosLine(src, name, "P");
+      if (rp) return { ...rp, SV_HLD: (rp.SV || 0) + (rp.HLD || 0) };
+    }
+  }
   return null;
 }
 

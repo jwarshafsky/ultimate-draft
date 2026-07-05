@@ -141,14 +141,16 @@ function _fitContext() {
   if (_fitCtx && _fitCtxKey === key) return _fitCtx;
   const st = (typeof computeLiveTeamStates === "function") ? computeLiveTeamStates()[me.id] : null;
   const openPos = new Set();
+  const openCount = {};
   if (st) for (const [pos, tgt] of Object.entries((typeof POS_TARGETS !== "undefined" ? POS_TARGETS : {}))) {
-    if ((st.posCounts[pos] || 0) < tgt) openPos.add(pos);
+    const rem = tgt - (st.posCounts[pos] || 0);
+    if (rem > 0) { openPos.add(pos); openCount[pos] = rem; }
   }
   // Weak categories = bottom-half projected rank (rank is 1=best..12=worst).
   const cats = (typeof projectTeamCategories === "function") ? projectTeamCategories(getMyRoster()) : null;
   const weak = new Set();
   if (cats) for (const [c, r] of Object.entries(cats.ranks)) if (r >= 7) weak.add(c);
-  _fitCtx = { openPos, weak, slotsRemaining: st ? st.slotsRemaining : 99 };
+  _fitCtx = { openPos, openCount, weak, slotsRemaining: st ? st.slotsRemaining : 99 };
   _fitCtxKey = key;
   return _fitCtx;
 }
@@ -159,8 +161,13 @@ function rosterFit(playerName) {
   const val = getPlayerValue(playerName);
   if (!val) return null;
   let score = 0; const parts = [];
-  // Position need
-  if (ctx.openPos.has(val.posKey)) { score += 2; parts.push("fills " + val.posKey); }
+  // Position need — only NAME the position when it's genuinely scarce info:
+  // the last open slot there, or catcher ("fills SP" with 6 SP slots is noise).
+  if (ctx.openPos.has(val.posKey)) {
+    score += 2;
+    const remaining = ctx.openCount ? ctx.openCount[val.posKey] : null;
+    if (val.posKey === "C" || remaining === 1) parts.push("last " + val.posKey + " slot");
+  }
   else if ((_DM_FLEX[val.posKey === "SS" || val.posKey === "2B" ? "MI" : val.posKey === "1B" || val.posKey === "3B" ? "CI" : "UTIL"] || []).includes(val.posKey) && ctx.openPos.has("UTIL")) { score += 0.5; }
   // Category need — does he clear a notable bar in one of my weak cats?
   const tot = (typeof aggregateCats === "function") ? aggregateCats([playerName]) : null;
@@ -179,8 +186,8 @@ function _dmFitBadge(name) {
   const f = rosterFit(name);
   if (!f) return '';
   const color = f.strong ? "var(--good)" : "var(--accent)";
-  return ' <span class="small" title="Roster fit: ' + esc(f.label) + '" style="color:' + color + ';">' +
-    (f.strong ? '★' : '•') + ' ' + esc(f.label) + '</span>';
+  return ' <span class="small" title="Roster fit' + (f.label ? ': ' + esc(f.label) : '') + '" style="color:' + color + ';">' +
+    (f.strong ? '★' : '•') + (f.label ? ' ' + esc(f.label) : '') + '</span>';
 }
 
 // Room temperature — is the room fighting for this player or sitting on hands?
@@ -319,6 +326,7 @@ function _dmTopBar(inflation) {
   if (st) html += '<span class="small">My budget <b>$' + st.budget + '</b> · ' + st.slotsRemaining + ' slots · max bid <b style="color:var(--accent);">$' + st.maxBid + '</b></span>';
   html += '<span id="dm-feedchips" class="small" style="display:inline-flex; gap:10px;">' + _dmFeedChips() + '</span>';
   html += '<span style="flex:1;"></span>';
+  html += '<button class="btn ghost" id="dm-endgame" title="Force the endgame tools on (auto-detection stays as fallback)">' + ((typeof isEndgameForced === "function" && isEndgameForced()) ? '🔥 Endgame: ON' : 'Endgame: auto') + '</button>';
   html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit to setup</button>';
   html += '</div>';
@@ -341,7 +349,11 @@ function _dmFeedChips() {
 function _dmHero() {
   const lot = (getFeedMode() !== "off") ? currentLotFromEvents() : null;
   const manual = _liveDraft.current;
-  const name = lot ? lot.name : (manual ? manual.player : null);
+  // "Player NNNNN" = an unresolved placeholder id (ESPN sends a sentinel like
+  // 25000 when no one has nominated yet, per Jeff's mock; it also appears
+  // briefly while the name map loads). Never show it as a real lot.
+  const lotIsPlaceholder = lot && /^Player \d+$/.test(lot.name || "");
+  const name = (lot && !lotIsPlaceholder) ? lot.name : (manual ? manual.player : null);
   let html = '<div class="dm-hero">';
 
   // --- player card --- (data-player is the stable change-detection key; the
@@ -351,6 +363,7 @@ function _dmHero() {
     html += '<div class="otc-label">On the Clock</div>';
     html += '<div class="dm-player muted">Waiting for a nomination…</div>';
     html += '<div class="small muted">Nominations on ESPN appear here automatically' + (getFeedMode() === "off" ? ' — turn the pick feed ON below.' : '.') + '</div>';
+    if (lotIsPlaceholder) html += '<div class="small dim" style="margin-top:4px;">(ESPN sent a placeholder nomination id — the room is between lots, or player names are still loading.)</div>';
   } else {
     const val = getPlayerValue(name);
     const nfbc = getNfbc(name);
@@ -370,7 +383,11 @@ function _dmHero() {
     html += '</div>';
     html += '<div class="otc-meta small">' + _dmProjLine(name) + '</div>';
     if (sig) html += '<div class="otc-signal ' + sig.signal + '">' + (sig.signal === "buy" ? "📈" : "📉") + ' ' + esc(sig.reason) + '</div>';
-    if (typeof renderPlayerNewsBlock === "function") html += renderPlayerNewsBlock(name);
+    if (typeof renderPlayerNewsBlock === "function") {
+      const newsBlock = renderPlayerNewsBlock(name);
+      html += newsBlock;
+      if (!newsBlock && inj) html += '<div class="small dim" style="margin-top:4px;">No recent Rotowire item — no return estimate available.</div>';
+    }
     html += '<div id="dm-interest">' + _dmInterestHtml(name) + '</div>';
     const temp = lot ? lotTemperature(lot) : null;
     html += '<div id="dm-temp">' + (temp ? _dmTempChip(temp) : '') + '</div>';
@@ -558,7 +575,10 @@ function _dmTable(players, inflation) {
     const delta = nfbc?.avg != null ? nfbc.avg - inf : null;
     const fit = (typeof rosterFit === "function") ? rosterFit(p.name) : null;
     html += '<tr' + (fit && fit.strong ? ' style="background:rgba(63,185,80,.08);"' : '') + '>';
-    html += '<td><span class="player-name" data-player="' + esc(p.name) + '" style="cursor:pointer;">' + esc(p.name) + '</span>' +
+    const tier = (typeof tierForValue === "function") ? tierForValue(p.value) : null;
+    const tierColor = (tier && typeof TIER_COLORS !== "undefined" && TIER_COLORS[tier]) ? TIER_COLORS[tier] : "transparent";
+    html += '<td><span title="' + (tier || '') + '" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:' + tierColor + ';margin-right:5px;"></span>' +
+      '<span class="player-name" data-player="' + esc(p.name) + '" style="cursor:pointer;">' + esc(p.name) + '</span>' +
       (typeof renderTagIcons === "function" ? renderTagIcons(p.name) : '') + '</td>';
     html += '<td class="small">' + (fit ? '<span title="' + esc(fit.label) + '" style="color:' + (fit.strong ? 'var(--good)' : 'var(--accent)') + ';">' + (fit.strong ? '★ ' : '• ') + esc(fit.label) + '</span>' : '<span class="dim">—</span>') + '</td>';
     html += '<td>' + esc(p.posKey) + '</td>';
@@ -566,7 +586,15 @@ function _dmTable(players, inflation) {
     html += '<td class="num"><b>$' + inf.toFixed(0) + '</b></td>';
     html += '<td class="num' + (nfbc?.avg ? '' : ' dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
     html += '<td class="num' + (delta == null ? ' dim' : delta > 3 ? '" style="color:var(--warn);' : delta < -3 ? '" style="color:var(--good);' : '') + '">' + (delta == null ? '—' : (delta > 0 ? '+' : '') + delta.toFixed(0)) + '</td>';
-    html += '<td><button class="btn ghost pool-nominate" data-name="' + esc(p.name) + '" title="Manual: start auction" style="padding:1px 7px; font-size:10px;">▶</button></td>';
+    // With a live feed, nominations happen on ESPN — a manual ▶ here looks
+    // dead (Jeff: "arrows don't do anything"). Make the action useful: 🎯
+    // toggles the player as a target (feeds fit/reco/nomination goals).
+    if (getFeedMode() !== "off") {
+      const isTgt = (typeof getPlayerNote === "function") && (getPlayerNote(p.name)?.tags || []).includes("target");
+      html += '<td><button class="btn ghost dm-target" data-name="' + esc(p.name) + '" title="' + (isTgt ? "Un-flag target" : "Flag as target") + '" style="padding:1px 7px; font-size:10px;' + (isTgt ? 'color:var(--good);' : '') + '">🎯</button></td>';
+    } else {
+      html += '<td><button class="btn ghost pool-nominate" data-name="' + esc(p.name) + '" title="Manual: start auction" style="padding:1px 7px; font-size:10px;">▶</button></td>';
+    }
     html += '</tr>';
   }
   html += '</tbody></table>';
@@ -574,19 +602,96 @@ function _dmTable(players, inflation) {
 }
 
 // --- side panels ---
+// Each card has an id; order is user-arrangeable (drag the card title) and
+// persisted (ud_dm_layout_v1, synced).
+const _DM_CARD_ORDER_KEY = "ud_dm_layout_v1";
+function _dmCardOrder() {
+  try { const v = JSON.parse(localStorage.getItem(_DM_CARD_ORDER_KEY) || "null"); return Array.isArray(v) ? v : null; } catch (e) { return null; }
+}
+function _dmSaveCardOrder(order) {
+  try { localStorage.setItem(_DM_CARD_ORDER_KEY, JSON.stringify(order)); } catch (e) {}
+}
+
+function _dmMyRosterHtml() {
+  const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : null;
+  if (!me) return '<p class="muted small">Pick your team on Draft Setup (Test mode) to see your roster.</p>';
+  const st = computeLiveTeamStates()[me.id];
+  const kept = [];
+  if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[me.id] || {})) if (f.keeper) kept.push({ name: n, how: "keeper" });
+  }
+  const picks = _liveDraft.picks.filter(p => p.team === me.id || (me.espnTeamId != null && p.espnTeamId === me.espnTeamId))
+    .map(p => ({ name: p.player, how: "$" + p.price }));
+  const roster = [...kept, ...picks];
+  let html = '<p class="small" style="margin:0 0 4px;">' + roster.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
+  if (!roster.length) return html + '<p class="muted small" style="margin:0;">Nobody yet — keepers + your picks appear here.</p>';
+  html += '<table class="dm-table"><tbody>';
+  for (const r of roster) {
+    const v = getPlayerValue(r.name);
+    html += '<tr><td>' + esc(v?.posKey || "?") + '</td><td>' + esc(r.name) + '</td><td class="num muted">' + esc(r.how) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function _dmBudgetsHtml() {
+  const states = Object.values(computeLiveTeamStates());
+  states.sort((a, b) => b.budget - a.budget);
+  let html = '<table class="dm-table"><thead><tr><th>Team</th><th class="num">$</th><th class="num">Slots</th><th class="num">Max</th></tr></thead><tbody>';
+  for (const st of states) {
+    html += '<tr' + (st.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '><td>' + esc(st.ownerName) + '</td><td class="num">$' + st.budget + '</td><td class="num">' + st.slotsRemaining + '</td><td class="num">$' + st.maxBid + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
 function _dmSide() {
-  let html = '';
   const brief = (typeof strategyForAi === "function") ? strategyForAi() : null;
-  html += '<div class="card"><h3 style="margin:0 0 6px;">My Plan</h3>' +
-    (brief
-      ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
-      : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>') +
-    '</div>';
-  html += '<div class="card"><h3 style="margin:0 0 6px;">Projected Standings <span class="muted small">if the rest of the draft goes to $/slot</span></h3>' + _dmStandingsHtml() + '</div>';
-  html += '<div class="card"><h3 style="margin:0 0 6px;">Nominations</h3>' + renderNominationsPanel() + '</div>';
+  const cards = [
+    { id: "plan", title: "My Plan", body: brief
+        ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
+        : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>' },
+    { id: "roster", title: "My Roster", body: _dmMyRosterHtml() },
+    { id: "budgets", title: "Budgets", body: _dmBudgetsHtml() },
+    { id: "standings", title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() },
+    { id: "noms", title: "Nominations", body: renderNominationsPanel() },
+  ];
+  const order = _dmCardOrder();
+  if (order) cards.sort((a, b) => {
+    const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  let html = '';
+  for (const c of cards) {
+    html += '<div class="card" data-dm-card="' + c.id + '" draggable="true"><h3 style="margin:0 0 6px;" title="Drag to rearrange">⠿ ' + c.title + '</h3>' + c.body + '</div>';
+  }
   html += renderCategoryDashboard();
   html += renderAiAssistantPanel();
   return html;
+}
+
+// HTML5 drag-to-reorder for the side cards; order persists across sessions.
+function _dmWireCardDrag() {
+  const rail = document.querySelector(".dm-side");
+  if (!rail) return;
+  let dragging = null;
+  rail.querySelectorAll(".card[data-dm-card]").forEach(card => {
+    card.addEventListener("dragstart", () => { dragging = card; card.classList.add("dm-dragging"); });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dm-dragging");
+      rail.querySelectorAll(".dm-dragover").forEach(c => c.classList.remove("dm-dragover"));
+      _dmSaveCardOrder([...rail.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard));
+    });
+    card.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (!dragging || dragging === card) return;
+      card.classList.add("dm-dragover");
+      const rect = card.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) rail.insertBefore(dragging, card);
+      else rail.insertBefore(dragging, card.nextSibling);
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("dm-dragover"));
+  });
 }
 
 function _dmStandingsHtml() {
@@ -652,6 +757,7 @@ function updateDraftModeLive() {
 function wireDraftMode() {
   document.getElementById("dm-exit")?.addEventListener("click", () => setDraftMode(false));
   document.getElementById("dm-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
+  document.getElementById("dm-endgame")?.addEventListener("click", () => { if (typeof setEndgameForced === "function") { setEndgameForced(!isEndgameForced()); renderDraft(); } });
   // Kick the AI injury-return estimate for the player on the clock (if hurt).
   const otcName = document.getElementById("dm-otc")?.getAttribute("data-player");
   if (otcName && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(otcName);
@@ -668,6 +774,9 @@ function wireDraftMode() {
   });
   document.getElementById("dm-needs")?.addEventListener("change", (e) => { _dmState.needsOnly = e.target.checked; renderDraft(); });
   document.querySelectorAll(".pool-nominate").forEach(b => b.addEventListener("click", () => startAuction(b.dataset.name, 1)));
+  document.querySelectorAll(".dm-target").forEach(b => b.addEventListener("click", () => {
+    if (typeof toggleTag === "function") { toggleTag(b.dataset.name, "target"); renderDraft(); }
+  }));
   document.querySelectorAll("#view-root .player-name").forEach(el => el.addEventListener("click", () => openNoteEditor(el.dataset.player)));
   // Feed-panel buttons are wired once via delegation in draft.js.
   document.querySelectorAll(".live-revert").forEach(b => b.addEventListener("click", () => {
@@ -680,6 +789,7 @@ function wireDraftMode() {
     if (pk && confirm("Delete pick #" + (idx + 1) + " (" + pk.player + ")?")) deletePickAt(idx);
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => { _liveDraft.showAllPicks = !_liveDraft.showAllPicks; renderDraft(); });
+  _dmWireCardDrag();
   if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   if (typeof wireAiPanel === "function") wireAiPanel();
 }

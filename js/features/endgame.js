@@ -78,7 +78,14 @@ function computeLiveTeamStates() {
 //   - Average $/slot across all teams < $6, OR
 //   - 3+ teams have max bid <= $4, OR
 //   - Total picks made >= 60% of total roster slots (200+ in a 12x26 league)
+// Manual override (Jeff: "should have a button to enable endgame mode") —
+// auto-detection stays as the fallback.
+let _endgameForced = false;
+function isEndgameForced() { return _endgameForced; }
+function setEndgameForced(v) { _endgameForced = !!v; }
+
 function isEndgame() {
+  if (_endgameForced) return true;
   const states = Object.values(computeLiveTeamStates());
   const totalRem = states.reduce((s, t) => s + t.budget, 0);
   const totalSlots = states.reduce((s, t) => s + t.slotsRemaining, 0);
