@@ -352,6 +352,39 @@ async function run() {
     assertEq(ud.dlog.events.length, script.frames.length, "_dlog holds every event");
   });
 
+  // --- fast-forward / skip controls -------------------------------------
+  // startMockFeed arms + activates but schedules via setTimeout (a no-op in the
+  // sandbox), so nothing auto-plays — we drive the skips explicitly and drain.
+  ud.eval("startMockFeed()");
+  const ffTotal = ud.eval("_mockFeed.script.totalLots");
+
+  const soldAtStart = ud.eval("_mockFeed.soldLots");
+  ud.eval("skipMockNomination()");
+  await drain();
+  test("skip nomination advances exactly one lot", () => {
+    assertEq(soldAtStart, 0, "fresh mock starts at 0 sold");
+    assertEq(ud.eval("_mockFeed.soldLots"), 1, "one lot resolved");
+    assertEq(ud.liveDraft.picks.length, 1, "one pick recorded");
+    assertEq(ud.checkDraftInvariants().counts.error, 0, "invariants clean after skip-lot");
+  });
+
+  ud.eval("skipMockPicks(5)");
+  await drain();
+  test("skip N picks advances N lots", () => {
+    assertEq(ud.eval("_mockFeed.soldLots"), 6, "1 + 5 lots resolved");
+    assertEq(ud.liveDraft.picks.length, 6, "six picks recorded");
+    assertEq(ud.checkDraftInvariants().counts.error, 0, "invariants clean after skip-N");
+  });
+
+  ud.eval("skipMockToEnd()");
+  await drain();
+  test("skip to end completes the draft with clean invariants", () => {
+    assertEq(ud.eval("_mockFeed.active"), false, "mock is finished (inactive)");
+    assertEq(ud.eval("_mockFeed.soldLots"), ffTotal, "every lot resolved");
+    assertEq(ud.liveDraft.picks.filter(p => p.espnPlayerId != null).length, ffTotal, "held picks == total lots");
+    assertEq(ud.checkDraftInvariants().counts.error, 0, "zero invariant errors at the end");
+  });
+
   summary("UD-native mock feed");
 }
 

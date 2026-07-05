@@ -44,6 +44,7 @@ const _mockFeed = {
   startedAt: 0,
   soldLots: 0,
   lastEmitAt: 0,
+  skipN: 10,              // how many picks the "skip N picks" control jumps
 };
 
 function mockFeedActive() { return !!_mockFeed.active; }
@@ -326,6 +327,45 @@ function setMockFeedSpeed(s) {
 function getMockFeedSpeed() { return _mockFeed.speed; }
 
 // ---------------------------------------------------------------------------
+// Fast-forward — emit pending frames back-to-back (no delays, ignoring speed)
+// through the SAME real pipeline, then resume normal playback where we landed.
+// Used by the skip controls.
+function _mfPump(stopAfter) {
+  const s = _mockFeed.script;
+  if (!s || !_mockFeed.ctx) return true;
+  let solds = 0;
+  while (_mockFeed.idx < s.frames.length) {
+    const fr = s.frames[_mockFeed.idx];
+    const at = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
+    _mfApplyFrame(_mockFeed.ctx, fr, at);
+    _mockFeed.idx++;
+    _mockFeed.lastEmitAt = at;
+    if (fr.cmd === "SOLD") { _mockFeed.soldLots++; solds++; }
+    if (stopAfter && stopAfter(fr, solds)) break;
+  }
+  return _mockFeed.idx >= s.frames.length;
+}
+function _mfFastForward(stopAfter) {
+  if (!_mockFeed.active || !_mockFeed.script) return;
+  _mockFeed.gen++;                         // cancel any in-flight scheduled step
+  const done = _mfPump(stopAfter);
+  _mfUpdateStatus();
+  if (done) { _mfFinish(); return; }       // reached the end → land on the final board
+  if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+  if (!_mockFeed.paused) _mfScheduleNext(); // resume live playback from the new spot
+}
+// Speed through the rest of the current lot (resolve this nomination now).
+function skipMockNomination() { _mfFastForward((fr, solds) => solds >= 1); }
+// Jump forward N completed picks (default _mockFeed.skipN).
+function skipMockPicks(n) {
+  const target = Math.max(1, Math.min(2000, parseInt(n, 10) || _mockFeed.skipN || 10));
+  _mockFeed.skipN = target;
+  _mfFastForward((fr, solds) => solds >= target);
+}
+// Jump straight to the end of the draft (full board + Debrief ready).
+function skipMockToEnd() { _mfFastForward(() => false); }
+
+// ---------------------------------------------------------------------------
 // UI — one card on the Draft Setup lobby, a compact cluster mirrored in the
 // Draft Mode top bar. Buttons wired once via document-level delegation (they
 // survive the innerHTML rebuilds of both views).
@@ -357,6 +397,24 @@ function _mfSpeedSeg() {
     seg("1x", "1×") + seg("4x", "4×") + seg("instant", "Instant") + '</span>';
 }
 
+// Fast-forward buttons (only while a mock is active): skip the current lot,
+// skip N picks, skip to the end.
+function _mfSkipControls(compact) {
+  if (!_mockFeed.active) return "";
+  const b = (act, label) => '<button class="btn ghost" data-mockfeed="' + act +
+    '" style="width:auto; padding:' + (compact ? "3px 8px" : "5px 10px") + ';">' + label + '</button>';
+  let s = b("skipnom", "⏭ Lot");
+  if (compact) {
+    s += b("skipn", "⏭ " + (_mockFeed.skipN || 10));
+  } else {
+    s += '<span class="small" style="display:inline-flex; align-items:center; gap:4px;">⏭ skip ' +
+      '<input id="mf-skip-n" type="number" min="1" max="500" value="' + (_mockFeed.skipN || 10) + '" style="width:56px;"> picks ' +
+      '<button class="btn ghost" data-mockfeed="skipn" style="width:auto; padding:5px 10px;">Go</button></span>';
+  }
+  s += b("skipend", "⏭⏭ To end");
+  return s;
+}
+
 // compact=true → an inline cluster for the Draft Mode top bar.
 function renderMockFeedControls(compact) {
   const active = _mockFeed.active, paused = _mockFeed.paused;
@@ -371,9 +429,9 @@ function renderMockFeedControls(compact) {
   }
 
   if (compact) {
-    let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center;">';
+    let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">';
     if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0) + '</b></span>';
-    s += controls + _mfSpeedSeg() + '</span>';
+    s += controls + _mfSkipControls(true) + _mfSpeedSeg() + '</span>';
     return s;
   }
 
@@ -385,6 +443,7 @@ function renderMockFeedControls(compact) {
   html += _mfSpeedSeg();
   html += controls;
   html += '</div>';
+  if (active) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
   html += '<p class="muted small" style="margin:6px 0 0;">Owner tendencies decide who bids and how high; real ESPN pacing (~25s lots) decides when. Enter Draft to watch it in the cockpit — hero, ticker, recommended bid, budgets, invariants and Debrief all run live.</p>';
   html += '<div class="small" id="mf-status" style="margin-top:6px;">' + _mfStatusText() + '</div>';
   html += '</div>';
@@ -404,8 +463,20 @@ if (typeof document !== "undefined" && document.addEventListener) {
       else if (a === "pause") pauseMockFeed();
       else if (a === "resume") resumeMockFeed();
       else if (a === "stop") stopMockFeed();
+      else if (a === "skipnom") skipMockNomination();
+      else if (a === "skipn") { const el = document.getElementById("mf-skip-n"); skipMockPicks(el ? el.value : _mockFeed.skipN); }
+      else if (a === "skipend") skipMockToEnd();
     } else if (t.dataset.mockspeed) {
       setMockFeedSpeed(t.dataset.mockspeed);
+    }
+  });
+  // Keep the skip-N count in sync as the user types (so the top-bar "⏭ N"
+  // button label matches without needing a click).
+  document.addEventListener("input", (e) => {
+    const el = e.target;
+    if (el && el.id === "mf-skip-n") {
+      const n = parseInt(el.value, 10);
+      if (isFinite(n) && n > 0) _mockFeed.skipN = Math.min(500, n);
     }
   });
 }
