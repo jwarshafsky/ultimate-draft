@@ -310,10 +310,21 @@ function computeValues() {
 // Cached value list — recomputed when projections change.
 let _valuesCache = null;
 let _valuesByName = null;
+let _valuesByNorm = null;
 
 function refreshValues() {
   _valuesCache = computeValues();
   _valuesByName = new Map(_valuesCache.map(p => [p.name, p]));
+  // Normalized index: ESPN names carry accents/suffixes ("José Ramírez",
+  // "Ronald Acuña Jr.") that FanGraphs rows don't — exact-match-only lookups
+  // made nominated stars show "no value data" in the Jul 4 mock.
+  _valuesByNorm = new Map();
+  if (typeof normalizePlayerName === "function") {
+    for (const p of _valuesCache) {
+      const k = normalizePlayerName(p.name);
+      if (!_valuesByNorm.has(k)) _valuesByNorm.set(k, p);
+    }
+  }
   return _valuesCache;
 }
 
@@ -324,14 +335,19 @@ function getValues() {
 
 function getPlayerValue(name) {
   if (!_valuesByName) refreshValues();
-  return _valuesByName.get(name) || null;
+  const exact = _valuesByName.get(name);
+  if (exact) return exact;
+  if (_valuesByNorm && typeof normalizePlayerName === "function") {
+    return _valuesByNorm.get(normalizePlayerName(name)) || null;
+  }
+  return null;
 }
 
 // Wire cache invalidation to projection updates (preseason) and league/ROS data
 // changes (uploaded Dollar Values fire onDataChange via fireData).
 if (typeof onProjectionsChange === "function") {
-  onProjectionsChange(() => { _valuesCache = null; _valuesByName = null; });
+  onProjectionsChange(() => { _valuesCache = null; _valuesByName = null; _valuesByNorm = null; });
 }
 if (typeof onDataChange === "function") {
-  onDataChange(() => { _valuesCache = null; _valuesByName = null; });
+  onDataChange(() => { _valuesCache = null; _valuesByName = null; _valuesByNorm = null; });
 }

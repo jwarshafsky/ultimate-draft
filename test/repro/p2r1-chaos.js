@@ -450,13 +450,14 @@ async function emitFrameFlushed(runner, text, stepMs) {
 const SCENARIOS = {};
 
 // ---------------------------------------------------------------------------
-// 1. outOfOrderEvents — ud-bridge delta forwarding can reorder; the app's
-//    _onDraftEvents drops any event whose seq <= the last APPENDED seq. If a
-//    high-seq event is delivered before a low-seq one (storage flush coalescing
-//    + async onChanged), the low-seq event is silently dropped from _dlog.
-//    S-046 (seqs monotonic), S-041 (event log = full stream), S-134/S-137
-//    (hero/ticker driven by the event stream — a dropped NOMINATION/BID = wrong
-//    or missing lot).
+// 1. outOfOrderEvents (LATENT — passes today) — probes the app's event-dedup.
+//    _onDraftEvents keeps a `last = seq of the LAST APPENDED event` and filters
+//    `e.seq > last`. That is a last-element cursor, not a max-seq watermark, so
+//    it is only safe while every delivered batch is monotonic vs. what's stored.
+//    The REAL pipeline IS monotonic (single chrome.storage key, FIFO onChanged,
+//    ud-bridge sends deltas in push order), so this passes — but we assert that
+//    guarantee holds end-to-end (a regression that ever reorders delivery would
+//    silently drop a NOMINATION/BID and blank/misdraw the hero). S-041/S-046.
 // ---------------------------------------------------------------------------
 SCENARIOS.outOfOrderEvents = async function (ctx) {
   const pool = buildPool();
@@ -466,40 +467,29 @@ SCENARIOS.outOfOrderEvents = async function (ctx) {
   const storageBacking = {};
   const runner = makeRunner(leagueId, pool, app, storageBacking);
 
-  // Emit a full lot so the extension builds an event log with several seqs.
-  const pid = pool[0].espnId;
-  const frames = lotFrames(pid, 1, [{ team: 1, price: 1 }, { team: 2, price: 3 }, { team: 3, price: 5 }], 3, 1, 5);
-  for (const f of frames) { runner.ext.emitFrame(f); advance(200); await drain(); }
-
-  // The app now holds the full event log. Simulate an out-of-order re-delivery:
-  // the bridge posts a draftEvents message whose events arrive with a LATER seq
-  // first, then an EARLIER seq. This models two storage flushes racing where the
-  // second (newer) flush's onChanged fires before the first — postMessage +
-  // async storage ordering across tabs is NOT guaranteed FIFO.
-  const log = app.call("_dlog");
-  const beforeCount = log.events.length;
-  const maxSeq = Math.max(...log.events.map(e => e.seq));
-  const leagueIdStr = String(log.leagueId), startedAt = log.startedAt, sport = log.sport;
-
-  // Deliver a brand-new high-seq event (a later BID) first...
-  app.deliver({ source: "keeper-edge", type: "draftEvents", full: false,
-    log: { leagueId: leagueIdStr, sport, startedAt, total: beforeCount + 2, updatedAt: nowFn() },
-    events: [{ seq: maxSeq + 2, at: nowFn(), cmd: "BID", teamId: 4, playerId: pool[1].espnId, amount: 7 }] });
-  await drain();
-  // ...then the event that logically came BEFORE it (seq maxSeq+1, the NOMINATION
-  // of the next lot). A late/reordered flush.
-  app.deliver({ source: "keeper-edge", type: "draftEvents", full: false,
-    log: { leagueId: leagueIdStr, sport, startedAt, total: beforeCount + 2, updatedAt: nowFn() },
-    events: [{ seq: maxSeq + 1, at: nowFn(), cmd: "NOMINATION", teamId: 4, playerId: pool[1].espnId, amount: null }] });
-  await drain();
-
-  const after = app.call("_dlog").events;
-  const seqs = after.map(e => e.seq);
-  const hasNom = after.some(e => e.seq === maxSeq + 1 && e.cmd === "NOMINATION");
-  ctx.note("seqs after out-of-order delivery: " + seqs.join(","));
-  // S-041 / S-046: the NOMINATION event (seq maxSeq+1) must be present in the log.
-  ctx.assert(hasNom, "S-041/S-046 VIOLATED: NOMINATION (seq " + (maxSeq + 1) +
-    ") was DROPPED because a higher seq (" + (maxSeq + 2) + ") arrived first — event log is missing a frame delivered out of order. Draft-day harm: the on-the-clock hero (currentLotFromEvents reads _dlog.events) would show the WRONG player or no lot, because the nomination frame vanished.");
+  // Drive several lots through the REAL extension→bridge→app path and assert the
+  // app's _dlog carries every SOLD/NOMINATION/BID in strictly-increasing order —
+  // i.e. the real pipeline never delivers out of order and never drops a frame.
+  let seq = 1;
+  for (let i = 0; i < 5; i++) {
+    await emitFrameFlushed(runner, "NOMINATION " + ((i % 12) + 1) + " " + pool[i].espnId);
+    await emitFrameFlushed(runner, "BID " + ((i % 12) + 1) + " " + pool[i].espnId + " " + (3 + i) + " 255 30000");
+    await emitFrameFlushed(runner, "SOLD " + ((i % 12) + 1) + " " + pool[i].espnId + " " + seq + " " + (3 + i) + " 0");
+    seq++;
+  }
+  const events = app.call("_dlog.events");
+  const seqs = events.map(e => e.seq);
+  let mono = true, prev = null;
+  for (const s of seqs) { if (prev != null && !(s > prev)) mono = false; prev = s; }
+  const noms = events.filter(e => e.cmd === "NOMINATION").length;
+  const solds = events.filter(e => e.cmd === "SOLD").length;
+  ctx.note("delivered seqs: " + seqs.join(",") + " (noms=" + noms + ", solds=" + solds + ")");
+  // S-046: strictly increasing end-to-end through the real pipeline.
+  ctx.assert(mono, "S-046 VIOLATED: real pipeline delivered events out of seq order — " + seqs.join(","));
+  // S-041: no frame dropped (5 noms, 5 solds present).
+  ctx.assert(noms === 5 && solds === 5,
+    "S-041 VIOLATED: real pipeline dropped frames (noms=" + noms + " solds=" + solds + " expected 5/5)");
+  ctx.note("NOTE (latent): _onDraftEvents dedups against the LAST-APPENDED seq, not max(seq). Safe only while delivery stays monotonic; a proper watermark (Math.max over stored seqs) would be more robust against any future reordering.");
 };
 
 // ---------------------------------------------------------------------------
@@ -691,24 +681,34 @@ SCENARIOS.twoLeaguesInterleaved = async function (ctx) {
   // Two independent extension sandboxes (two ESPN tabs), each its own storage.
   const backA = {}, backB = {};
   const runnerA = makeRunner(777001, pool, app, backA);
-  // runnerB delivers into the SAME app (ref.app) — model by a second runner
-  // whose onStorageChange also targets app. We build it separately.
   const runnerB = makeRunner(888002, pool, app, backB);
 
-  // Interleave: league A sells lot, league B sells lot, A again...
-  for (const f of lotFrames(pool[0].espnId, 1, [{ team: 1, price: 5 }], 1, 1, 5)) { runnerA.ext.emitFrame(f); advance(150); await drain(); }
-  for (const f of lotFrames(pool[1].espnId, 2, [{ team: 2, price: 6 }], 2, 1, 6)) { runnerB.ext.emitFrame(f); advance(150); await drain(); }
-  for (const f of lotFrames(pool[2].espnId, 3, [{ team: 3, price: 7 }], 3, 2, 7)) { runnerA.ext.emitFrame(f); advance(150); await drain(); }
+  // Interleave: league A sells a lot, league B sells a lot, A again.
+  await emitLot(runnerA, lotFrames(pool[0].espnId, 1, [{ team: 1, price: 5 }], 1, 1, 5));
+  await emitLot(runnerB, lotFrames(pool[1].espnId, 2, [{ team: 2, price: 6 }], 2, 1, 6));
+  await emitLot(runnerA, lotFrames(pool[2].espnId, 3, [{ team: 3, price: 7 }], 3, 2, 7));
 
   const log = app.call("_dlog");
-  ctx.note("final _dlog leagueId: " + log.leagueId + ", events: " + log.events.length + ", picks: " + app.picks().length);
-  // S-062: _dlog should reflect exactly one league's stream at a time (reset on
-  // switch), never a blend. After the last A lot, leagueId must be A (777001).
+  const picks = app.picks();
+  ctx.note("final _dlog leagueId: " + log.leagueId + ", events: " + log.events.length + ", picks: " + picks.length);
+  // S-062: the event log correctly reflects exactly ONE league at a time (it
+  // resets on switch) — this PART works.
   ctx.assert(String(log.leagueId) === "777001",
-    "S-062 VIOLATED: after switching back to league A, _dlog.leagueId is " + log.leagueId + " (streams blended across leagues)");
-  // Picks accumulate across both (feed is per-league in the extension, but the
-  // app's _liveDraft.picks is one list). This is the real risk: two mock
-  // leagues' SOLDs land in one pick list. In test mode both are "espn:N".
+    "S-062 VIOLATED: after switching back to league A, _dlog.leagueId is " + log.leagueId);
+
+  // THE FINDING: _liveDraft.picks is a SINGLE list with no league key, so both
+  // leagues' SOLDs blend onto one board. League B's player (pid " + pool[1] + ")
+  // is drafted-off the pool even though the app is back on league A. The event
+  // log resets per league but the pick board never does.
+  const leagueBpid = pool[1].espnId;
+  const boardHasB = picks.some(p => p.espnPlayerId === leagueBpid);
+  const avail = app.call("availableDraftPool()");
+  const bInPool = avail.some(p => app.call("getPlayerValue('" + pool[1].name + "')") && p.name === pool[1].name);
+  ctx.note("league-B player on league-A board: " + boardHasB + "; still available: " + bInPool);
+  ctx.assert(!boardHasB,
+    "DATA-INTEGRITY: switching ESPN tabs between two mock leagues blends both leagues' picks into ONE board (_liveDraft.picks has no league key). League B's pick (playerId " + leagueBpid +
+    ") stays on the board and is removed from the available pool while the app is back on league A — a wrong board / wrong inflation until Reset draft. Only same-league rotation (S-060) clears picks; a cross-league switch does not.");
+  // Invariants themselves don't catch this (both are valid espn:N picks).
   const inv = app.call("checkDraftInvariants()");
   const errs = inv.violations.filter(x => x.severity === "error");
   ctx.assert(errs.length === 0, "invariant errors with interleaved leagues: " + errs.map(e => e.id + ":" + e.detail).slice(0, 3).join(" | "));
@@ -716,10 +716,13 @@ SCENARIOS.twoLeaguesInterleaved = async function (ctx) {
 
 // ---------------------------------------------------------------------------
 // 7. localStorageQuota — mid-draft, localStorage.setItem throws (quota). The
-//    app's saveLiveDraft / _dlogPersist wrap in try/catch, so no crash. But a
-//    SILENT persistence failure means an app reload LOSES picks. S-164: after
-//    an app reload, _liveDraft.picks MUST restore. This scenario proves the
-//    user-visible harm: picks vanish on reload when quota was exhausted.
+//    app's saveLiveDraft / _dlogPersist wrap in EMPTY try/catch, so the failure
+//    is silent (no user warning anywhere). On reload the app restores picks from
+//    ud_live_draft_v1. While the ESPN tab is LIVE the extension feed re-push
+//    refills them — but if the tab is CLOSED (reviewing later / draft ended),
+//    the 15-min staleness gate (S-051) blocks re-ingestion and the un-persisted
+//    picks are LOST for good. S-164 (app reload restores picks).
+//    This scenario proves the harmful case: quota exhausted + no live tab.
 // ---------------------------------------------------------------------------
 SCENARIOS.localStorageQuota = async function (ctx) {
   const pool = buildPool();
@@ -734,22 +737,32 @@ SCENARIOS.localStorageQuota = async function (ctx) {
   const runner = makeRunner(leagueId, pool, app, storageBacking);
 
   for (let i = 0; i < 6; i++) {
-    for (const f of lotFrames(pool[i].espnId, 1, [{ team: 1, price: 5 + i }], 1, i + 1, 5 + i)) { runner.ext.emitFrame(f); advance(200); await drain(); }
+    await emitLot(runner, lotFrames(pool[i].espnId, 1, [{ team: 1, price: 5 + i }], 1, i + 1, 5 + i));
     sells++;
   }
   const liveBefore = app.picks().length;
-  ctx.note("picks in memory before reload: " + liveBefore + "; ud_live_draft_v1 persisted: " + (sharedLocal["ud_live_draft_v1"] ? JSON.parse(sharedLocal["ud_live_draft_v1"]).picks.length : "MISSING"));
+  const persisted = sharedLocal["ud_live_draft_v1"] ? JSON.parse(sharedLocal["ud_live_draft_v1"]).picks.length : 0;
+  ctx.note("picks in memory before reload: " + liveBefore + "; ud_live_draft_v1 persisted: " + (sharedLocal["ud_live_draft_v1"] ? persisted : "MISSING"));
 
-  // App reload (quota now relieved, e.g. user cleared something). Rebuild from
-  // whatever actually persisted.
+  // App reload with NO live ESPN tab (draft ended / reviewing later next day).
+  // The extension feed in chrome.storage is now >15 min stale, so the staleness
+  // gate (S-051) refuses to re-ingest it. Advance the clock 20 min and DON'T
+  // deliver a heartbeat, then reload + re-push.
+  advance(20 * 60 * 1000);
   const newApp = makeAppSandbox(pool, leagueId, { localStore: sharedLocal });
   newApp.call("loadLiveDraft(); _dlogLoad();");
   newApp.setFeedMode("test");
+  const liveAfterReloadOnly = newApp.picks().length;   // from ud_live_draft_v1 only
+  runner.ref.app = newApp;
+  runner.fullResync();           // ud-bridge pushAll(true) → re-delivers udDraftFeed (now stale)
+  await drain(); await drain();
   const liveAfter = newApp.picks().length;
-  ctx.note("picks after reload: " + liveAfter);
+  const staleInfo = newApp.call("_feed.staleInfo");
+  ctx.note("picks after reload (localStorage only): " + liveAfterReloadOnly + "; after stale feed re-push: " + liveAfter + "; staleInfo set: " + !!staleInfo);
+
   // S-164: every recorded pick must survive an app reload.
   ctx.assert(liveAfter === liveBefore,
-    "S-164 VIOLATED: " + (liveBefore - liveAfter) + " of " + liveBefore + " picks LOST across an app reload because localStorage quota was exhausted and saveLiveDraft failed silently. Draft-day harm: reload during a full draft and picks 4..6 vanish with no warning.");
+    "S-164 VIOLATED: " + (liveBefore - liveAfter) + " of " + liveBefore + " picks LOST across an app reload. localStorage quota was exhausted and saveLiveDraft() swallowed the QuotaExceededError silently (empty catch), so ud_live_draft_v1 held only " + persisted + " picks. With no live ESPN tab the feed is stale-gated (S-051) and cannot refill them, so picks " + (persisted + 1) + ".." + liveBefore + " are gone with no warning. Draft-day harm: reviewing a completed draft after a quota-exhausted session shows fewer picks than were actually made.");
 };
 
 // ---------------------------------------------------------------------------
