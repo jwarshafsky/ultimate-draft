@@ -800,3 +800,22 @@ test("fresh beat heals ONCE (staleInfo cleared, single ping)", () => {
   assertEq(global._feed.staleInfo, null, "gate cleared by the fresh beat");
   assertEq(pings, 1, "heal pings once (debounced)");
 });
+
+
+section("App engines — mock leftovers purged on entering Real mode");
+
+test("setFeedMode('real') clears picks from a non-home stream; manual picks survive", () => {
+  const prevMode = global.getFeedMode();   // async suite may be mid-flight — restore its mode
+  resetDraftState();
+  global._liveDraft.streamKey = "999777:12345";   // a mock stream
+  global._liveDraft.picks.push({ player: "Paul Skenes", team: "espn:3", espnTeamId: 3, price: 40, espnPlayerId: 111, espnSeq: 1 });
+  global.setFeedMode("real");
+  assertEq(global._liveDraft.picks.length, 0, "mock-stream picks purged");
+  assertEq(global._liveDraft.streamKey, null, "stream identity reset");
+  // manual picks with no stream identity are kept
+  global._liveDraft.picks.push({ player: "Manual Guy", team: "jeff", price: 5 });
+  global.setFeedMode("real");
+  assertEq(global._liveDraft.picks.length, 1, "manual (no-stream) picks kept");
+  resetDraftState();   // don't leak state into the async suite still in flight
+  global.setFeedMode(prevMode);
+});

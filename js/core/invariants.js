@@ -386,27 +386,19 @@ function checkDraftInvariants() {
 // Public: short HTML line for the diagnostics panel. Green when clean, amber
 // when only warns, red when any error. Lists up to three violation ids.
 function renderInvariantsLine() {
-  const _esc = (typeof esc === "function") ? esc : (s => String(s == null ? "" : s));
-  const res = _invSafe(() => checkDraftInvariants(), null);
-  if (!res) return '<span class="muted">invariants: (unavailable)</span>';
-  const { violations, counts } = res;
-  const nChecks = 5;   // MONEY / POOL / FEED / MODE / UI
-  if (!violations.length) {
-    return '<span style="color:var(--good);">✅ invariants ok</span> ' +
-      '<span class="muted">(' + nChecks + ' checks)</span>';
+  var r = checkDraftInvariants();
+  var errs = r.violations.filter(function (v) { return v.severity === "error"; });
+  var warns = r.violations.length - errs.length;
+  if (!r.violations.length) {
+    return '<span style="color:var(--good);">✅ invariants ok</span> <span class="dim">(' + (r.counts && r.counts.checks != null ? r.counts.checks + ' checks' : 'all checks') + ')</span>';
   }
-  // Order errors first, then warns; summarize the leading few.
-  const sorted = violations.slice().sort((a, b) =>
-    (a.severity === "error" ? 0 : 1) - (b.severity === "error" ? 0 : 1));
-  const lead = sorted.slice(0, 3)
-    .map(x => x.id + " — " + String(x.detail || "").slice(0, 90))
-    .join("; ");
-  const anyError = counts.error > 0;
-  const icon = anyError ? "⚠" : "△";
-  const color = anyError ? "var(--bad)" : "var(--warn)";
-  const n = violations.length;
-  return '<span style="color:' + color + ';">' + icon + ' ' + n + ' violation' + (n === 1 ? '' : 's') +
-    '</span> <span class="muted">(' + counts.error + ' err, ' + counts.warn + ' warn): ' + _esc(lead) + '</span>';
+  // Summarize: counts per family + the first 3 details, not a 107-line wall.
+  var byId = {};
+  r.violations.forEach(function (v) { byId[v.id] = (byId[v.id] || 0) + 1; });
+  var fams = Object.keys(byId).map(function (k) { return k + '×' + byId[k]; }).join(' · ');
+  var first = r.violations.slice(0, 3).map(function (v) { return v.id + ': ' + v.detail; }).join('<br>');
+  var more = r.violations.length > 3 ? '<br><span class="dim">…and ' + (r.violations.length - 3) + ' more (usually ONE root cause — e.g. leftover mock picks viewed in Real mode → Reset draft or re-enter Real mode)</span>' : '';
+  return '<span style="color:' + (errs.length ? 'var(--bad)' : 'var(--warn)') + ';">⚠ ' + r.violations.length + ' violation' + (r.violations.length === 1 ? '' : 's') + '</span> <span class="dim">(' + fams + ')</span><br><span class="small">' + first + more + '</span>';
 }
 
 // Node/test export (no-op in the browser where `module` is undefined).

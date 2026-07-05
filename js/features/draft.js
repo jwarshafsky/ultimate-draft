@@ -739,6 +739,23 @@ function setFeedMode(m) {
   // "real" = your actual league (1200); clear any test-league override so
   // player-name lookups and team mapping use the real league.
   if (mode === "real" && typeof setLeagueOverride === "function") setLeagueOverride("");
+  // Mock leftovers must never contaminate the real-league context: picks whose
+  // stream identity belongs to a NON-home league are purged on entering Real
+  // (they made the invariant panel scream 107 errors — $2413 of mock spending
+  // attributed to nobody + mock-drafted stars colliding with keeper picks).
+  // Manual picks with no stream identity are kept (could be real-draft entries);
+  // the full mock stream survives in Supabase + the extension's storage anyway.
+  if (mode === "real" && _liveDraft.streamKey) {
+    const home = String(typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + ":";
+    if (!_liveDraft.streamKey.startsWith(home)) {
+      const n = _liveDraft.picks.length;
+      _liveDraft.picks = [];
+      _liveDraft.deleted = {};
+      _liveDraft.streamKey = null;
+      saveLiveDraft();
+      console.log("[draft] cleared " + n + " mock-stream picks on entering Real mode");
+    }
+  }
 }
 // A pick log shows generic "Team N" labels when this is a practice run — either
 // the REST test-league override OR the extension feed set to test mode.
