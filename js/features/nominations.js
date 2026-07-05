@@ -234,7 +234,11 @@ function suggestNominations(opts) {
 function renderNominationsPanel(opts) {
   opts = opts || {};
   const goal = getNomGoal();
-  const suggestions = suggestNominations({ goal });
+  // Pass the live pick list — without it the card suggested already-SOLD
+  // players all draft long (P2R2 dress rehearsal F1).
+  const drafted = (typeof _liveDraft !== "undefined" && Array.isArray(_liveDraft.picks))
+    ? _liveDraft.picks.map(p => p.player) : [];
+  const suggestions = suggestNominations({ goal, draftedNames: drafted });
 
   // Goal selector (buttons wired by the draft views via the .nom-goal class).
   let html = '<div class="nom-goals" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;">';

@@ -50,7 +50,7 @@ function bad(msg) { log.error("BUG PRESENT: " + msg); failed = true; }
   const started = 5000;
   global._liveDraft.streamKey = "1200:" + started;
   global._liveDraft.picks.push(
-    { player: "Aaron Judge", pos: "OF", team: "espn:3", espnTeamId: 3, price: 40, ts: Date.now(), espnPlayerId: 70001, espnSeq: 2 },
+    { player: "Mookie Betts", pos: "OF", team: "espn:3", espnTeamId: 3, price: 40, ts: Date.now(), espnPlayerId: 70001, espnSeq: 2 },   // non-keeper (Judge is keeper-checked in the loader fixture)
     { player: "Gerrit Cole", pos: "SP", team: "espn:7", espnTeamId: 7, price: 25, ts: Date.now(), espnPlayerId: 70002, espnSeq: 3 },
   );
   global.saveLiveDraft();
@@ -80,8 +80,8 @@ function bad(msg) { log.error("BUG PRESENT: " + msg); failed = true; }
 
   // Pool/inflation harm: the two real players are wrongly OFF the board.
   const pool = new Set(global.availableDraftPool().map(p => p.name));
-  if (!pool.has("Aaron Judge") || !pool.has("Gerrit Cole")) {
-    const gone = ["Aaron Judge", "Gerrit Cole"].filter(n => !pool.has(n));
+  if (!pool.has("Mookie Betts") || !pool.has("Gerrit Cole")) {
+    const gone = ["Mookie Betts", "Gerrit Cole"].filter(n => !pool.has(n));
     bad("real players still available are HIDDEN from the draft board (" + gone.join(", ") +
       ") — the leftover mock picks mark them drafted; live inflation counts their $65 as spent.");
   }

@@ -196,8 +196,8 @@ function renderDraft() {
   // === Inflation curve + Spending pace ===
   if (_liveDraft.picks.length >= 2) {
     html += '<div class="grid cols-2">';
-    html += renderInflationCurve();
-    html += renderSpendingPace();
+    if (typeof renderInflationCurve === "function") html += renderInflationCurve();
+    if (typeof renderSpendingPace === "function") html += renderSpendingPace();
     html += '</div>';
   }
 
@@ -739,23 +739,55 @@ function setFeedMode(m) {
   // "real" = your actual league (1200); clear any test-league override so
   // player-name lookups and team mapping use the real league.
   if (mode === "real" && typeof setLeagueOverride === "function") setLeagueOverride("");
-  // Mock leftovers must never contaminate the real-league context: picks whose
-  // stream identity belongs to a NON-home league are purged on entering Real
-  // (they made the invariant panel scream 107 errors — $2413 of mock spending
-  // attributed to nobody + mock-drafted stars colliding with keeper picks).
-  // Manual picks with no stream identity are kept (could be real-draft entries);
-  // the full mock stream survives in Supabase + the extension's storage anyway.
-  if (mode === "real" && _liveDraft.streamKey) {
-    const home = String(typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + ":";
-    if (!_liveDraft.streamKey.startsWith(home)) {
-      const n = _liveDraft.picks.length;
-      _liveDraft.picks = [];
-      _liveDraft.deleted = {};
-      _liveDraft.streamKey = null;
-      saveLiveDraft();
-      console.log("[draft] cleared " + n + " mock-stream picks on entering Real mode");
-    }
+  if (mode === "real") reconcileDraftContext();
+}
+
+// Real mode's guarantees are LOAD-TIME, not click-time (P2R2 aged-F1/F2,
+// interact-F1): aged/synced state must never cold-start a contaminated or
+// silently-mocked real context.
+//   1. S-003: no test-league override may survive into Real mode (an aged
+//      synced override otherwise turns the real draft into a generic mock —
+//      Team N, $260, ZERO keeper exclusions — with no visual warning).
+//   2. Mock-context picks must never survive into Real mode. The tell is the
+//      picks THEMSELVES (recorded on generic "espn:N" teams in test mode) —
+//      not the stream's league id, because a mock can run ON the home league
+//      (ESPN's pre-draft mock lobby) and a league-prefix check would spare it.
+//      Foreign-league streams are purged too. Manual real picks (real owner
+//      ids, no espn: prefix) always survive. The mock's full record stays in
+//      Supabase + extension storage.
+// Called at app load (below), from setFeedMode('real'), and safe to call any
+// time. Returns true if anything changed.
+function reconcileDraftContext() {
+  if (getFeedMode() !== "real") return false;
+  let changed = false;
+  if (typeof leagueOverrideActive === "function" && leagueOverrideActive() &&
+      typeof setLeagueOverride === "function") {
+    setLeagueOverride("");
+    changed = true;
+    console.log("[draft] cleared an aged test-league override (Real mode is league " +
+      (typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + " only)");
   }
+  const home = String(typeof UD_HOME_LEAGUE_ID !== "undefined" ? UD_HOME_LEAGUE_ID : 1200) + ":";
+  const hasMockPicks = _liveDraft.picks.some(p => typeof p.team === "string" && p.team.indexOf("espn:") === 0);
+  const foreignStream = !!(_liveDraft.streamKey && !_liveDraft.streamKey.startsWith(home));
+  if (hasMockPicks || foreignStream) {
+    const n = _liveDraft.picks.length;
+    _liveDraft.picks = [];
+    _liveDraft.deleted = {};
+    _liveDraft.streamKey = null;
+    // The mock's event log goes with its picks — leaving it produced 40 stale
+    // "SOLD with no matching pick" invariant warnings at the worst possible
+    // moment: right before the real draft (P2R2 dress rehearsal F2).
+    if (typeof _dlog !== "undefined") {
+      _dlog.events = []; _dlog.leagueId = null; _dlog.startedAt = 0;
+      _dlog.lastEventAt = 0; _dlog.initState = null;
+      try { localStorage.removeItem(_DLOG_LS_KEY); } catch (e) {}
+    }
+    saveLiveDraft();
+    changed = true;
+    console.log("[draft] purged " + n + " mock-context picks + event log (Real mode)");
+  }
+  return changed;
 }
 // A pick log shows generic "Team N" labels when this is a practice run — either
 // the REST test-league override OR the extension feed set to test mode.
@@ -839,7 +871,7 @@ document.addEventListener("click", (e) => {
     downloadDraftLog();
   } else if (t.id === "feed-resync") {
     _feedRequestSync();
-  } else if (t.id === "feed-clear-stale") {
+  } else if (t.id === "feed-clear-stale" || t.id === "feed-clear-stale-diag") {
     if (confirm("Clear the captured feed? Removes the old capture from the extension's storage and this app's event log. Your recorded picks are NOT touched (use Reset draft for that).")) {
       clearCapturedFeed();
     }
@@ -955,6 +987,12 @@ function _onDraftEvents(msg) {
     _liveDraft.picks = [];
     _liveDraft.deleted = {};
     _liveDraft.streamKey = streamKey;
+    // The rotated-away draft's retained artifacts must die with it, or the
+    // next tab-open "heal" re-applies the OLD draft's picks onto the fresh
+    // board (P2R2 interact-F2).
+    _feed.staleInfo = null;
+    _feed.staleRetained = null;
+    _dlog.initState = null;
     saveLiveDraft();
     if (currentView === "draft") renderDraft();
   } else if (!_liveDraft.streamKey) {
@@ -1108,7 +1146,12 @@ function _fixPlaceholderNames() {
   }
   if (fixed) {
     saveLiveDraft();
-    if (currentView === "draft") renderDraft();
+    if (currentView === "draft") {
+      // Mid-lot in Draft Mode, patch in place — a full rebuild eats search
+      // caret/scroll (same policy as _onDraftInit).
+      if (typeof _draftModeOn === "function" && _draftModeOn() && typeof updateDraftModeLive === "function") updateDraftModeLive();
+      else renderDraft();
+    }
   }
 }
 
@@ -1155,6 +1198,21 @@ async function _applyDraftFeed(feed) {
   }
   _feed.staleInfo = null;
   _feed.staleRetained = null;
+
+  // Stream-identity guard (mirror of _onDraftEvents' rotation): a feed from a
+  // DIFFERENT stream than the current picks must not merge into them — the
+  // events path owns rotation and will clear + re-accept it moments later.
+  // Tolerant of sub-minute startedAt skew: older bridge versions stamped the
+  // feed and event log independently (milliseconds apart), and a strict
+  // comparison would silently drop every legitimate pick until the extension
+  // is reloaded. Real rotations differ by an hour or more.
+  if (feed.startedAt && _liveDraft.streamKey) {
+    const parts = _liveDraft.streamKey.split(":");
+    const skLeague = parts[0], skStarted = Number(parts[1]) || 0;
+    const leagueDiffers = String(feed.leagueId) !== skLeague;
+    const startedFar = skStarted && Math.abs(Number(feed.startedAt) - skStarted) > 60 * 1000;
+    if (leagueDiffers || startedFar) return;
+  }
 
   _feed.connected = true;
   _feed.leagueId = feed.leagueId;
@@ -1390,7 +1448,7 @@ function _feedDiagnosticsHtml() {
   html += '<div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">';
   html += '<button class="btn ghost" id="feed-download-log" style="padding:3px 10px; font-size:11px;">⬇ Download event log</button>';
   html += '<button class="btn ghost" id="feed-resync" style="padding:3px 10px; font-size:11px;">↻ Re-sync from extension</button>';
-  html += '<button class="btn ghost" id="feed-clear-stale" style="padding:3px 10px; font-size:11px;">🗑 Clear captured feed</button>';
+  html += '<button class="btn ghost" id="feed-clear-stale-diag" style="padding:3px 10px; font-size:11px;">🗑 Clear captured feed</button>';
   html += '</div></details>';
   return html;
 }
@@ -1451,5 +1509,17 @@ setInterval(() => {
     _feed.extPresent = false;
     if (typeof currentView !== "undefined" && currentView === "draft") renderDraft();
   }
-  if (typeof currentView !== "undefined" && currentView === "draft") _updateFeedActivityDom();
+  if (typeof currentView !== "undefined" && currentView === "draft") {
+    _updateFeedActivityDom();
+    // Keep the cockpit's time-derived bits (pause banner, feed-age chips)
+    // moving during quiet spells — nothing else re-renders without frames
+    // (P2R2 dress rehearsal F3).
+    if (typeof _draftModeOn === "function" && _draftModeOn() && typeof updateDraftModeLive === "function") updateDraftModeLive();
+  }
 }, 10000);
+
+// Enforce Real mode's guarantees at LOAD, not just on click — aged/cloud-synced
+// mock state (picks, league override) must be reconciled before the first
+// render. Lives at the end of the file so every const it touches is initialized
+// (an earlier placement hit FEED_MODE_KEY's temporal dead zone and died silently).
+try { reconcileDraftContext(); } catch (e) { console.warn("[draft] load reconcile failed:", e && e.message); }

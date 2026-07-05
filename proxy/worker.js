@@ -592,6 +592,11 @@ async function captureDraftSocket(url, env) {
 
   // 3) Decode each captured frame (ESPN's draft socket is a TEXT protocol).
   const decoded = frames.map((b, i) => decodeDraftFrame(b, i));
+  // TOKEN frames embed the SWID/session token — redact like wsUrl (this is a
+  // gated research route, but captured payloads get pasted around).
+  for (const d of decoded) {
+    if (d && typeof d.text === "string" && /^TOKEN\b/i.test(d.text)) d.text = "TOKEN <redacted>";
+  }
   const picks = decoded.filter(d => d.pick).map(d => d.pick);
   return {
     ok: true,

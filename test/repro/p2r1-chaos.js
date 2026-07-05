@@ -887,8 +887,11 @@ SCENARIOS.modeFlipMidStream = async function (ctx) {
   for (const f of lotFrames(pool[2].espnId, 1, [{ team: 1, price: 12 }], 1, 3, 12)) { runner.ext.emitFrame(f); advance(200); await drain(); }
   const picksAfterReal = app.picks().length;
   ctx.note("picks after flipping to real + mock SOLD: " + picksAfterReal + " (was " + picksAfterTest + ")");
-  ctx.assert(picksAfterReal === picksAfterTest,
-    "S-008 VIOLATED: after flipping to REAL, a non-1200 mock league's SOLD was still ingested (" + picksAfterTest + " → " + picksAfterReal + ")");
+  // AMENDED SPEC (Round 5/6): entering Real PURGES mock-context picks (they'd
+  // contaminate the real board), and the mock league's SOLD must not ingest —
+  // so the correct post-flip count is ZERO, not the old "unchanged".
+  ctx.assert(picksAfterReal === 0,
+    "S-008/purge VIOLATED: after flipping to REAL, expected 0 picks (mock purged + mock SOLD rejected), got " + picksAfterReal);
 
   // Flip back to test — the mock stream should ingest again.
   app.setFeedMode("test");

@@ -49,6 +49,14 @@ async function loadDraftDollars() {
     const r = await fetch(DRAFT_DOLLARS_URL, { cache: "no-store" });
     if (!r.ok) throw new Error("draft dollars → " + r.status);
     const data = _parseDraftDollars(await r.text());
+    // Google's CSV endpoint can serve an HTML error/sign-in page WITH HTTP 200;
+    // "parsing" it yields {} — committing that would silently wipe every
+    // team's budget adjustment (and the cache) while all indicators stay
+    // green (P2R2). An empty parse over a non-empty map is garbage: keep the
+    // cache and surface it.
+    if (!Object.keys(data).length && Object.keys(_draftDollars).length) {
+      throw new Error("empty/garbage parse — keeping cached adjustments");
+    }
     _draftDollars = data;
     _draftDollarsAt = new Date().toISOString();
     localStorage.setItem(DRAFT_DOLLARS_KEY, JSON.stringify({ data, at: _draftDollarsAt }));

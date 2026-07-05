@@ -391,7 +391,7 @@ function _dmHero() {
     html += '<div id="dm-interest">' + _dmInterestHtml(name) + '</div>';
     const temp = lot ? lotTemperature(lot) : null;
     html += '<div id="dm-temp">' + (temp ? _dmTempChip(temp) : '') + '</div>';
-    if (lot && lot.idle) html += '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>';
+    html += '<div id="dm-idle">' + (lot && lot.idle ? '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>' : '') + '</div>';
   }
   html += '</div>';
 
@@ -716,7 +716,7 @@ function _dmStandingsHtml() {
 
 // --- bottom zone ---
 function _dmBottom() {
-  let html = '<details class="dm-bottom"><summary class="small muted" style="cursor:pointer;">Pick tracker · teams · call-ups · feed</summary>';
+  let html = '<details class="dm-bottom"><summary class="small muted" style="cursor:pointer;">Pick tracker · teams · feed</summary>';
   html += '<div style="margin-top:8px;">';
   html += renderDraftFeedPanel();
   html += '<div class="card" style="padding:8px;"><h3 style="margin:0 0 6px;">Teams</h3>' + renderTeamStrip() + '</div>';
@@ -749,6 +749,8 @@ function updateDraftModeLive() {
     if (reco) reco.innerHTML = _dmRecoHtml(lot.name, lot);
     const interest = document.getElementById("dm-interest");
     if (interest) interest.innerHTML = _dmInterestHtml(lot.name);
+    const idleEl = document.getElementById("dm-idle");
+    if (idleEl) idleEl.innerHTML = lot.idle ? '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>' : '';
   }
   const chips = document.getElementById("dm-feedchips");
   if (chips) chips.innerHTML = _dmFeedChips();

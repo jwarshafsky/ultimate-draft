@@ -386,6 +386,11 @@ function checkDraftInvariants() {
 // Public: short HTML line for the diagnostics panel. Green when clean, amber
 // when only warns, red when any error. Lists up to three violation ids.
 function renderInvariantsLine() {
+  // Everything below lands in innerHTML; violation details embed feed-sourced
+  // player names — the ONE external surface the sweep found unescaped.
+  var _e = (typeof esc === "function") ? esc : function (x) {
+    return String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  };
   var r = checkDraftInvariants();
   var errs = r.violations.filter(function (v) { return v.severity === "error"; });
   var warns = r.violations.length - errs.length;
@@ -395,8 +400,8 @@ function renderInvariantsLine() {
   // Summarize: counts per family + the first 3 details, not a 107-line wall.
   var byId = {};
   r.violations.forEach(function (v) { byId[v.id] = (byId[v.id] || 0) + 1; });
-  var fams = Object.keys(byId).map(function (k) { return k + '×' + byId[k]; }).join(' · ');
-  var first = r.violations.slice(0, 3).map(function (v) { return v.id + ': ' + v.detail; }).join('<br>');
+  var fams = _e(Object.keys(byId).map(function (k) { return k + '×' + byId[k]; }).join(' · '));
+  var first = r.violations.slice(0, 3).map(function (v) { return _e(v.id + ': ' + v.detail); }).join('<br>');
   var more = r.violations.length > 3 ? '<br><span class="dim">…and ' + (r.violations.length - 3) + ' more (usually ONE root cause — e.g. leftover mock picks viewed in Real mode → Reset draft or re-enter Real mode)</span>' : '';
   return '<span style="color:' + (errs.length ? 'var(--bad)' : 'var(--warn)') + ';">⚠ ' + r.violations.length + ' violation' + (r.violations.length === 1 ? '' : 's') + '</span> <span class="dim">(' + fams + ')</span><br><span class="small">' + first + more + '</span>';
 }

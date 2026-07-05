@@ -56,11 +56,13 @@ function logDraftEvents(meta, events, isMock) {
     DRAFT_LOG.uploadedSeq = cached?.uploadedSeq || 0;
   }
   const wasMock = DRAFT_LOG.isMock;
-  DRAFT_LOG.isMock = !!isMock;
-  // Mode flipped mid-session (e.g. test → real): fix the session row, or the
-  // real draft gets permanently mislabeled as a mock in the tendency DB.
-  if (DRAFT_LOG.sessionId && wasMock !== DRAFT_LOG.isMock && typeof supabaseClient !== "undefined") {
-    supabaseClient.from("draft_sessions").update({ is_mock: DRAFT_LOG.isMock }).eq("id", DRAFT_LOG.sessionId)
+  // is_mock is ONE-WAY per session: a mock accidentally started in test mode
+  // can be upgraded to real (test→real correction), but a finished REAL draft
+  // must never be relabeled a mock just because the feed mode was flipped to
+  // Test afterward in the same tab (P2R2 aged-F3).
+  if (!isMock) DRAFT_LOG.isMock = false;
+  if (DRAFT_LOG.sessionId && wasMock && !DRAFT_LOG.isMock && typeof supabaseClient !== "undefined") {
+    supabaseClient.from("draft_sessions").update({ is_mock: false }).eq("id", DRAFT_LOG.sessionId)
       .then(() => {}, () => {});
   }
   for (const e of events) {
