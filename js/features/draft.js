@@ -153,6 +153,7 @@ function renderDraft() {
     badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
   }
   setStatus("draft", _liveDraft.picks.length + " picks", _liveDraft.picks.length > 0 ? "ok" : "");
+  if (typeof ensureRotowireNews === "function") ensureRotowireNews();   // player news, best-effort
 
   // Fullscreen Draft Mode (draft-mode.js) — the draft-day cockpit.
   if (typeof _draftModeOn === "function" && _draftModeOn()) {
@@ -239,6 +240,7 @@ function renderDraftControls() {
   html += '<b>Live Draft</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded</span>';
   html += '<span style="flex:1;"></span>';
   html += '<button class="btn primary" id="draft-mode-enter" title="Fullscreen draft-day cockpit (Esc exits)">⛶ Draft Mode</button>';
+  html += '<button class="btn ghost" id="draft-debrief"' + (n ? '' : ' disabled') + ' title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="draft-undo"' + (n ? '' : ' disabled') + '>↶ Undo last pick</button>';
   html += '<button class="btn ghost danger" id="draft-reset"' + (n ? '' : ' disabled') + '>↺ Reset draft</button>';
   html += '</div>';
@@ -277,6 +279,7 @@ function renderOnTheClockPanel() {
     if (sc?.xERA) html += ' · <span class="muted">xERA</span> ' + sc.xERA.toFixed(2);
     html += '</div>';
     if (sig) html += '<div class="otc-signal ' + sig.signal + '">' + (sig.signal === "buy" ? "📈 BUY signal" : "📉 SELL signal") + ': ' + esc(sig.reason) + '</div>';
+    if (typeof renderPlayerNewsBlock === "function") html += renderPlayerNewsBlock(c.player);
     html += '</div>';
     html += '<div class="otc-bid">';
     html += '<div class="otc-bid-label">Current Bid</div>';
@@ -471,6 +474,7 @@ function wireDraftHandlers() {
     });
   });
   if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
+  if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   // Nominate via input — validated against the pool so a typo can't create a
   // ghost player (which would corrupt live inflation).
   document.getElementById("otc-nominate")?.addEventListener("click", () => {
@@ -525,6 +529,7 @@ function wireDraftHandlers() {
   updateOtcMaxBidHint();
   // Prominent draft controls
   document.getElementById("draft-mode-enter")?.addEventListener("click", () => setDraftMode(true));
+  document.getElementById("draft-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
   document.getElementById("draft-undo")?.addEventListener("click", () => {
     if (_liveDraft.picks.length) { _liveDraft.picks.pop(); saveLiveDraft(); renderDraft(); }
   });
@@ -570,6 +575,7 @@ function wireDraftHandlers() {
     saveLiveDraft();
     renderDraft();
   });
+  if (_liveDraft.current && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(_liveDraft.current.player);
   document.getElementById("otc-sold")?.addEventListener("click", soldCurrent);
   document.getElementById("otc-cancel")?.addEventListener("click", () => {
     _liveDraft.current = null;

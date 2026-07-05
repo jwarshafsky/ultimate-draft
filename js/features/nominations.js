@@ -37,10 +37,25 @@ function teamOpenSlotProfile() {
   return profile;
 }
 
-// Builds a ranked nomination list. The strategy mix is the same as the mock
-// engine's owner profile, but the suggestions are tailored to YOUR team.
+// Draft-day nomination goals. Each goal selects and re-ranks a different slice
+// of the candidate set. "all" is the legacy blended list (drain > dump > blocker).
+const NOM_GOALS = [
+  { id: "all",       label: "All",            kinds: null },
+  { id: "getmyguy",  label: "Get my guy",     kinds: ["target"] },
+  { id: "drain",     label: "Drain a rival",  kinds: ["drain", "dump"] },
+  { id: "run",       label: "Start a run",    kinds: ["run"] },
+  { id: "dump",      label: "Dump overvalued", kinds: ["overvalue"] },
+  { id: "burn",      label: "Burn clock",     kinds: ["burn"] },
+];
+let _nomGoal = "all";
+function getNomGoal() { return _nomGoal; }
+function setNomGoal(g) { _nomGoal = NOM_GOALS.some(x => x.id === g) ? g : "all"; }
+
+// Builds a ranked nomination list. opts.goal (see NOM_GOALS) selects which
+// tactical slice to surface; without it, the legacy blended list is returned.
 function suggestNominations(opts) {
   opts = opts || {};
+  const goal = opts.goal || null;
   const me = getMyTeam();
   if (!me) return [];
   const myProfile = teamOpenSlotProfile()[me.id];
@@ -129,30 +144,116 @@ function suggestNominations(opts) {
     }
   }
 
-  // Sort: by kind priority (drain > dump > blocker), then by drain count
+  const has = (name) => suggestions.find(s => s.player.name === name);
+  const myOpenPos = new Set(Object.entries(myProfile.openNeed).filter(([_, n]) => n > 0).map(([p]) => p));
+
+  // 4. TARGET ("get my guy") — players you flagged as targets or that fit an
+  // open slot and are worth the money. What you nominate to actually buy.
+  const flagged = (typeof getFlaggedPlayers === "function") ? new Set(getFlaggedPlayers("target").map(f => _nomNk(f.name || f.key))) : new Set();
+  for (const p of pool.slice(0, 120)) {
+    const isFlagged = flagged.has(_nomNk(p.name));
+    const fits = myOpenPos.has(p.posKey);
+    if ((isFlagged || (fits && p.value >= 8)) && !has(p.name)) {
+      suggestions.push({
+        kind: "target", player: p,
+        reason: isFlagged ? "Your flagged target" : "Fits your open " + p.posKey + " · $" + p.value.toFixed(0) + " value",
+        drainsTeams: 0, priceTarget: Math.round(inflatedValue(p, inflation)),
+      });
+    }
+  }
+
+  // 5. OVERVALUE ("dump overvalued") — market (NFBC) well above our model, and
+  // you don't need the position: nominate to let someone else overpay.
+  if (typeof getNfbc === "function") {
+    for (const p of pool.slice(0, 120)) {
+      const nf = getNfbc(p.name);
+      const inf = inflatedValue(p, inflation);
+      if (nf && nf.avg != null && nf.avg - inf >= 5 && !myOpenPos.has(p.posKey) && !has(p.name)) {
+        suggestions.push({
+          kind: "overvalue", player: p,
+          reason: "Market $" + nf.avg.toFixed(0) + " vs our $" + inf.toFixed(0) + " — let someone overpay",
+          drainsTeams: 0, priceTarget: Math.round(inf), marketDelta: nf.avg - inf,
+        });
+      }
+    }
+  }
+
+  // 6. RUN ("start a run") — top available at a contested position; nominating
+  // it early gets the position bid up while you decide whether to jump in.
+  for (const pos of ["C", "SS", "2B", "3B", "1B", "OF", "SP", "RP"]) {
+    const top = pool.filter(p => p.posKey === pos)[0];
+    if (!top) continue;
+    const demand = others.filter(o => (o.openNeed[pos] || 0) > 0).length;
+    if (demand >= 4 && top.value >= 10 && !has(top.name)) {
+      suggestions.push({
+        kind: "run", player: top,
+        reason: "Top " + pos + " left; " + demand + " teams need it — nominating starts a run",
+        drainsTeams: demand, priceTarget: Math.round(inflatedValue(top, inflation)),
+      });
+    }
+  }
+
+  // 7. BURN ("burn clock") — cheap filler to run the clock / bleed a $1 off
+  // someone without exposing a player you care about.
+  for (const p of pool.filter(p => p.value >= 1 && p.value <= 3)) {
+    if (myOpenPos.has(p.posKey) || has(p.name)) continue;
+    suggestions.push({
+      kind: "burn", player: p, reason: "Low-stakes filler — nominate to pass the clock",
+      drainsTeams: 0, priceTarget: 1,
+    });
+    if (suggestions.filter(s => s.kind === "burn").length >= 6) break;
+  }
+
+  // Goal filter + re-rank.
+  const goalDef = goal ? NOM_GOALS.find(g => g.id === goal) : null;
+  let out = suggestions;
+  if (goalDef && goalDef.kinds) {
+    out = suggestions.filter(s => goalDef.kinds.includes(s.kind));
+    if (goal === "getmyguy") out.sort((a, b) => b.player.value - a.player.value);
+    else if (goal === "dump") out.sort((a, b) => (b.marketDelta || 0) - (a.marketDelta || 0));
+    else out.sort((a, b) => b.drainsTeams - a.drainsTeams || b.player.value - a.player.value);
+    return out.slice(0, 20);
+  }
+
+  // Legacy blended order: drain > dump > blocker (target/overvalue/run/burn are
+  // goal-only, not in the default blend), then by drain count.
   const kindOrder = { drain: 0, dump: 1, blocker: 2 };
-  suggestions.sort((a, b) => {
+  out = suggestions.filter(s => s.kind in kindOrder);
+  out.sort((a, b) => {
     if (kindOrder[a.kind] !== kindOrder[b.kind]) return kindOrder[a.kind] - kindOrder[b.kind];
     return b.drainsTeams - a.drainsTeams;
   });
-
-  return suggestions.slice(0, 30);
+  return out.slice(0, 30);
 }
 
 // Helper to render a nomination panel (used inside the Live Draft view and the
-// Overview as a sidebar). Returns an HTML string.
-function renderNominationsPanel() {
-  const suggestions = suggestNominations();
-  if (!suggestions.length) {
-    return '<div class="muted small">Nomination suggestions will appear here once projections are loaded and your keepers are set.</div>';
+// Overview as a sidebar). Returns an HTML string. Includes a goal selector that
+// re-ranks the suggestions to the current tactical intent.
+function renderNominationsPanel(opts) {
+  opts = opts || {};
+  const goal = getNomGoal();
+  const suggestions = suggestNominations({ goal });
+
+  // Goal selector (buttons wired by the draft views via the .nom-goal class).
+  let html = '<div class="nom-goals" style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px;">';
+  for (const g of NOM_GOALS) {
+    html += '<button class="btn nom-goal ' + (goal === g.id ? 'primary' : 'ghost') + '" data-nom-goal="' + g.id + '" style="padding:2px 8px; font-size:11px;">' + esc(g.label) + '</button>';
   }
-  let html = '<table style="font-size: 12px;"><thead><tr>';
+  html += '</div>';
+
+  if (!suggestions.length) {
+    html += '<div class="muted small">' + (goal === "all"
+      ? "Nomination suggestions appear once projections are loaded and your keepers are set."
+      : "No strong “" + esc(NOM_GOALS.find(g => g.id === goal)?.label || goal) + "” candidates right now — try another goal.") + '</div>';
+    return html;
+  }
+  const colors = { drain: "var(--bad)", dump: "var(--warn)", blocker: "var(--accent)", target: "var(--good)", overvalue: "var(--warn)", run: "var(--accent)", burn: "var(--text-3)" };
+  html += '<table style="font-size: 12px;"><thead><tr>';
   html += '<th>Kind</th><th>Player</th><th>Pos</th><th class="num">Target $</th><th>Why</th></tr></thead><tbody>';
   for (const s of suggestions) {
-    const colors = { drain: "var(--bad)", dump: "var(--warn)", blocker: "var(--accent)" };
     html += '<tr>';
-    html += '<td><span class="kbd" style="color: ' + colors[s.kind] + '; font-size: 10px;">' + s.kind.toUpperCase() + '</span></td>';
-    html += '<td>' + esc(s.player.name) + '</td>';
+    html += '<td><span class="kbd" style="color: ' + (colors[s.kind] || "var(--text-2)") + '; font-size: 10px;">' + s.kind.toUpperCase() + '</span></td>';
+    html += '<td><span class="nom-pick" data-name="' + esc(s.player.name) + '" style="cursor:pointer;" title="Start auction">' + esc(s.player.name) + '</span></td>';
     html += '<td>' + esc(s.player.posKey) + '</td>';
     html += '<td class="num">$' + s.priceTarget + '</td>';
     html += '<td class="small muted">' + esc(s.reason) + '</td>';
@@ -160,4 +261,16 @@ function renderNominationsPanel() {
   }
   html += '</tbody></table>';
   return html;
+}
+
+// Wire the goal buttons + click-to-nominate. Call after any render that
+// includes renderNominationsPanel(); rerenderFn refreshes the host view.
+function wireNominationsPanel(rerenderFn) {
+  document.querySelectorAll(".nom-goal").forEach(b => b.addEventListener("click", () => {
+    setNomGoal(b.dataset.nomGoal);
+    if (typeof rerenderFn === "function") rerenderFn();
+  }));
+  document.querySelectorAll(".nom-pick").forEach(el => el.addEventListener("click", () => {
+    if (typeof startAuction === "function") startAuction(el.dataset.name, 1);
+  }));
 }

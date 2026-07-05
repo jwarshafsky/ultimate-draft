@@ -54,6 +54,112 @@ function currentLotFromEvents() {
   };
 }
 
+// "Who else wants him" — opponents likely to bid, by roster fit + budget.
+// Year-1 heuristic (no history yet): an opponent is interested if they have an
+// open slot at the player's position AND the money to bid competitively. Score
+// blends position-need severity with spending power, so the owner who both
+// needs the slot and can pay floats to the top.
+function ownerInterest(playerName, opts) {
+  opts = opts || {};
+  const val = getPlayerValue(playerName);
+  if (!val || typeof computeLiveTeamStates !== "function") return [];
+  const posKey = val.posKey;
+  const target = (typeof POS_TARGETS !== "undefined" && POS_TARGETS[posKey]) || 1;
+  const inflation = computeLiveInflation();
+  const inflated = (typeof inflatedValue === "function") ? inflatedValue(val, inflation) : val.value;
+  const states = computeLiveTeamStates();
+  const meId = (typeof getMyTeam === "function") ? getMyTeam()?.id : null;
+  const out = [];
+  for (const st of Object.values(states)) {
+    if (st.teamId === meId || st.slotsRemaining <= 0) continue;
+    const have = st.posCounts[posKey] || 0;
+    const need = Math.max(0, target - have);
+    // Flex spots (MI/CI/UTIL/OF) count multi-eligibility loosely: even a "full"
+    // starter can want a strong bat for UTIL, so give a small baseline interest.
+    const baseline = (posKey === "OF" || posKey === "SP" || posKey === "RP") ? 0.4 : 0.15;
+    const needScore = need > 0 ? 1 + need * 0.5 : baseline;
+    if (st.maxBid < Math.min(inflated * 0.5, 8) && need === 0) continue;   // can't/won't compete
+    const canAfford = st.maxBid >= inflated;
+    const moneyFactor = Math.min(1.6, st.maxBid / Math.max(6, inflated));   // rich teams weigh more
+    const score = needScore * moneyFactor;
+    const bits = [];
+    if (need > 0) bits.push("needs " + posKey + (need > 1 ? " ×" + need : ""));
+    else bits.push(posKey + " depth");
+    bits.push("$" + st.maxBid + " max" + (canAfford ? "" : " (short)"));
+    out.push({ ownerName: st.ownerName, teamId: st.teamId, score, need, maxBid: st.maxBid, canAfford, reason: bits.join(", ") });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, opts.limit || 3);
+}
+
+function _dmInterestHtml(name) {
+  const interest = ownerInterest(name, { limit: 3 });
+  if (!interest.length) return '';
+  let html = '<div class="small" style="margin-top:6px;"><span class="muted">👀 Likely interested:</span> ';
+  html += interest.map(i =>
+    '<span style="white-space:nowrap;">' + esc(i.ownerName) +
+    ' <span class="' + (i.canAfford ? 'muted' : 'dim') + '">(' + esc(i.reason) + ')</span></span>'
+  ).join(' · ');
+  html += '</div>';
+  return html;
+}
+
+// Roster fit — a fast, local score (no AI) blending position need + category
+// need + value. Answers "should THIS roster want him?" per row.
+// Per-category single-player "notable" thresholds (roughly a clear plus in a
+// 12-team league) for the cats we actually score.
+const _FIT_NOTABLE = { R: 85, HR: 25, RBI: 85, SB: 15, QS: 10, K: 165, SV_HLD: 12 };
+let _fitCtx = null, _fitCtxKey = -1;
+function _fitContext() {
+  const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+  if (!me) return null;
+  // Recompute only when my roster/picks change (cheap invalidation key).
+  const key = (typeof _liveDraft !== "undefined" ? _liveDraft.picks.length : 0) * 1000 + (getMyRoster().length);
+  if (_fitCtx && _fitCtxKey === key) return _fitCtx;
+  const st = (typeof computeLiveTeamStates === "function") ? computeLiveTeamStates()[me.id] : null;
+  const openPos = new Set();
+  if (st) for (const [pos, tgt] of Object.entries((typeof POS_TARGETS !== "undefined" ? POS_TARGETS : {}))) {
+    if ((st.posCounts[pos] || 0) < tgt) openPos.add(pos);
+  }
+  // Weak categories = bottom-half projected rank (rank is 1=best..12=worst).
+  const cats = (typeof projectTeamCategories === "function") ? projectTeamCategories(getMyRoster()) : null;
+  const weak = new Set();
+  if (cats) for (const [c, r] of Object.entries(cats.ranks)) if (r >= 7) weak.add(c);
+  _fitCtx = { openPos, weak, slotsRemaining: st ? st.slotsRemaining : 99 };
+  _fitCtxKey = key;
+  return _fitCtx;
+}
+
+function rosterFit(playerName) {
+  const ctx = _fitContext();
+  if (!ctx) return null;
+  const val = getPlayerValue(playerName);
+  if (!val) return null;
+  let score = 0; const parts = [];
+  // Position need
+  if (ctx.openPos.has(val.posKey)) { score += 2; parts.push("fills " + val.posKey); }
+  else if ((_DM_FLEX[val.posKey === "SS" || val.posKey === "2B" ? "MI" : val.posKey === "1B" || val.posKey === "3B" ? "CI" : "UTIL"] || []).includes(val.posKey) && ctx.openPos.has("UTIL")) { score += 0.5; }
+  // Category need — does he clear a notable bar in one of my weak cats?
+  const tot = (typeof aggregateCats === "function") ? aggregateCats([playerName]) : null;
+  if (tot) {
+    for (const c of ["SB", "HR", "R", "RBI", "QS", "K", "SV_HLD"]) {
+      if (!ctx.weak.has(c)) continue;
+      const v = c === "SV_HLD" ? tot.SV_HLD : tot[c];
+      if (v != null && _FIT_NOTABLE[c] && v >= _FIT_NOTABLE[c]) { score += 1; parts.push("+" + (c === "SV_HLD" ? "SV+H" : c)); }
+    }
+  }
+  if (!score) return null;
+  return { score, label: parts.slice(0, 3).join(" "), strong: score >= 3 };
+}
+
+function _dmFitBadge(name) {
+  const f = rosterFit(name);
+  if (!f) return '';
+  const color = f.strong ? "var(--good)" : "var(--accent)";
+  return ' <span class="small" title="Roster fit: ' + esc(f.label) + '" style="color:' + color + ';">' +
+    (f.strong ? '★' : '•') + ' ' + esc(f.label) + '</span>';
+}
+
 // Room temperature — is the room fighting for this player or sitting on hands?
 // Heuristic v1 (bid cadence + distinct bidders + price vs market); calibrate
 // against recorded draft data once we have some.
@@ -166,6 +272,7 @@ function computeLiveProjStandings() {
 function renderDraftMode(root, inflation) {
   document.body.classList.add("draft-mode");
   if (typeof _ensureEspnNames === "function") _ensureEspnNames();   // names + injury flags, best-effort
+  if (typeof ensureRotowireNews === "function") ensureRotowireNews();   // player news, best-effort
   let html = '<div class="dm-wrap">';
   html += _dmTopBar(inflation);
   html += _dmHero();
@@ -189,6 +296,7 @@ function _dmTopBar(inflation) {
   if (st) html += '<span class="small">My budget <b>$' + st.budget + '</b> · ' + st.slotsRemaining + ' slots · max bid <b style="color:var(--accent);">$' + st.maxBid + '</b></span>';
   html += '<span id="dm-feedchips" class="small" style="display:inline-flex; gap:10px;">' + _dmFeedChips() + '</span>';
   html += '<span style="flex:1;"></span>';
+  html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit (manual entry)</button>';
   html += '</div>';
   return html;
@@ -212,8 +320,9 @@ function _dmHero() {
   const name = lot ? lot.name : (manual ? manual.player : null);
   let html = '<div class="dm-hero">';
 
-  // --- player card ---
-  html += '<div class="card dm-otc" id="dm-otc">';
+  // --- player card --- (data-player is the stable change-detection key; the
+  // visible name now carries an injury chip so its textContent can't be used)
+  html += '<div class="card dm-otc" id="dm-otc" data-player="' + esc(name || "") + '">';
   if (!name) {
     html += '<div class="otc-label">On the Clock</div>';
     html += '<div class="dm-player muted">Waiting for a nomination…</div>';
@@ -237,6 +346,8 @@ function _dmHero() {
     html += '</div>';
     html += '<div class="otc-meta small">' + _dmProjLine(name) + '</div>';
     if (sig) html += '<div class="otc-signal ' + sig.signal + '">' + (sig.signal === "buy" ? "📈" : "📉") + ' ' + esc(sig.reason) + '</div>';
+    if (typeof renderPlayerNewsBlock === "function") html += renderPlayerNewsBlock(name);
+    html += '<div id="dm-interest">' + _dmInterestHtml(name) + '</div>';
     const temp = lot ? lotTemperature(lot) : null;
     html += '<div id="dm-temp">' + (temp ? _dmTempChip(temp) : '') + '</div>';
   }
@@ -305,7 +416,27 @@ function _dmRecoHtml(name, lot) {
   html += '</div>';
   html += '<div class="small" style="margin-top:4px; color:' + vcolor + ';"><b>' + verdict + '</b> <span class="muted">at $' + high + '</span></div>';
   html += '<div class="muted small" style="margin-top:4px;">' + esc(r.rationale) + '</div>';
+  const tactic = _bidTactic(name, high, r, lot);
+  if (tactic) html += '<div class="small" style="margin-top:4px; color:var(--accent);">💡 ' + esc(tactic) + '</div>';
   return html;
+}
+
+// One tactical nudge (kept deliberately light): break a round-number wall, or
+// a shutdown jump to the field's max when you want the player and can afford it.
+function _bidTactic(name, high, r, lot) {
+  if (!r || high >= r.walk) return null;   // only when you'd still bid
+  // Round-number resistance: rooms stall at $10/$20/$30.
+  if (high >= 10 && high % 10 === 0 && high + 1 <= r.maxBid) {
+    return "Bid $" + (high + 1) + " to break the $" + high + " wall.";
+  }
+  // Shutdown: if the interested field's top max bid is below yours, a jump to
+  // their max ends it — nobody can legally top it.
+  const interest = (typeof ownerInterest === "function") ? ownerInterest(name, { limit: 5 }) : [];
+  const fieldMax = interest.reduce((m, i) => Math.max(m, i.maxBid || 0), 0);
+  if (fieldMax > 0 && fieldMax >= high && fieldMax < r.maxBid && fieldMax <= r.stretch && interest.length >= 1) {
+    return "Shutdown: a jump to $" + fieldMax + " tops the field's max — no one can counter.";
+  }
+  return null;
 }
 
 // --- available players board ---
@@ -332,8 +463,45 @@ function _dmPoolRows(inflation) {
   return pool;
 }
 
+// Scan the available pool for tier cliffs: a position whose best remaining tier
+// is down to its last 1-2 players with a real value drop to the next tier — the
+// "last elite SS on the board" scarcity signal.
+function tierCliffs() {
+  if (typeof tierForValue !== "function") return [];
+  const pool = availableDraftPool();
+  const byPos = {};
+  for (const p of pool) (byPos[p.posKey] = byPos[p.posKey] || []).push(p);
+  const cliffs = [];
+  for (const pos of ["C", "1B", "2B", "SS", "3B", "OF", "SP", "RP"]) {
+    const list = (byPos[pos] || []).slice().sort((a, b) => b.value - a.value);
+    if (list.length < 2) continue;
+    const topTier = tierForValue(list[0].value);
+    if (topTier === "T5") continue;   // no cliff worth calling at the bottom
+    const inTier = list.filter(p => tierForValue(p.value) === topTier);
+    const next = list.find(p => tierForValue(p.value) !== topTier);
+    const gap = next ? list[inTier.length - 1].value - next.value : 0;
+    if (inTier.length <= 2 && gap >= 4) {
+      cliffs.push({ pos, tier: topTier, countLeft: inTier.length, names: inTier.map(p => p.name), gap: Math.round(gap), nextVal: next ? Math.round(next.value) : null });
+    }
+  }
+  // Tightest cliffs first (fewest left, then biggest drop).
+  cliffs.sort((a, b) => a.countLeft - b.countLeft || b.gap - a.gap);
+  return cliffs;
+}
+
+function _dmTierCliffBanner() {
+  const cliffs = tierCliffs();
+  if (!cliffs.length) return '';
+  const shown = cliffs.slice(0, 4).map(c =>
+    '<span style="white-space:nowrap;"><b style="color:var(--warn);">' + c.countLeft + ' ' + c.tier + ' ' + esc(c.pos) + '</b> left' +
+    ' <span class="muted">(then −$' + c.gap + ')</span></span>'
+  ).join(' · ');
+  return '<div class="small" style="margin-bottom:8px; padding:5px 8px; border:1px solid var(--warn); background:rgba(210,153,34,.08);">⛰️ <b>Tier cliffs:</b> ' + shown + '</div>';
+}
+
 function _dmBoard(inflation) {
   let html = '<div class="card">';
+  html += _dmTierCliffBanner();
   html += '<div class="dm-board-head">';
   html += '<div class="seg dm-seg">' + _DM_MODES.map(m =>
     '<button class="btn' + (_dmState.boardMode === m ? ' primary' : ' ghost') + '" data-dm-mode="' + m + '">' + (m === "HIT" ? "Hitters" : m === "PIT" ? "Pitchers" : m) + '</button>').join("") + '</div>';
@@ -358,16 +526,16 @@ function _dmBoard(inflation) {
 
 function _dmTable(players, inflation) {
   if (!players.length) return '<p class="muted small">nobody left here.</p>';
-  let html = '<table class="dm-table"><thead><tr><th>Player</th><th>Pos</th><th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">Δmkt</th><th></th></tr></thead><tbody>';
+  let html = '<table class="dm-table"><thead><tr><th>Player</th><th>Fit</th><th>Pos</th><th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">Δmkt</th><th></th></tr></thead><tbody>';
   for (const p of players) {
     const inf = inflatedValue(p, inflation);
     const nfbc = getNfbc(p.name);
     const delta = nfbc?.avg != null ? nfbc.avg - inf : null;
-    const tcls = (typeof classifyPriceVsTargets === "function") ? classifyPriceVsTargets(p.name, inf) : null;
-    html += '<tr' + (tcls === "dream" ? ' style="background:rgba(63,185,80,.08);"' : '') + '>';
+    const fit = (typeof rosterFit === "function") ? rosterFit(p.name) : null;
+    html += '<tr' + (fit && fit.strong ? ' style="background:rgba(63,185,80,.08);"' : '') + '>';
     html += '<td><span class="player-name" data-player="' + esc(p.name) + '" style="cursor:pointer;">' + esc(p.name) + '</span>' +
-      (typeof renderTagIcons === "function" ? renderTagIcons(p.name) : '') +
-      (typeof renderTargetBadge === "function" ? renderTargetBadge(p.name, inf) : '') + '</td>';
+      (typeof renderTagIcons === "function" ? renderTagIcons(p.name) : '') + '</td>';
+    html += '<td class="small">' + (fit ? '<span title="' + esc(fit.label) + '" style="color:' + (fit.strong ? 'var(--good)' : 'var(--accent)') + ';">' + (fit.strong ? '★ ' : '• ') + esc(fit.label) + '</span>' : '<span class="dim">—</span>') + '</td>';
     html += '<td>' + esc(p.posKey) + '</td>';
     html += '<td class="num">$' + p.value.toFixed(0) + '</td>';
     html += '<td class="num"><b>$' + inf.toFixed(0) + '</b></td>';
@@ -438,8 +606,8 @@ function updateDraftModeLive() {
   const otc = document.getElementById("dm-otc");
   if (!otc) return;
   // Player changed (new nomination / sold) → full re-render for fresh panels.
-  const shownName = otc.querySelector(".dm-player")?.textContent || "";
-  const lotName = lot ? lot.name : (_liveDraft.current ? _liveDraft.current.player : "Waiting for a nomination…");
+  const shownName = otc.getAttribute("data-player") || "";
+  const lotName = lot ? lot.name : (_liveDraft.current ? _liveDraft.current.player : "");
   if (shownName !== lotName) { renderDraft(); return; }
   if (lot) {
     const bidline = document.getElementById("dm-bidline");
@@ -450,6 +618,8 @@ function updateDraftModeLive() {
     if (temp) { const t = lotTemperature(lot); temp.innerHTML = t ? _dmTempChip(t) : ''; }
     const reco = document.getElementById("dm-reco");
     if (reco) reco.innerHTML = _dmRecoHtml(lot.name, lot);
+    const interest = document.getElementById("dm-interest");
+    if (interest) interest.innerHTML = _dmInterestHtml(lot.name);
   }
   const chips = document.getElementById("dm-feedchips");
   if (chips) chips.innerHTML = _dmFeedChips();
@@ -457,6 +627,10 @@ function updateDraftModeLive() {
 
 function wireDraftMode() {
   document.getElementById("dm-exit")?.addEventListener("click", () => setDraftMode(false));
+  document.getElementById("dm-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
+  // Kick the AI injury-return estimate for the player on the clock (if hurt).
+  const otcName = document.getElementById("dm-otc")?.getAttribute("data-player");
+  if (otcName && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(otcName);
   document.querySelectorAll("[data-dm-mode]").forEach(b => b.addEventListener("click", () => {
     _dmState.boardMode = b.dataset.dmMode;
     renderDraft();
@@ -486,5 +660,6 @@ function wireDraftMode() {
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => { _liveDraft.showAllPicks = !_liveDraft.showAllPicks; renderDraft(); });
   if (typeof wireCallupsPanel === "function") wireCallupsPanel(renderDraft);
+  if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   if (typeof wireAiPanel === "function") wireAiPanel();
 }

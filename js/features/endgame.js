@@ -182,6 +182,99 @@ function endgameNominationRecommendations() {
   };
 }
 
+// Endgame optimizer — a target-first plan: given my remaining targets and
+// budget, what order to nominate them and what to pay, so I land the ones I
+// want before the field's money (or mine) runs out. Different from the
+// safe/drain/block lists above, which are opportunistic; this one is a plan to
+// execute MY shortlist.
+function endgameOptimizer() {
+  const states = computeLiveTeamStates();
+  const me = getMyTeam();
+  if (!me) return { state: "no-team" };
+  const myState = states[me.id];
+  if (!myState || myState.slotsRemaining <= 0) return { state: "done" };
+
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  const drafted = new Set((typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).map(p => _nk(p.player)));
+  const off = (typeof draftExcludedNames === "function") ? draftExcludedNames() : new Set();
+  const available = getValues().filter(p => p.value > -2 && !drafted.has(_nk(p.name)) && !off.has(_nk(p.name)));
+
+  // My remaining targets: flagged 'target' players still available, PLUS the
+  // best available player at each of my open positions (so the plan is useful
+  // even before I've flagged anyone).
+  const flagged = (typeof getFlaggedPlayers === "function") ? new Set(getFlaggedPlayers("target").map(f => _nk(f.name || f.key))) : new Set();
+  const openPos = {};
+  for (const [pos, tgt] of Object.entries((typeof POS_TARGETS !== "undefined" ? POS_TARGETS : {}))) {
+    openPos[pos] = Math.max(0, tgt - (myState.posCounts[pos] || 0));
+  }
+  const chosen = new Map();
+  for (const p of available) if (flagged.has(_nk(p.name))) chosen.set(_nk(p.name), p);
+  for (const pos of Object.keys(openPos)) {
+    if (openPos[pos] <= 0) continue;
+    const bestAtPos = available.filter(p => p.posKey === pos).sort((a, b) => b.value - a.value).slice(0, openPos[pos] + 1);
+    for (const p of bestAtPos) if (p.value >= 3) chosen.set(_nk(p.name), p);
+  }
+
+  // Price + competition for each target.
+  const targets = [];
+  for (const p of chosen.values()) {
+    const comp = competitionProfile(p, states, me.id, { minBid: 2 });
+    const safePrice = Math.max(1, Math.min(comp.maxCompetitorBid + 1, myState.maxBid));
+    targets.push({
+      player: p, comp, safePrice,
+      competitors: comp.competitorsAtMinBid,
+      canAfford: safePrice <= myState.maxBid,
+      // Risk of losing him = how many rivals can outbid you now. High risk →
+      // nominate SOON (before their money tightens further isn't the point —
+      // rather, before someone else nominates him and you're reacting). Low
+      // risk (only you can pay) → safe to wait, grab cheap late.
+      urgency: comp.competitorsAtMinBid,
+    });
+  }
+  // Nominate the contested ones first (get them locked while you have max
+  // flexibility); the ones only you can afford drop to the bottom (wait, $1).
+  targets.sort((a, b) => b.urgency - a.urgency || b.player.value - a.player.value);
+
+  const totalSafe = targets.reduce((s, t) => s + t.safePrice, 0);
+  const feasible = totalSafe <= myState.maxBid + (myState.slotsRemaining - 1);   // rough: safe prices vs budget w/ $1 fillers
+  const budgetForTargets = myState.budget;
+
+  // High-value leftovers nobody can outbid you for → $1 grabs to prioritize.
+  const freebies = available
+    .filter(p => p.value >= 4 && !chosen.has(_nk(p.name)))
+    .map(p => ({ player: p, comp: competitionProfile(p, states, me.id, { minBid: 2 }) }))
+    .filter(x => x.comp.maxCompetitorBid === 0)
+    .sort((a, b) => b.player.value - a.player.value)
+    .slice(0, 6);
+
+  return { state: "active", myState, targets, totalSafe, feasible, budgetForTargets, freebies };
+}
+
+function renderEndgameOptimizer() {
+  const r = endgameOptimizer();
+  if (r.state !== "active" || !r.targets.length) return '';
+  let html = '<div class="card" style="border-color: rgba(79,142,247,.4);">';
+  html += '<h3>🎯 Target plan <span class="muted small">nominate in this order · $' + r.myState.maxBid + ' max bid, ' + r.myState.slotsRemaining + ' slots</span></h3>';
+  html += '<p class="small ' + (r.feasible ? 'muted' : 'bad') + '">Your shortlist costs ~$' + r.totalSafe + ' at safe prices' +
+    (r.feasible ? ' — fits your budget.' : ' — over budget; drop or discount the lowest-priority ones.') + '</p>';
+  html += '<table style="font-size:12px;"><thead><tr><th class="num">#</th><th>Player</th><th>Pos</th><th class="num">Value</th><th class="num">Safe $</th><th class="num">Rivals</th><th>When</th></tr></thead><tbody>';
+  r.targets.forEach((t, i) => {
+    const when = t.competitors === 0 ? '<span class="good">wait — grab cheap</span>' : t.competitors >= 3 ? '<span class="bad">nominate now</span>' : 'soon';
+    html += '<tr><td class="num">' + (i + 1) + '</td>';
+    html += '<td><span class="nom-pick" data-name="' + esc(t.player.name) + '" style="cursor:pointer;" title="Start auction">' + esc(t.player.name) + '</span></td>';
+    html += '<td>' + esc(t.player.posKey) + '</td><td class="num">$' + t.player.value.toFixed(0) + '</td>';
+    html += '<td class="num ' + (t.canAfford ? 'good' : 'bad') + '">$' + t.safePrice + '</td>';
+    html += '<td class="num">' + t.competitors + '</td><td class="small">' + when + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  if (r.freebies.length) {
+    html += '<p class="small" style="margin-top:6px;"><b>Free for $1</b> (nobody can outbid you): ' +
+      r.freebies.map(f => '<span class="nom-pick" data-name="' + esc(f.player.name) + '" style="cursor:pointer; color:var(--good);">' + esc(f.player.name) + '</span>').join(", ") + '</p>';
+  }
+  html += '</div>';
+  return html;
+}
+
 function renderEndgamePanel() {
   const endgameActive = isEndgame();
   if (!endgameActive) {
@@ -193,7 +286,11 @@ function renderEndgamePanel() {
     return '<div class="card"><h2>Endgame</h2><p class="good">Your roster is full. Watch for opponents to fill out.</p></div>';
   }
 
-  let html = '<div class="card" style="border-color: rgba(248,81,73,.4);">';
+  let html = '';
+  // Target-first plan comes before the opportunistic lists.
+  html += renderEndgameOptimizer();
+
+  html += '<div class="card" style="border-color: rgba(248,81,73,.4);">';
   html += '<h2>🔥 Endgame Assistant <span class="muted small">$' + result.myState.maxBid + ' max bid · ' + result.myState.slotsRemaining + ' slots open</span></h2>';
 
   // Safe nominate

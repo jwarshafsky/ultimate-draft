@@ -73,6 +73,8 @@ export default {
         body = await proxyEspnHistory(url, env);
       } else if (url.pathname === "/fangraphs/xwoba") {
         body = await proxyFangraphsXwoba(url);
+      } else if (url.pathname === "/rotowire/news") {
+        body = await proxyRotowireNews(url);
       } else if (url.pathname === "/claude" && request.method === "POST") {
         body = await proxyClaude(request, env);
       } else {
@@ -368,6 +370,58 @@ async function proxyEspnPlayers(url, env) {
 // FanGraphs' page/CSV download is bot-protected, but this JSON API endpoint
 // responds to plain requests. month=1000 + startdate/enddate = custom range;
 // month=0 (no dates) = full season.
+// Rotowire baseball news feed (rotowire.com/baseball/news.php). Returns the
+// ~25 most recent player news items parsed server-side to JSON so the client
+// doesn't ship 350KB of HTML. Free fields only (player, headline, position,
+// injury body-part, timestamp, factual news body) — the "Analysis" block is
+// paywalled and deliberately not scraped.
+async function proxyRotowireNews(url) {
+  const target = "https://www.rotowire.com/baseball/news.php";
+  const r = await fetch(target, {
+    headers: {
+      "accept": "text/html",
+      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    },
+    cf: { cacheTtl: 180, cacheEverything: true },   // edge-cache 3 min; the feed moves slowly
+  });
+  if (!r.ok) throw new Error("Rotowire " + r.status);
+  const html = await r.text();
+  const items = parseRotowireNews(html);
+  return { items, fetchedAt: Date.now(), count: items.length };
+}
+
+function _rwText(block, pat) {
+  const m = block.match(pat);
+  if (!m) return null;
+  const noTags = m[1].replace(/<[^>]+>/g, "");
+  return _decodeEntities(noTags).replace(/\s+/g, " ").trim() || null;
+}
+function _decodeEntities(s) {
+  return s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;|&apos;|&rsquo;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n));
+}
+function parseRotowireNews(html) {
+  const parts = html.split(/<div class="news-update((?:\s+is-injured)?)">/);
+  const items = [];
+  for (let i = 1; i < parts.length - 1; i += 2) {
+    const mod = parts[i];
+    const b = parts[i + 1].slice(0, 3000);
+    const player = _rwText(b, /news-update__player-link[^>]*>([\s\S]*?)<\/a>/);
+    if (!player) continue;
+    items.push({
+      player,
+      injured: /is-injured/.test(mod),
+      headline: _rwText(b, /news-update__headline[^>]*>([\s\S]*?)<\/a>/),
+      pos: _rwText(b, /news-update__pos">([\s\S]*?)<\/b>/),
+      inj: _rwText(b, /news-update__inj">([\s\S]*?)<\/div>/),
+      ts: _rwText(b, /news-update__timestamp">([\s\S]*?)<\/div>/),
+      news: (_rwText(b, /news-update__news">([\s\S]*?)<\/div>/) || "").slice(0, 400),
+    });
+  }
+  return items;
+}
+
 async function proxyFangraphsXwoba(url) {
   const season = url.searchParams.get("season") || String(new Date().getFullYear());
   const start = url.searchParams.get("startdate") || "";
