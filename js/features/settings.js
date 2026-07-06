@@ -216,12 +216,13 @@ function renderSettings() {
   html += '<input id="set-proxy-key" type="password" placeholder="paste the proxy key" value="' + esc(ESPN.proxyKey) + '" style="width: 100%;" autocomplete="off">';
   html += '<div class="small muted" style="margin-top: 6px;">' + (ESPN.proxyKey ? '✓ Key set' : '<span class="warn">No key — proxy requests will be rejected once the worker requires one</span>') + '</div>';
 
-  // Test-league override — for live-draft dry runs against a throwaway league.
-  html += '<h3 style="margin-top: 12px;">Test league ID</h3>';
-  html += '<p class="muted small">Point the app at a throwaway ESPN league (e.g. to dry-run live-draft polling against a practice auction). Leave blank for the real league (1200). Saved with the same button.</p>';
-  html += '<input id="set-league-id" type="number" placeholder="1200 (default — The League)" value="' + (leagueOverrideActive() ? ESPN.leagueId : '') + '" style="width: 100%;">';
+  // (The old "Test league ID" override field was retired 2026-07-05 — ESPN
+  // mocks arm via the Draft Setup lobby's league-URL box + feed mode 'test',
+  // and UD-native practice mocks are ephemeral. reconcileDraftContext clears
+  // any aged override on entering Real mode. A residual override is still
+  // surfaced below so it can't hide.)
   if (leagueOverrideActive()) {
-    html += '<div class="small" style="margin-top: 6px; color: var(--warn);">⚠ TEST MODE — every tab (Standings, Keepers, Live Draft, History) is reading league ' + ESPN.leagueId + ', NOT The League. Clear this field and Save when done testing.</div>';
+    html += '<div class="small" style="margin-top: 10px; color: var(--warn);">⚠ TEST MODE — a league override (' + ESPN.leagueId + ') is active: every tab is reading that league, NOT The League. <a href="#" id="set-clear-override">Clear it</a>, or switch the Live Draft feed to Real.</div>';
   }
   html += '</div>';
 
@@ -298,7 +299,11 @@ function wireSettingsHandlers() {
   document.getElementById("set-proxy-save")?.addEventListener("click", () => {
     setProxyUrl(document.getElementById("set-proxy-url").value);
     setProxyKey(document.getElementById("set-proxy-key")?.value);
-    setLeagueOverride(document.getElementById("set-league-id")?.value);
+    renderSettings();
+  });
+  document.getElementById("set-clear-override")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    setLeagueOverride("");
     renderSettings();
   });
   document.getElementById("set-save")?.addEventListener("click", () => {
