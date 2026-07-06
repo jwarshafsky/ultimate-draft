@@ -1414,14 +1414,22 @@ function renderDraftFeedPanel() {
 
   // Extension detected? / ESPN draft tab open? — two auto-detected indicators.
   let detect = '<div class="small" style="margin-top:6px; display:flex; gap:16px; flex-wrap:wrap;">';
-  detect += '<span>' + dot(_feed.extPresent, "var(--good)") + (_feed.extPresent ? "Keeper Edge connected" : "Keeper Edge not detected") + '</span>';
+  const _mockRunning = typeof mockFeedActive === "function" && mockFeedActive();
+  detect += '<span>' + dot(_mockRunning || _feed.extPresent, "var(--good)") +
+    (_mockRunning ? "Practice mock — no ESPN tab needed" : _feed.extPresent ? "Keeper Edge connected" : "Keeper Edge not detected") + '</span>';
   detect += '<span>' + dot(tabOpen, "var(--good)") +
     (tabOpen ? "ESPN draft tab open — " + esc(_feed.tabSport === "ffl" ? "football" : _feed.tabSport === "flb" ? "baseball" : (_feed.tabSport || "?")) + " · league " + esc(String(_feed.tabLeagueId || "?"))
              : "No ESPN draft tab open") + '</span>';
   detect += '</div>';
 
   let status, cls;
-  if (_feed.staleInfo && !_feed.connected) {
+  if (_mockRunning) {
+    // A UD-native mock feeds the cockpit directly (no extension, no ESPN tab) —
+    // never show the "reload Keeper Edge / reopen this tab" prompt for it.
+    cls = "good";
+    status = "● Practice mock running — <b>" + (_feed.count || _liveDraft.picks.length) + "</b> pick" +
+      ((_feed.count || _liveDraft.picks.length) === 1 ? "" : "s") + " so far (in-memory rehearsal; no ESPN tab needed).";
+  } else if (_feed.staleInfo && !_feed.connected) {
     const age = Math.round((Date.now() - _feed.staleInfo.at) / 3600000);
     cls = "muted";
     status = "Last capture: league <b>" + esc(String(_feed.staleInfo.leagueId)) + "</b> — " + _feed.staleInfo.count +
@@ -1628,7 +1636,11 @@ function downloadDraftLog() {
 setInterval(() => {
   // An extension reload/crash kills both content-script bridges silently —
   // expire the "connected" dot when we haven't heard anything for 60s.
-  if (_feed.extPresent && _feed.extAt && Date.now() - _feed.extAt > 60000) {
+  // Don't expire the extension dot during a UD-native mock: it feeds the cockpit
+  // directly (no extension heartbeat), so a stale extAt is expected and must not
+  // flip the panel to a false "reload Keeper Edge" state (R14).
+  if (_feed.extPresent && _feed.extAt && Date.now() - _feed.extAt > 60000 &&
+      !(typeof mockFeedActive === "function" && mockFeedActive())) {
     _feed.extPresent = false;
     if (typeof currentView !== "undefined" && currentView === "draft") renderDraft();
   }

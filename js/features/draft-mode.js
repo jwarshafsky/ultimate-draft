@@ -340,6 +340,12 @@ function _dmFeedChips() {
   const dot = (on, color) => '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (on ? color : "var(--text-3)") + ';margin-right:4px;vertical-align:middle;"></span>';
   const lastFrame = Math.max(_feed.lastFrameAt || 0, _dlog.lastEventAt || 0);
   const quiet = lastFrame ? (Date.now() - lastFrame) / 1000 : null;
+  // A UD-native mock has no extension/ESPN-tab — show a clean practice-mock chip
+  // instead of grey ext/tab dots + "mode off" (R14).
+  if (typeof mockFeedActive === "function" && mockFeedActive()) {
+    return '<span>' + dot(true, "var(--good)") + '🤖 practice mock</span>' +
+      '<span>' + dot(lastFrame && quiet < 30, "var(--good)") + (lastFrame ? 'feed ' + Math.round(quiet) + 's' : 'starting…') + '</span>';
+  }
   const stalled = (typeof _feedStallState === "function") ? _feedStallState().level === "stalled"
     : (draftTabOpen() && lastFrame && quiet > 30);
   let s = '<span>' + dot(_feed.extPresent, "var(--good)") + 'ext</span>';
@@ -465,16 +471,25 @@ function _dmBidMeter(lot) {
   const fair = _dmFairValue(lot.name);
   if (!fair) return '';
   const bid = Math.max(1, lot.highBid || 1);
-  const ceiling = Math.max(Math.ceil(fair * 1.8), Math.ceil(bid * 1.1), 6);
+  // Your personal thresholds live on the meter as ticks (so the separate "Your
+  // Call" numbers aren't duplicated): the white tick = fair = walk-away, and an
+  // accent tick = your stretch price for this player.
+  const reco = (typeof recommendBid === "function") ? recommendBid(lot.name) : null;
+  const stretch = (reco && reco.stretch && reco.stretch > fair) ? reco.stretch : null;
+  const ceiling = Math.max(Math.ceil(fair * 1.8), Math.ceil((stretch || 0) * 1.12), Math.ceil(bid * 1.1), 6);
   const pct = (v) => Math.max(0, Math.min(100, (v / ceiling) * 100));
   const bargainEnd = pct(fair * 0.85), fairMid = pct(fair), overpayStart = pct(fair * 1.15), bidPct = pct(bid);
   const grad = 'linear-gradient(90deg, var(--good) 0%, var(--good) ' + bargainEnd.toFixed(1) +
     '%, var(--warn) ' + fairMid.toFixed(1) + '%, var(--bad) ' + overpayStart.toFixed(1) + '%, var(--bad) 100%)';
   let h = '<div style="position:relative; height:13px; border-radius:7px; margin:8px 0 3px; background:' + grad + '; box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);">';
-  h += '<div title="fair $' + Math.round(fair) + '" style="position:absolute; left:' + fairMid.toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.6);"></div>';
+  h += '<div title="fair / walk-away $' + Math.round(fair) + '" style="position:absolute; left:' + fairMid.toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.7);"></div>';
+  if (stretch) h += '<div title="your stretch $' + Math.round(stretch) + '" style="position:absolute; left:' + pct(stretch).toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:var(--accent);"></div>';
   h += '<div style="position:absolute; left:' + bidPct.toFixed(1) + '%; top:-6px; transform:translateX(-50%); font-size:12px; line-height:1; text-shadow:0 1px 2px rgba(0,0,0,.6);">▼</div>';
   h += '</div>';
-  h += '<div class="small" style="display:flex; justify-content:space-between;"><span style="color:var(--good);">bargain</span><span style="color:var(--warn);">fair $' + Math.round(fair) + '</span><span style="color:var(--bad);">overpay</span></div>';
+  h += '<div class="small" style="display:flex; justify-content:space-between; gap:6px;"><span style="color:var(--good);">bargain</span>' +
+    '<span><span style="color:var(--warn);">walk $' + Math.round(fair) + '</span>' +
+    (stretch ? ' <span style="color:var(--accent);">· stretch $' + Math.round(stretch) + '</span>' : '') + '</span>' +
+    '<span style="color:var(--bad);">overpay</span></div>';
   return h;
 }
 
@@ -492,13 +507,12 @@ function _dmRecoHtml(name, lot) {
   if (high < r.walk) { verdict = "room to bid"; vcolor = "var(--good)"; }
   else if (high < r.stretch) { verdict = "stretch territory"; vcolor = "var(--warn)"; }
   else { verdict = "walk away"; vcolor = "var(--bad)"; }
-  let html = '<div class="dm-reco-nums">';
-  html += '<div><span class="muted small">walk-away</span><br><b class="dm-bignum">$' + r.walk + '</b></div>';
-  html += '<div><span class="muted small">stretch</span><br><b class="dm-bignum" style="color:var(--warn);">$' + r.stretch + '</b></div>';
-  html += '<div><span class="muted small">my max</span><br><b class="dm-bignum muted">' + (r.maxBid != null ? '$' + r.maxBid : '<span title="set your team on Draft Setup">—</span>') + '</b></div>';
-  html += '</div>';
-  html += '<div class="small" style="margin-top:4px; color:' + vcolor + ';"><b>' + verdict + '</b> <span class="muted">at $' + high + '</span></div>';
-  html += '<div class="muted small" style="margin-top:4px;">' + esc(r.rationale) + '</div>';
+  // The walk-away/stretch prices now live on the bid meter as ticks, so this
+  // panel is the DECISION: a big verdict word + your budget cap + the why.
+  let html = '<div style="color:' + vcolor + '; font-size:22px; font-weight:800; line-height:1.1;">' + verdict + '</div>';
+  html += '<div class="small muted" style="margin-top:3px;">at <b style="color:var(--text);">$' + high + '</b>' +
+    (r.maxBid != null ? ' · your budget max <b style="color:var(--text);">$' + r.maxBid + '</b>' : '') + '</div>';
+  html += '<div class="muted small" style="margin-top:6px;">' + esc(r.rationale) + '</div>';
   const tactic = _bidTactic(name, high, r, lot);
   if (tactic) html += '<div class="small" style="margin-top:4px; color:var(--accent);">💡 ' + esc(tactic) + '</div>';
   return html;
