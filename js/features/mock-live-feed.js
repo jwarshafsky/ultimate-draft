@@ -528,16 +528,53 @@ function _icCockpitRefresh(s) {
 }
 function pauseMockFeed() {
   if (!_mockFeed.active || _mockFeed.finished || _mockFeed.paused) return;
+  // Interactive practice draft: freeze the live auction engine (bots + timer),
+  // not the scripted watch-mode playback.
+  if (_mockFeed.interactive) {
+    if (typeof pauseInteractiveMock === "function") pauseInteractiveMock();
+    _mfRender();
+    return;
+  }
   _mockFeed.paused = true;
   _mockFeed.gen++;   // invalidate the in-flight timer
   _mfRender();
 }
 function resumeMockFeed() {
   if (!_mockFeed.active || _mockFeed.finished || !_mockFeed.paused) return;
+  if (_mockFeed.interactive) {
+    if (typeof resumeInteractiveMock === "function") resumeInteractiveMock();
+    _mfRender();
+    return;
+  }
   _mockFeed.paused = false;
   _mockFeed.gen++;
   _mfRender();
   _mfScheduleNext();
+}
+
+// ---------------------------------------------------------------------------
+// Interactive flow controls — public wrappers the skip-control delegation calls.
+// Each drives the live auction engine (mock-interactive.js) synchronously, then
+// does ONE full re-render (the engine's own onInteractiveChange render is
+// suppressed during the burst via _mockFeed.pumping). No-ops for watch mode /
+// no interactive mock.
+function finishInteractivePick() {
+  if (!_mockFeed.active || !_mockFeed.interactive || _mockFeed.finished || _mockFeed.paused) return;
+  if (typeof _icFinishCurrentPick === "function") _icFinishCurrentPick(false);   // Your Call: don't auto-pass a single "finish this pick"
+  _icLastKey = "";   // force the guarded refresh to re-render
+  _mfRender();
+}
+function skipInteractivePicks(n) {
+  if (!_mockFeed.active || !_mockFeed.interactive || _mockFeed.finished || _mockFeed.paused) return;
+  if (typeof _icSkipPicks === "function") _icSkipPicks(n);
+  _icLastKey = "";
+  _mfRender();
+}
+function skipInteractiveToEnd() {
+  if (!_mockFeed.active || !_mockFeed.interactive || _mockFeed.finished || _mockFeed.paused) return;
+  if (typeof _icSkipToEnd === "function") _icSkipToEnd();
+  _icLastKey = "";
+  _mfRender();
 }
 // "Stop" ends playback but KEEPS the result on screen (active) so Jeff can Save
 // or Clear it — it does not tear down the ephemeral context (that would let a
@@ -812,6 +849,13 @@ function _mfSkipControls(compact) {
   const pad = compact ? "3px 8px" : "5px 10px";
   const ff = (act, label) => '<button class="btn ghost" data-mockfeed="' + act + '" style="width:auto; padding:' + pad + ';">' + label + '</button>';
   const sk = (n) => '<button class="btn ghost" data-mockskip="' + n + '" style="width:auto; padding:' + pad + ';">⏭ ' + n + '</button>';
+  // Interactive practice draft: the same flow controls, routed to the live
+  // engine. "⏭ Pick" finishes the current pick; presets skip N; "⏭⏭ To end"
+  // fast-forwards the rest of the draft.
+  if (_mockFeed.interactive) {
+    const presets = compact ? [5, 10, 25] : [5, 10, 25];
+    return ff("skipnom", "⏭ Pick") + presets.map(sk).join("") + ff("skipend", "⏭⏭ To end");
+  }
   const presets = compact ? [10, 25] : [5, 10, 25, 50];
   return ff("skipnom", "⏭ Lot") + presets.map(sk).join("") + ff("skipend", "⏭⏭ To end");
 }
@@ -833,6 +877,8 @@ function renderMockFeedControls(compact) {
     controls += btn("clear", (compact ? "🗑 Clear" : "🗑 Clear (discard)"));
     controls += btn("start", (compact ? "🔄" : "🔄 New draft"));
   } else if (interactive) {
+    // Interactive practice draft: engine-aware Pause/Resume + End.
+    controls += paused ? btn("resume", "▶ Resume", "primary") : btn("pause", "⏸ Pause");
     controls += btn("stop", (compact ? "■ End" : "■ End practice draft"), "ghost");
   } else {
     // watch-only playback (legacy / direct startMockFeed)
@@ -845,7 +891,7 @@ function renderMockFeedControls(compact) {
   if (compact) {
     let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">';
     if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + (interactive ? '' : '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0)) + '</b></span>';
-    s += controls + (interactive || !active ? "" : _mfSkipControls(true)) + speedSeg + '</span>';
+    s += controls + (active ? _mfSkipControls(true) : "") + speedSeg + '</span>';
     return s;
   }
 
@@ -857,7 +903,7 @@ function renderMockFeedControls(compact) {
   html += speedSeg;
   html += controls;
   html += '</div>';
-  if (active && !interactive) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
+  if (active) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
   html += '<p class="muted small" style="margin:6px 0 0;">Start jumps you into the cockpit and the draft begins. Bots nominate and bid using each owner\'s tendencies; <b>you nominate on your turn and bid or pass from Your Call</b>. Nothing advances until the lot resolves — hero, ticker, budgets, projected standings and Debrief all run live.</p>';
   html += '<div class="small" id="mf-status" style="margin-top:6px;">' + _mfStatusText() + '</div>';
   html += '</div>';
@@ -917,10 +963,11 @@ if (typeof document !== "undefined" && document.addEventListener) {
       else if (a === "stop") { if (_mockFeed.interactive) endInteractiveCockpitMock(); else stopMockFeed(); }
       else if (a === "saveclear") saveAndClearMock();
       else if (a === "clear") clearMockDraft();
-      else if (a === "skipnom") skipMockNomination();
-      else if (a === "skipend") skipMockToEnd();
+      else if (a === "skipnom") { if (_mockFeed.interactive) finishInteractivePick(); else skipMockNomination(); }
+      else if (a === "skipend") { if (_mockFeed.interactive) skipInteractiveToEnd(); else skipMockToEnd(); }
     } else if (t.dataset.mockskip) {
-      skipMockPicks(t.dataset.mockskip);
+      if (_mockFeed.interactive) skipInteractivePicks(t.dataset.mockskip);
+      else skipMockPicks(t.dataset.mockskip);
     } else if (t.dataset.mockspeed) {
       setMockFeedSpeed(t.dataset.mockspeed);
     } else if (t.dataset.mockbotspeed) {

@@ -213,8 +213,16 @@ function _aiAutoNominate(teamId) {
   _startAuction(player, teamId, 1);
 }
 
+// Single source of truth for the paused flag: reuse _mockFeed.paused (set by
+// the flow controls in mock-live-feed.js) so the engine and the UI agree. Safe
+// to reference even outside the cockpit mock — undefined _mockFeed → not paused.
+function _icPaused() {
+  return typeof _mockFeed !== "undefined" && !!_mockFeed.paused;
+}
+
 // Called by UI when the user nominates a player.
 function userNominate(playerName, opening) {
+  if (_icPaused()) return { ok: false, error: "Paused." };
   const me = getMyTeam();
   if (!me || getCurrentNominatorId() !== me.id) return { ok: false, error: "Not your turn to nominate." };
   const myState = _interactive.states[me.id];
@@ -375,6 +383,7 @@ function _giveUserTheClock() {
 
 // User clicks "Bid +$X" or enters a specific amount.
 function userBid(amount) {
+  if (_icPaused()) return { ok: false, error: "Paused." };
   const me = getMyTeam();
   if (!me) return { ok: false, error: "No team" };
   if (_interactive.phase !== "bidding") return { ok: false, error: "Not bidding." };
@@ -398,6 +407,7 @@ function userBid(amount) {
 
 // User passes on current auction.
 function userPass() {
+  if (_icPaused()) return { ok: false, error: "Paused." };
   const me = getMyTeam();
   if (!me) return;
   if (_interactive.phase !== "bidding") return;
@@ -477,6 +487,134 @@ function _completeSale() {
   _interactive.currentNominator++;
   const dwell = _interactive.bidSpeed === "instant" ? 0 : 5000;
   _later(() => _advanceToNominatingTeam(), dwell);
+}
+
+// ---------------------------------------------------------------------------
+// Flow controls for the interactive practice draft (Jeff: "there needs to be an
+// option to pause, finish existing pick, skip 10 picks, skip to end").
+//
+// These are ENGINE-AWARE. The paused flag lives on _mockFeed.paused (single
+// source of truth, read by _icPaused); the ENGINE is frozen by bumping
+// _interactive.gen (kills scheduled bot steps + timer ticks) and clearing the
+// timer. mock-live-feed.js's pauseMockFeed / resumeMockFeed route here for an
+// interactive mock; the skip helpers are called from the skip-control delegation.
+
+// Freeze everything: no scheduled bot step or timer tick can fire, and no
+// user action (bid/pass/nominate) is accepted, until we resume.
+function pauseInteractiveMock() {
+  if (!_interactive.active) return;
+  if (typeof _mockFeed !== "undefined") _mockFeed.paused = true;
+  _interactive.gen++;    // invalidate every queued bot step + timer tick
+  _clearMockTimer();
+  _fireChange();
+}
+
+// Un-pause and restart the flow WHERE IT LEFT OFF. A beat later (real setTimeout
+// in the browser; instant in tests) the appropriate driver runs: mid-lot →
+// resume the bid ladder (which re-gives the user the clock if it's their turn);
+// between lots → advance the nominator (auto-nominates for a bot, waits for you).
+function resumeInteractiveMock() {
+  if (!_interactive.active) return;
+  if (typeof _mockFeed !== "undefined") _mockFeed.paused = false;
+  _fireChange();
+  if (_interactive.phase === "bidding") {
+    _later(() => _runAiBidsUntilUserTurn(), _d(300));
+  } else if (_interactive.phase === "nominating") {
+    _later(() => _advanceToNominatingTeam(), _d(300));
+  }
+}
+
+// True when the draft can't advance any further: every team's slots are full,
+// or the pool is empty (nothing left to nominate).
+function _icDraftDone() {
+  if (_interactive.phase === "done") return true;
+  if (!_interactive.pool.length) return true;
+  return Object.keys(_interactive.states).every(id => _interactive.states[id].slotsRemaining <= 0);
+}
+
+// SYNCHRONOUSLY resolve the CURRENT pick — no _later delays (the sandbox stubs
+// setTimeout to a no-op, and a skip must not consume wall-clock time). Advances
+// the draft by exactly ONE lot:
+//   • phase "nominating" (no lot open) → auto-nominate for whoever is up (bot
+//     logic via chooseNomination, even on the user's turn), then resolve it;
+//   • phase "bidding" (a lot is open) → apply _aiBidsOnce() until no bot bumps,
+//     then _completeSale(). Standard auction rules: if the user leads and no bot
+//     tops them, the user wins the lot.
+// The user auto-passes any lot they DON'T currently lead (add them to
+// passedTeams so an idle skip doesn't magically bid for them) — but a lot they
+// DO lead resolves to them if unmatched. Returns true if a pick was made.
+function _icFinishCurrentPick(userAutoPass) {
+  if (!_interactive.active || _icDraftDone()) return false;
+  _clearMockTimer();
+
+  // Between lots: auto-nominate for the up team (bot logic), opening at $1.
+  if (_interactive.phase !== "bidding" || !_interactive.current) {
+    _advanceToNominatingTeam();   // skip past full teams, may flip to "done"
+    if (_interactive.phase === "done") return false;
+    const nomId = getCurrentNominatorId();
+    const state = _interactive.states[nomId];
+    if (!state || state.slotsRemaining <= 0) return false;
+    const player = chooseNomination(state, _interactive.pool, _interactive.inflation);
+    if (!player) { _interactive.phase = "done"; _fireChange(); return false; }
+    _startAuction(player, nomId, 1);
+  }
+  if (_interactive.phase !== "bidding" || !_interactive.current) return false;
+
+  // The user auto-passes lots they don't lead, so an idle skip never bids for
+  // them — but never a lot they currently lead (that one can still resolve to
+  // them). Skipping over the flag is opt-out via userAutoPass === false.
+  const me = getMyTeam();
+  if (userAutoPass !== false && me && _interactive.currentWinner !== me.id) {
+    _interactive.passedTeams.add(me.id);
+  }
+
+  // Bot bid ladder, resolved synchronously: keep bumping until no bot tops.
+  let guard = 0;
+  while (guard++ < 500) {
+    const bumped = _aiBidsOnce();
+    if (!bumped) break;
+  }
+  _completeSale();   // schedules _advanceToNominatingTeam via _later (real setTimeout in the browser)
+  return true;
+}
+
+// Skip N completed picks — loop "finish current pick" N times synchronously
+// (no _later delays). Stops early if the draft ends. One full re-render after
+// the burst (mirrors _mfFastForward's pumping flag so per-frame renders are
+// suppressed during the loop). Returns the number of picks actually made.
+function _icSkipPicks(n) {
+  const target = Math.max(1, Math.min(2000, parseInt(n, 10) || 1));
+  const wasPumping = (typeof _mockFeed !== "undefined") ? _mockFeed.pumping : false;
+  if (typeof _mockFeed !== "undefined") _mockFeed.pumping = true;
+  let made = 0;
+  for (let i = 0; i < target; i++) {
+    if (_icDraftDone()) break;
+    if (!_icFinishCurrentPick(true)) break;
+    made++;
+  }
+  if (typeof _mockFeed !== "undefined") _mockFeed.pumping = wasPumping;
+  return made;
+}
+
+// Skip to the very end: resolve lots until every slot is full / the pool is
+// empty, then freeze the finished draft (parity with endInteractiveCockpitMock)
+// so the Save & clear / Debrief flow appears. Hard-capped against an infinite
+// loop. Returns the number of picks made in the burst.
+function _icSkipToEnd() {
+  const wasPumping = (typeof _mockFeed !== "undefined") ? _mockFeed.pumping : false;
+  if (typeof _mockFeed !== "undefined") _mockFeed.pumping = true;
+  let made = 0, guard = 0;
+  while (!_icDraftDone() && guard++ < 1000) {
+    if (!_icFinishCurrentPick(true)) break;
+    made++;
+  }
+  if (guard >= 1000) console.warn("_icSkipToEnd: hit the 1000-lot hard cap — stopping to avoid an infinite loop.");
+  if (typeof _mockFeed !== "undefined") _mockFeed.pumping = wasPumping;
+  // Freeze the finished draft: stop the engine and mark the feed finished so the
+  // cockpit shows Save & clear / Debrief (same as endInteractiveCockpitMock).
+  stopInteractiveMock();
+  if (typeof _mockFeed !== "undefined") { _mockFeed.finished = true; _mockFeed.paused = false; }
+  return made;
 }
 
 // Interactive inflation now uses the shared inflationForMockState() so the
