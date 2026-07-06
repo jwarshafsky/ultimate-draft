@@ -103,8 +103,15 @@ function getMyRoster() {
 }
 
 function renderCategoryDashboard() {
-  if (!getHitterProjections().length) {
-    return '<div class="empty"><p>Import projections to see category projections.</p></div>';
+  // Stats can come from EITHER the preseason store OR the active ROS source
+  // (Jeff's normal workflow — hosted ROS CSVs auto-load, preseason stays
+  // empty). Gate on the same sources getProjection actually reads, else this
+  // showed "Import projections" while the Data tab was fully loaded.
+  const hasPreseason = getHitterProjections().length > 0;
+  const rosSrc = (typeof activeProjSource === "function") ? activeProjSource() : null;
+  const hasRos = !!(rosSrc && rosSrc !== "preseason" && typeof rosHasData === "function" && rosHasData(rosSrc));
+  if (!hasPreseason && !hasRos) {
+    return '<div class="empty"><p>Import projections to see category projections — Data tab ▸ Stat Projections (a $-only source has no stats to project).</p></div>';
   }
   const roster = getMyRoster();
   if (!roster.length) {

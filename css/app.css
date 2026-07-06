@@ -478,13 +478,18 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-seg .btn { border-radius: 0; padding: 3px 9px; font-size: 12px; min-width: 52px; text-align: center; justify-content: center; box-sizing: border-box; }
 .dm-statview .btn { min-width: 54px; }
 /* Active filter = subtle highlight, not a giant primary button (Jeff). Keep the
-   layout identical to the ghost state — only color/inset shadow change. */
+   layout identical to the ghost state — only color/inset shadow change.
+   width/padding MUST be re-pinned here: the app-wide `.btn.primary` sets
+   width:100% + padding:10px (full-width form buttons), which made the selected
+   mode button balloon to the whole row (Jeff's "super wide" bug). */
 .dm-seg .btn.primary {
   background: rgba(79,142,247,.14);
   color: var(--accent);
   border-color: var(--border);
   box-shadow: inset 0 -2px 0 var(--accent);
   font-weight: 600;
+  width: auto;
+  padding: 3px 9px;
 }
 .dm-side .card[data-dm-card] h3 { cursor: grab; }
 .dm-side .card.dm-dragging { opacity: .5; }

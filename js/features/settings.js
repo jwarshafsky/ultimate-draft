@@ -131,7 +131,9 @@ function renderSettings() {
   html += '</div></div>';
 
   // === My Strategy ===
-  html += '<div class="card"><h2>My Draft Strategy</h2>';
+  html += '<div class="card"><div style="display:flex; align-items:center; gap:10px;"><h2 style="margin:0;">My Draft Strategy</h2>' +
+    '<span style="flex:1;"></span>' +
+    '<button class="btn ghost" id="set-mystrat-clear" style="width:auto; padding:5px 12px;" title="Reset sliders/stances, clear target &amp; punt categories, and wipe your written strategy + AI brief">Clear My Strategy</button></div>';
   html += '<p class="muted small">These preferences flow into nomination suggestions, the AI assistant, and the mock simulator when it plays YOUR team.</p>';
   html += '<div class="grid cols-2" style="gap: 18px;">';
 
@@ -334,6 +336,17 @@ function wireSettingsHandlers() {
     setDraftStrategyText(document.getElementById("set-strategy-text").value);
     const st = document.getElementById("set-strategy-status");
     if (st) st.textContent = "Saved.";
+  });
+  document.getElementById("set-mystrat-clear")?.addEventListener("click", () => {
+    if (!confirm("Clear My Draft Strategy? This resets the sliders and stances, clears target/punt categories, and wipes your written strategy + AI brief.")) return;
+    _settings.myStrategy = {
+      starsVsScrubs: 0, riskTolerance: 0,
+      closerStance: "stream", catcherStance: "stream",
+      targetCategories: [], puntCategories: [],
+    };
+    saveSettings();
+    if (typeof clearDraftStrategy === "function") clearDraftStrategy();
+    renderSettings();   // whole card re-renders at defaults
   });
   document.getElementById("set-strategy-clear")?.addEventListener("click", () => {
     if (!confirm("Clear your draft strategy and AI brief?")) return;
