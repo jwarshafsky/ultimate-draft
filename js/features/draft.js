@@ -106,6 +106,17 @@ function _nomResolveName(typed) {
 }
 
 // Live inflation accounting for picks made so far.
+//
+// ANCHORING: with zero picks made, this must read EXACTLY what the pre-draft
+// badge shows (computeKeeperInflation) — same state, same number. The two used
+// to disagree (~1.28 live vs ~1.26 badge) because computeFlatInflation and
+// computeKeeperInflation resolve the keeper POOL differently: different kept-
+// player $ (getValues() vs _keeperPredValue), different kept COST (keeperCostFor
+// vs _teamCandidates cost/eligibility), and different BUDGET (computeTeamBudgets
+// adds traded-draft-dollar adjustments; the badge uses a flat $260×12). So we
+// anchor to the badge's number and apply ONLY the marginal effect of picks as a
+// ratio of the flat remaining$/remainingValue: at 0 picks the ratio is exactly
+// 1 (→ badge value), and it moves correctly as players come off the board.
 function computeLiveInflation() {
   const flat = computeFlatInflation();
   if (!flat) return null;
@@ -121,10 +132,22 @@ function computeLiveInflation() {
     remainingValue += p.value;
   }
   const remaining = Math.max(0, flat.leagueRemaining - spent);
-  // Normalize against the no-keeper baseline so values start at face (×1) and
-  // inflate only from keepers + draft spending (matches computeFlatInflation).
+
+  // No-picks anchor = the pre-draft badge value (single source of truth for the
+  // keeper baseline). Fall back to the normalized flat multiplier if the badge
+  // helper isn't loaded.
   const base = flat.baselineMultiplier || 1;
-  const mult = remainingValue > 0 ? (remaining / remainingValue) / base : 1;
+  const anchor = (typeof computeKeeperInflation === "function")
+    ? computeKeeperInflation()
+    : (flat.remainingValue > 0 ? (flat.leagueRemaining / flat.remainingValue) / base : 1);
+
+  // Marginal pick effect: how the flat remaining$/remainingValue ratio has moved
+  // from its no-picks value. Exactly 1.0 before any pick is recorded.
+  const ratioNow = remainingValue > 0 ? (remaining / remainingValue) : 0;
+  const ratio0 = flat.remainingValue > 0 ? (flat.leagueRemaining / flat.remainingValue) : 0;
+  const pickFactor = (ratio0 > 0 && remainingValue > 0) ? (ratioNow / ratio0) : 1;
+
+  const mult = anchor * pickFactor;
   return {
     ...flat,
     mode: "live",
@@ -140,11 +163,12 @@ function computeLiveInflation() {
 
 function renderDraft() {
   const root = document.getElementById("view-root");
+  if (!root) return;   // headless/test context — nothing to render into
   const hasValues = getValues().length > 0;
 
   const inflation = hasValues ? computeLiveInflation() : null;
   const badge = document.getElementById("inflation-badge");
-  if (inflation) {
+  if (inflation && badge) {
     badge.textContent = "live infl " + inflation.multiplier.toFixed(2) + "×";
     badge.title = "Live auction inflation — remaining budget vs. remaining player value, recomputed from the picks recorded so far.";
     badge.className = "badge " + (inflation.multiplier > 1.2 ? "hot" : inflation.multiplier < 1.0 ? "cold" : "");
@@ -845,22 +869,30 @@ function reconcileDraftContext() {
   }
   return changed;
 }
-// A pick log shows generic "Team N" labels when this is a practice run — either
-// the REST test-league override OR the extension feed set to test mode.
+// A pick log shows generic "Team N" labels when this is a practice run against
+// STRANGERS — the REST test-league override OR the extension feed set to test
+// mode (an arbitrary ESPN mock room whose team ids don't map to real owners).
+//
+// R11 REVERSED: the UD-native practice mock is deliberately NOT test mode. It now
+// runs Jeff's REAL league — real owners, real keepers, real budgets — by feeding
+// each SOLD under its team's REAL ESPN id (mock-live-feed.js), so the keeper-aware
+// engine functions (draftExcludedNames / _inflationKeeperSelections /
+// computeLiveTeamStates / processEspnPicks) resolve the real context with no extra
+// branching. The mock stays throwaway via mockFeedActive() guards elsewhere
+// (saveLiveDraft no-ops, cloud-sync treats it as mock context, the seat is
+// in-memory) — it just isn't a generic-stranger TEST context anymore.
 function draftTestMode() {
-  // A running UD-native mock is a test context (generic Team-N / $260 / no
-  // keepers) WITHOUT persisting any feed-mode/override to disk (ephemeral).
-  return (typeof mockFeedActive === "function" && mockFeedActive()) ||
-         (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
+  return (typeof leagueOverrideActive === "function" && leagueOverrideActive()) || getFeedMode() === "test";
 }
 
 // ===========================================================================
-// DRAFT CONTEXT — real league vs mock.
-// In a mock (test mode) the room is 12 strangers: generic "Team N" teams from
-// the ESPN team ids in the feed, $260 budgets, NO keepers, FULL player pool.
-// Real-league names/budgets/keepers apply only when NOT in test mode. Five
-// engine functions branch on this (draftExcludedNames, _inflationKeeperSelections,
-// computeLiveTeamStates, teamOpenSlotProfile, processEspnPicks); everything
+// DRAFT CONTEXT — real league vs stranger mock.
+// A test-mode room (league override / extension test feed) is 12 strangers:
+// generic "Team N" teams from the ESPN team ids in the feed, $260 budgets, NO
+// keepers, FULL player pool. Real-league names/budgets/keepers apply otherwise —
+// including the UD-native practice mock, which is real-league (see draftTestMode).
+// Engine functions branch on draftTestMode (draftExcludedNames,
+// _inflationKeeperSelections, computeLiveTeamStates, processEspnPicks); everything
 // else — owner interest, standings, nominations, AI, endgame — inherits.
 // ===========================================================================
 
@@ -1332,7 +1364,23 @@ async function _applyDraftFeed(feed) {
   _feed.count = feed.picks.length;
   _feed.at = Date.now();
 
+  // Capture the draft context AT DISPATCH: this function is async and often
+  // called unawaited, so the mock can be torn down (or the mode flipped to
+  // Real) before the next line resolves. Resolve-time checks then see the NEW
+  // context and a pending mock pick-add would write synthetic picks to the
+  // REAL synced key — the exact residue class the ephemeral design forbids
+  // (R15 eph-1). If the context changed across the await, DROP this feed; a
+  // live real feed self-heals via the bridge's next cumulative push.
+  // Signature = what decides the WRITE TARGET (ephemeral vs which persist key).
+  // Deliberately NOT the mock's gen counter — fast-forward bumps gen during
+  // normal playback and legitimate pick-adds must survive that.
+  const _ctxSig = _mockRun ? "mock" : "live:" + mode;
+
   await _ensureEspnNames();
+
+  const _nowMock = typeof mockFeedActive === "function" && mockFeedActive();
+  const _nowSig = _nowMock ? "mock" : "live:" + getFeedMode();
+  if (_nowSig !== _ctxSig) return;
 
   // Tombstones: a manually-deleted pick (commissioner undo) must not be
   // re-added by the cumulative feed. But if the feed now carries a DIFFERENT

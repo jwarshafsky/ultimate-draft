@@ -49,9 +49,21 @@ const _mockFeed = {
   myEspnId: null,         // the mock's seat, in memory only (ephemeral)
   finished: false,        // reached the last lot (offer Save/Clear)
   reviewId: null,         // saved-mock currently expanded in the archive list
+  interactive: false,     // true = YOU bid live against the bots (mock-interactive.js drives it); false = watch-only playback
 };
 
+// Real team id → synthetic ESPN id, and player name → synthetic playerId, for
+// the interactive cockpit mock. Built once at start; read by _mockCockpitEmit.
+let _icMaps = null;
+
 function mockFeedActive() { return !!_mockFeed.active; }
+// True when the running practice mock is the interactive (you-bid) kind.
+function mockFeedInteractive() { return !!(_mockFeed.active && _mockFeed.interactive); }
+// Reached the end of the draft (or the user ended it) — offer Save/Clear.
+function mockFeedFinished() { return !!_mockFeed.finished; }
+// Map an interactive-engine real team id → its synthetic ESPN id (for "Team N"
+// labels in the cockpit); null outside an interactive mock.
+function mockFeedEspnId(realTeamId) { return (_icMaps && _icMaps.teamMap) ? (_icMaps.teamMap[realTeamId] ?? null) : null; }
 // True while a skip/fast-forward is emitting frames back-to-back. Render sites
 // (updateDraftModeLive, processEspnPicks, feed-activity/diagnostics) skip during
 // the burst; _mfFastForward renders ONCE after the picks settle — avoids a
@@ -65,7 +77,7 @@ function mockFeedPumping() { return !!_mockFeed.pumping; }
 // Bid increment: median $1, mean ~$2.56, p90 ~$6.
 function _mfSampleIncrement() {
   const r = Math.random();
-  if (r < 0.48) return 1;
+  if (r < 0.52) return 1;   // R15 F1: P($1) must exceed .5 so the MEDIAN increment is $1 (ESPN-measured)
   if (r < 0.68) return 2;
   if (r < 0.80) return 3;
   if (r < 0.89) return 5;
@@ -109,6 +121,20 @@ function _mfBidTrace(price, winnerEspn, nomEspn, allEspnIds) {
     if (winnerEspn !== nomEspn) bids[0] = { team: winnerEspn, amount: 1 };
     return bids;
   }
+  // R15 F2: ESPN's bimodal shape — most CHEAP lots resolve in one or two bids
+  // (nobody fights over a $2-4 player), while contested lots build a ladder.
+  // UD's engine prices realistically (median ~$6 vs the ESPN mock room's $1),
+  // so without this collapse almost no lot cleared in a single bid. Money math
+  // untouched: the final price/winner are the engine's either way.
+  if (price <= 3) {
+    return [{ team: winnerEspn, amount: price }];
+  }
+  if (price <= 7 && Math.random() < 0.6) {
+    const jump = 1 + Math.floor(Math.random() * (price - 1));
+    return jump >= price
+      ? [{ team: winnerEspn, amount: price }]
+      : [{ team: nomEspn === winnerEspn && allEspnIds.length > 1 ? allEspnIds.find(id => id !== winnerEspn) : nomEspn, amount: jump }, { team: winnerEspn, amount: price }];
+  }
   const challengers = allEspnIds.filter(id => id !== winnerEspn);
   let cur = 1, turn = 0, guard = 0;
   while (cur < price && guard++ < 300) {
@@ -134,12 +160,32 @@ function buildMockFeedScript(opts) {
   const values = (typeof getValues === "function") ? getValues() : [];
   if (!values.length) return null;
 
-  // Real LEAGUE.teams → synthetic ESPN team ids 1..N (generic Team-N in the
-  // cockpit). Jeff's own team maps to his seat, announced via setMyDraftEspnId.
-  const teamMap = {};
-  let myEspnId = 1;
-  LEAGUE.teams.forEach((t, i) => { teamMap[t.id] = i + 1; if (t.isMe) myEspnId = i + 1; });
-  const allEspnIds = LEAGUE.teams.map((t, i) => i + 1);
+  // Real LEAGUE.teams → their REAL ESPN team ids (from ESPN_TEAM_ID_MAP in
+  // espn.js). R11-reversal: the mock now runs Jeff's real league — real owners,
+  // real keepers, real budgets. Feeding REAL ESPN ids (not generic 1..N) means
+  // the pick pipeline (processEspnPicks / _applyDraftFeed) maps each SOLD back to
+  // its real owner via espnTeamIdToOwnerId, and computeLiveTeamStates/inflation/
+  // draftExcludedNames all read the real keeper-aware context (mockFeedActive()
+  // is deliberately NO LONGER a draftTestMode() — see draft.js). A team missing
+  // an ESPN id falls back to a synthetic id so the mock never drops a seat.
+  const espnIdOf = (tid) => {
+    if (typeof ESPN_TEAM_ID_MAP !== "undefined") {
+      for (const [eid, oid] of Object.entries(ESPN_TEAM_ID_MAP)) if (oid === tid) return Number(eid);
+    }
+    return null;
+  };
+  const teamMap = {};                 // real team id → ESPN team id used in frames
+  const espnToOwner = {};             // ESPN team id → real owner name (for _dmTeamLabel)
+  let myEspnId = null, synthNext = 90;
+  LEAGUE.teams.forEach((t) => {
+    let eid = espnIdOf(t.id);
+    if (eid == null) eid = synthNext++;   // no ESPN mapping — keep a distinct seat
+    teamMap[t.id] = eid;
+    espnToOwner[eid] = t.owner;
+    if (t.isMe) myEspnId = eid;
+  });
+  if (myEspnId == null) myEspnId = teamMap[LEAGUE.teams[0].id];
+  const allEspnIds = LEAGUE.teams.map((t) => teamMap[t.id]);
 
   // Player name → synthetic ESPN playerId (>1000 so the cockpit's lot filter
   // accepts it). Seeded into _espnIdToName so picks resolve without a fetch.
@@ -147,10 +193,9 @@ function buildMockFeedScript(opts) {
   values.forEach((p, i) => { const id = 900001 + i; idByName[p.name] = id; nameById[id] = p.name; });
 
   // The engine decides everything real: who nominates, who wins, the price.
-  // noKeepers: a keeper-FREE $260 auction so the bots' budgets/slots match the
-  // generic keeper-free cockpit this feed drives (R11 — otherwise every bot's
-  // shown budget/max-bid was overstated by its real keeper cost).
-  const result = (typeof runMockDraft === "function") ? runMockDraft(Object.assign({}, opts, { noKeepers: true })) : { picks: [] };
+  // Keepers ON (R11 reversed): the real predicted keepers fill slots + cost money,
+  // so bot budgets/max-bids and the excluded pool match Jeff's real league.
+  const result = (typeof runMockDraft === "function") ? runMockDraft(Object.assign({}, opts)) : { picks: [] };
   const enginePicks = result.picks || [];
 
   const startedAt = Date.now();
@@ -183,9 +228,16 @@ function buildMockFeedScript(opts) {
     sales.push({ playerId: pid, teamId: winnerEspn, price, seq: lotSeq });
   });
 
+  // Per-lot clearing info for the user-bid interrupt (item 3): the bots' known
+  // clearing price + winner for each player. If the user tops the clearing price,
+  // he wins; otherwise the scripted bot winner still takes it at that price.
+  const clearingByPid = {};
+  for (const s of sales) clearingByPid[s.playerId] = { price: s.price, winnerEspn: s.teamId };
+
   return {
     leagueId: MOCK_FEED_LEAGUE_ID, sport: "flb", startedAt, myEspnId,
     frames, sales, nameById, idByName, totalLots: sales.length,
+    espnToOwner, clearingByPid,
   };
 }
 
@@ -240,6 +292,16 @@ function _mfResetDraftState() {
 }
 // The mock's seat, held in memory (never persisted) — read by getMyDraftEspnId.
 function mockFeedSeat() { return _mockFeed.myEspnId != null ? _mockFeed.myEspnId : null; }
+
+// ESPN team id → real owner name for the running mock. Lets _dmTeamLabel print
+// the real owner even for a team that has no ESPN_TEAM_ID_MAP entry (a synthetic
+// seat). Null if the mock isn't running or the id isn't known.
+function mockFeedOwnerName(espnId) {
+  const s = _mockFeed.script;
+  if (!s || !s.espnToOwner) return null;
+  const n = (typeof espnId === "string" && espnId.indexOf("espn:") === 0) ? Number(espnId.slice(5)) : Number(espnId);
+  return s.espnToOwner[n] || null;
+}
 
 function _mfSeedNames(nameById) {
   // draft.js owns the id→name map + a flag marking it mock-seeded, so Real mode
@@ -319,9 +381,121 @@ function startMockFeed(opts) {
   _mockFeed.pumping = false;
   _mockFeed.gen++;
   _mfArm(script);
-  _mfRender();
+  // Item 2: jump straight into the cockpit. Switch to the Draft tab via the app's
+  // real router (app.js) and turn on Draft Mode, so a Start from the Setup lobby
+  // (or anywhere) lands the user in the fullscreen cockpit immediately. Both are
+  // no-ops-if-already-there; setDraftMode(true) itself calls renderDraft().
+  if (typeof switchView === "function" && (typeof currentView === "undefined" || currentView !== "draft")) switchView("draft");
+  if (typeof setDraftMode === "function") setDraftMode(true);
+  else _mfRender();
   _mfScheduleNext();
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Interactive cockpit mock — YOU bid live against the bots inside the real
+// Draft Mode cockpit. mock-interactive.js runs the auction lot-by-lot (bots
+// nominate + bid; you nominate on your turn and bid/pass); every nomination,
+// bid and sale is mirrored into the cockpit's ESPN-style event pipeline via
+// _mockCockpitEmit, so the hero / ticker / budgets / standings / picks all
+// update through the same paths a real ESPN feed drives. Self-paced: nothing
+// advances until the current lot resolves and it's someone's turn.
+function startInteractiveCockpitMock(opts) {
+  opts = opts || {};
+  const values = (typeof getValues === "function") ? getValues() : [];
+  if (!values.length) {
+    if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice mock.");
+    return false;
+  }
+  // Synthetic id maps (same scheme as the watch-mode feed): real team id → ESPN
+  // 1..N (generic Team-N in the cockpit); player name → playerId > 1000.
+  const teamMap = {}; let myEspnId = 1;
+  LEAGUE.teams.forEach((t, i) => { teamMap[t.id] = i + 1; if (t.isMe) myEspnId = i + 1; });
+  const idByName = {}, nameById = {};
+  values.forEach((p, i) => { const id = 900001 + i; idByName[p.name] = id; nameById[id] = p.name; });
+  _icMaps = { teamMap, idByName, nameById };
+  _icLastKey = "";
+
+  // Arm the ephemeral cockpit context (generic Team-N / $260 / no keepers).
+  _mockFeed.active = true;
+  _mockFeed.interactive = true;
+  _mockFeed.finished = false;
+  _mockFeed.paused = false;
+  _mockFeed.pumping = false;
+  _mockFeed.script = null;
+  _mockFeed.soldLots = 0;
+  _mockFeed.myEspnId = myEspnId;
+  _mockFeed.gen++;
+  _mfResetDraftState();
+  _mfSeedNames(nameById);
+  const startedAt = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
+  _mockFeed.ctx = { leagueId: MOCK_FEED_LEAGUE_ID, sport: "flb", startedAt, seq: 0, picks: [] };
+  _mockFeed.startedAt = startedAt;
+
+  if (opts.bidSpeed && typeof setMockBidSpeed === "function") setMockBidSpeed(opts.bidSpeed);
+  // Start the live engine in cockpit mode (keeper-free to match the generic cockpit).
+  const r = (typeof startInteractiveMock === "function") ? startInteractiveMock({ cockpit: true, noKeepers: true }) : { ok: false, error: "engine unavailable" };
+  if (r && r.ok === false) {
+    // Roll back so a failed start never leaves a half-live mock behind.
+    _mockFeed.active = false; _mockFeed.interactive = false; _icMaps = null;
+    if (typeof alert === "function") alert(r.error || "Couldn't start the mock.");
+    return false;
+  }
+  if (typeof switchView === "function" && (typeof currentView === "undefined" || currentView !== "draft")) switchView("draft");
+  if (typeof setDraftMode === "function") setDraftMode(true);
+  else _mfRender();
+  return true;
+}
+
+// Mirror one interactive-engine event (real team id + player NAME) into the
+// cockpit's ESPN-style pipeline — same shape as _mfApplyFrame's watch-mode path,
+// so the cockpit can't tell it from a real feed. Called by _icEmit in
+// mock-interactive.js.
+function _mockCockpitEmit(cmd, realTeamId, playerName, amount) {
+  if (!_mockFeed.active || !_mockFeed.interactive || !_icMaps || !_mockFeed.ctx) return;
+  const teamId = _icMaps.teamMap[realTeamId];
+  const playerId = _icMaps.idByName[playerName];
+  if (teamId == null || playerId == null) return;
+  const at = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
+  const seq = ++_mockFeed.ctx.seq;
+  const amt = (amount == null) ? null : amount;
+  const ev = { seq, at, cmd, teamId, playerId, amount: amt, text: "" };
+  if (typeof _onDraftEvents === "function") {
+    _onDraftEvents({ log: { leagueId: _mockFeed.ctx.leagueId, sport: _mockFeed.ctx.sport, startedAt: _mockFeed.ctx.startedAt }, events: [ev], full: false });
+  }
+  if (cmd === "SOLD") {
+    _mockFeed.ctx.picks.push({ playerId, teamId, price: amt, seq, ts: at });
+    _mockFeed.soldLots++;
+    if (typeof _applyDraftFeed === "function") {
+      _applyDraftFeed({ leagueId: _mockFeed.ctx.leagueId, sport: _mockFeed.ctx.sport, startedAt: _mockFeed.ctx.startedAt, updatedAt: at, picks: _mockFeed.ctx.picks.slice() });
+    }
+  }
+  _mfUpdateStatus();
+}
+
+// End the interactive mock (stop the engine) but KEEP the result on screen so
+// Jeff can Save or Clear it (parity with the watch-mode stopMockFeed).
+function endInteractiveCockpitMock() {
+  if (!_mockFeed.active || !_mockFeed.interactive) return;
+  if (typeof stopInteractiveMock === "function") stopInteractiveMock();
+  _mockFeed.finished = true;
+  _mockFeed.paused = false;
+  _mfRender();
+}
+
+// Refresh the cockpit for interactive states that emit NO frame: your nominate
+// turn (show the nominate box), a pass (disable your bid controls), the draft
+// finishing. Bid/nomination/sale updates ride the emitted frames (→
+// updateDraftModeLive), so we full-render only on a lot / phase / turn boundary
+// — never on a plain bot bid, so a half-typed bid can't be interrupted.
+let _icLastKey = "";
+function _icCockpitRefresh(s) {
+  const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+  const iPassed = !!(me && s.passedTeams && s.passedTeams.has(me.id));
+  const key = [s.phase, s.currentNominator, s.current ? s.current.name : "", iPassed ? "P" : "", s.picks.length, _mockFeed.finished ? "F" : ""].join("|");
+  if (key === _icLastKey) return;
+  _icLastKey = key;
+  if (typeof renderDraft === "function") renderDraft();
 }
 function pauseMockFeed() {
   if (!_mockFeed.active || _mockFeed.finished || _mockFeed.paused) return;
@@ -353,10 +527,13 @@ function stopMockFeed(opts) {
 // This is the ONLY place `active` goes false — up to here every save has no-op'd,
 // so the real draft in localStorage is exactly as Jeff left it.
 function clearMockDraft() {
+  if (_mockFeed.interactive && typeof stopInteractiveMock === "function") stopInteractiveMock();   // kill the live auction engine
   _mockFeed.active = false;
   _mockFeed.finished = false;
   _mockFeed.paused = false;
   _mockFeed.pumping = false;
+  _mockFeed.interactive = false;
+  _icMaps = null; _icLastKey = "";
   _mockFeed.gen++;
   _mockFeed.script = null; _mockFeed.ctx = null; _mockFeed.idx = 0; _mockFeed.soldLots = 0; _mockFeed.myEspnId = null;
   if (typeof _liveDraft !== "undefined") { _liveDraft.picks = []; _liveDraft.deleted = {}; _liveDraft.streamKey = null; }
@@ -460,6 +637,98 @@ function skipMockPicks(n) {
 function skipMockToEnd() { _mfFastForward(() => false); }
 
 // ---------------------------------------------------------------------------
+// User bid interrupt (item 3). In a real ESPN draft Jeff bids on ESPN; in a
+// practice mock there's no ESPN, so the cockpit gives him in-app bid buttons.
+// A bid on the CURRENT lot cancels that lot's remaining SCRIPTED frames, emits
+// the user's BID, then RE-RESOLVES the lot against the bots' known clearing
+// price for that player:
+//   • user's bid > clearing price → the user tops the room and WINS at his bid;
+//   • otherwise the scripted bot winner still takes it at the clearing price.
+// Then normal playback resumes at the NEXT lot. Everything flows through the
+// same _mfApplyFrame/event path the bots use, so the hero/ticker/board update
+// identically and nothing touches the real draft on disk (ephemeral + gen-guard).
+
+// Most this seat can bid right now, from the same live team-state the cockpit
+// shows (keeper-aware, budget-conserving). Falls back to the league budget.
+function _mfSeatMaxBid() {
+  try {
+    const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : (typeof getMyTeam === "function" ? getMyTeam() : null);
+    if (me && typeof computeLiveTeamStates === "function") {
+      const st = computeLiveTeamStates()[me.id];
+      if (st && isFinite(st.maxBid)) return Math.max(1, st.maxBid);
+    }
+  } catch (e) {}
+  return (typeof LEAGUE !== "undefined" && LEAGUE.draftBudget) ? LEAGUE.draftBudget : 260;
+}
+
+// Advance _mockFeed.idx past every remaining frame of the given lot (the run of
+// frames sharing playerId, up to and INCLUDING its SOLD). Returns the scripted
+// SOLD frame that was skipped (for the clearing price/winner), or null.
+function _mfConsumeLotFrames(pid) {
+  const frames = _mockFeed.script.frames;
+  let soldFrame = null;
+  while (_mockFeed.idx < frames.length) {
+    const fr = frames[_mockFeed.idx];
+    if (fr.playerId !== pid) break;           // reached the next lot's NOMINATION
+    _mockFeed.idx++;
+    if (fr.cmd === "SOLD") { soldFrame = fr; break; }
+  }
+  return soldFrame;
+}
+
+function userMockBid(amount) {
+  if (!_mockFeed.active || _mockFeed.paused || _mockFeed.finished || !_mockFeed.script || !_mockFeed.ctx) return false;
+  const seat = mockFeedSeat();
+  if (seat == null) return false;
+  const lot = (typeof currentLotFromEvents === "function") ? currentLotFromEvents() : null;
+  if (!lot || lot.playerId == null) return false;
+  const pid = lot.playerId;
+
+  // Clamp: at least a legal raise over the current high, at most the seat's max.
+  const high = Number.isFinite(lot.highBid) ? lot.highBid : 1;
+  const seatMax = _mfSeatMaxBid();
+  let bid = Math.max(high + 1, Math.floor(Number(amount) || 0));
+  bid = Math.min(bid, seatMax);
+  if (bid <= high) return false;              // can't afford even one over the room
+
+  // Take ownership of the timeline: cancel any in-flight scheduled step and the
+  // rest of THIS lot's scripted frames, so the bots' pre-scripted climb/SOLD for
+  // this player can't override the user's interrupt.
+  _mockFeed.gen++;
+  const scriptedSold = _mfConsumeLotFrames(pid);
+  const clearing = (_mockFeed.script.clearingByPid && _mockFeed.script.clearingByPid[pid]) ||
+    (scriptedSold ? { price: scriptedSold.amount, winnerEspn: scriptedSold.teamId } : { price: high, winnerEspn: seat });
+
+  const at = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
+  // The user's bid, through the same path a bot bid uses.
+  _mfApplyFrame(_mockFeed.ctx, { cmd: "BID", teamId: seat, playerId: pid, amount: bid }, at);
+  _mockFeed.lastEmitAt = at;
+
+  // Re-resolve the winner. The clearing price is the bots' top; if the user beats
+  // it he wins at his own bid, else the scripted bot winner takes it at clearing.
+  let sold;
+  if (bid > clearing.price) {
+    sold = { cmd: "SOLD", teamId: seat, playerId: pid, amount: bid };
+  } else {
+    sold = { cmd: "SOLD", teamId: clearing.winnerEspn, playerId: pid, amount: Math.max(1, clearing.price) };
+  }
+  const p = _mfApplyFrame(_mockFeed.ctx, sold, at);
+  _mockFeed.soldLots++;
+  _mockFeed.lastEmitAt = at;
+
+  // Render + resume live playback at the next lot once the pick-add settles.
+  Promise.resolve(p).then(() => {
+    _mfUpdateStatus();
+    if (typeof currentView !== "undefined" && currentView === "draft" && typeof renderDraft === "function") renderDraft();
+    if (_mockFeed.active && !_mockFeed.paused && !_mockFeed.finished) {
+      if (_mockFeed.idx >= _mockFeed.script.frames.length) _mfFinish();
+      else _mfScheduleNext();
+    }
+  }).catch(() => {});
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // UI — one card on the Draft Setup lobby, a compact cluster mirrored in the
 // Draft Mode top bar. Buttons wired once via document-level delegation (they
 // survive the innerHTML rebuilds of both views).
@@ -467,14 +736,30 @@ function _mfSpentSoFar() {
   return (_mockFeed.ctx && _mockFeed.ctx.picks) ? _mockFeed.ctx.picks.reduce((s, p) => s + (p.price || 0), 0) : 0;
 }
 function _mfStatusText() {
+  if (!_mockFeed.active) return "Idle — press Start to draft live against the bots. You bid; they bid back. It's a throwaway rehearsal — your real draft is never touched.";
+  if (_mockFeed.interactive) {
+    const done = _mockFeed.soldLots;
+    if (_mockFeed.finished) return "✓ Done — " + done + " picks. Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> (keeps the result in your mocks list) or <b>Clear</b> to wipe the slate.";
+    return "● Live draft — <b>" + done + "</b> picks in · $" + _mfSpentSoFar() + " spent. Nominate on your turn; bid or pass from Your Call.";
+  }
   const s = _mockFeed.script;
-  if (!_mockFeed.active || !s) return "Idle — press Start to run a full auction against the bots. It's a throwaway rehearsal — your real draft is never touched.";
+  if (!s) return "Idle — press Start to run a full auction against the bots.";
   const total = s.totalLots, done = _mockFeed.soldLots;
   if (_mockFeed.finished) {
     return "✓ Done — " + done + " lots. Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> (keeps the result in your mocks list) or <b>Clear</b> to wipe the slate.";
   }
   return (_mockFeed.paused ? "⏸ Paused" : "● Running") + " — lot <b>" + done + "</b> / " + total +
     " · $" + _mfSpentSoFar() + " spent · " + esc(_mockFeed.speed);
+}
+
+// Bot pacing selector for the interactive mock (how fast the AI bids between
+// your turns). Maps to the interactive engine's bidSpeed.
+function _mfBotSpeedSeg() {
+  const cur = (typeof getInteractiveState === "function") ? (getInteractiveState().bidSpeed || "realistic") : "realistic";
+  const seg = (val, label) => '<button class="btn' + (cur === val ? ' primary' : ' ghost') +
+    '" data-mockbotspeed="' + val + '" style="border-radius:0; padding:3px 10px;">' + label + '</button>';
+  return '<span class="muted small" style="margin-right:4px;">bots</span><span class="seg" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden;">' +
+    seg("realistic", "Realistic") + seg("fast", "Fast") + '</span>';
 }
 function _mfUpdateStatus() {
   const el = (typeof document !== "undefined") ? document.getElementById("mf-status") : null;
@@ -504,45 +789,47 @@ function _mfSkipControls(compact) {
 
 // compact=true → an inline cluster for the Draft Mode top bar.
 function renderMockFeedControls(compact) {
-  const active = _mockFeed.active, paused = _mockFeed.paused;
+  const active = _mockFeed.active, paused = _mockFeed.paused, finished = _mockFeed.finished;
+  const interactive = _mockFeed.interactive;
   const btn = (act, label, cls) => '<button class="btn ' + (cls || "ghost") + '" data-mockfeed="' + act +
     '" style="width:auto; padding:' + (compact ? "3px 10px" : "6px 14px") + ';">' + label + '</button>';
 
   // A mock is ephemeral + non-destructive, so Start is always available (even in
   // Real mode — the real draft is safe on disk and reloads when the mock clears).
-  const finished = _mockFeed.finished;
   let controls = "";
   if (!active) {
-    controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice mock"), "primary");
+    controls += btn("start", (compact ? "🤖 Practice" : "🤖 Start practice draft"), "primary");
   } else if (finished) {
     controls += btn("saveclear", (compact ? "💾 Save" : "💾 Save & clear"), "primary");
     controls += btn("clear", (compact ? "🗑 Clear" : "🗑 Clear (discard)"));
-    controls += btn("start", (compact ? "🔄" : "🔄 New mock"));
+    controls += btn("start", (compact ? "🔄" : "🔄 New draft"));
+  } else if (interactive) {
+    controls += btn("stop", (compact ? "■ End" : "■ End practice draft"), "ghost");
   } else {
+    // watch-only playback (legacy / direct startMockFeed)
     controls += paused ? btn("resume", "▶ Resume", "primary") : btn("pause", "⏸ Pause");
     controls += btn("stop", "■ Stop");
   }
 
-  // Speed only matters before/during playback — hide it on a finished mock so it
-  // can't silently resume a stopped run.
-  const speedSeg = finished ? "" : _mfSpeedSeg();
+  // Interactive → bot-pacing selector; watch mode → playback-speed segment.
+  const speedSeg = finished ? "" : (interactive || !active ? _mfBotSpeedSeg() : _mfSpeedSeg());
   if (compact) {
     let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">';
-    if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0) + '</b></span>';
-    s += controls + _mfSkipControls(true) + speedSeg + '</span>';
+    if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + (interactive ? '' : '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0)) + '</b></span>';
+    s += controls + (interactive || !active ? "" : _mfSkipControls(true)) + speedSeg + '</span>';
     return s;
   }
 
   let html = '<div class="card">';
   html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">';
-  html += '<h3 style="margin:0;">🤖 Practice vs bots</h3>';
-  html += '<span class="muted small">UD\'s own auction engine, feeding the real cockpit — no ESPN tab needed</span>';
+  html += '<h3 style="margin:0;">🤖 Practice draft vs bots</h3>';
+  html += '<span class="muted small">You bid live against UD\'s own auction engine — no ESPN tab needed</span>';
   html += '<span style="flex:1;"></span>';
   html += speedSeg;
   html += controls;
   html += '</div>';
-  if (active) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
-  html += '<p class="muted small" style="margin:6px 0 0;">Owner tendencies decide who bids and how high; real ESPN pacing (~25s lots) decides when. Enter Draft to watch it in the cockpit — hero, ticker, recommended bid, budgets, invariants and Debrief all run live.</p>';
+  if (active && !interactive) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
+  html += '<p class="muted small" style="margin:6px 0 0;">Start jumps you into the cockpit and the draft begins. Bots nominate and bid using each owner\'s tendencies; <b>you nominate on your turn and bid or pass from Your Call</b>. Nothing advances until the lot resolves — hero, ticker, budgets, projected standings and Debrief all run live.</p>';
   html += '<div class="small" id="mf-status" style="margin-top:6px;">' + _mfStatusText() + '</div>';
   html += '</div>';
   return html;
@@ -582,7 +869,7 @@ function renderMockArchive() {
 
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("click", (e) => {
-    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed],[data-mockskip],[data-mockarchive],#im-review-close") : null;
+    const t = e.target && e.target.closest ? e.target.closest("[data-mockfeed],[data-mockspeed],[data-mockskip],[data-mockbotspeed],[data-mockarchive],#im-review-close") : null;
     if (!t || !t.closest || !t.closest("#view-root")) return;
     if (t.id === "im-review-close") { _mockFeed.reviewId = null; _mfRender(); return; }
     if (t.dataset.mockarchive) {
@@ -594,10 +881,11 @@ if (typeof document !== "undefined" && document.addEventListener) {
     }
     if (t.dataset.mockfeed) {
       const a = t.dataset.mockfeed;
-      if (a === "start") startMockFeed();
+      // "start" now launches the INTERACTIVE cockpit mock (you bid vs the bots).
+      if (a === "start") startInteractiveCockpitMock();
       else if (a === "pause") pauseMockFeed();
       else if (a === "resume") resumeMockFeed();
-      else if (a === "stop") stopMockFeed();
+      else if (a === "stop") { if (_mockFeed.interactive) endInteractiveCockpitMock(); else stopMockFeed(); }
       else if (a === "saveclear") saveAndClearMock();
       else if (a === "clear") clearMockDraft();
       else if (a === "skipnom") skipMockNomination();
@@ -606,7 +894,25 @@ if (typeof document !== "undefined" && document.addEventListener) {
       skipMockPicks(t.dataset.mockskip);
     } else if (t.dataset.mockspeed) {
       setMockFeedSpeed(t.dataset.mockspeed);
+    } else if (t.dataset.mockbotspeed) {
+      if (typeof setMockBidSpeed === "function") setMockBidSpeed(t.dataset.mockbotspeed);
+      _mfRender();
     }
+  });
+}
+
+// Interactive cockpit mock: mirror engine phase changes the emitted frames don't
+// carry (your nominate turn, a pass, the draft finishing) into the cockpit.
+if (typeof onInteractiveChange === "function") {
+  onInteractiveChange((s) => {
+    if (!(_mockFeed.active && _mockFeed.interactive)) return;
+    if (s.phase === "done" && !_mockFeed.finished) {
+      _mockFeed.finished = true;
+      if (typeof stopInteractiveMock === "function") stopInteractiveMock();
+    }
+    if (typeof currentView === "undefined" || currentView !== "draft") return;
+    if (typeof _draftModeOn === "function" && !_draftModeOn()) return;
+    _icCockpitRefresh(s);
   });
 }
 

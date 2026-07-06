@@ -39,10 +39,19 @@ function buildMockTeamStates(opts) {
   // Keepers come from the Keepers tab (predicted keepers), not league-site marks.
   // opts.noKeepers → a keeper-FREE auction ($260 / full rosters), so the sim
   // matches the generic keeper-free cockpit the UD-native feed drives (R11).
-  const selections = (opts && opts.noKeepers) ? {}
-    : ((typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections());
+  // These two feed EVERY team, so a throw here would take out the whole build.
+  // Degrade to empty (keeper-free / no history overlay) rather than abort — a
+  // full 12-team keeper-free mock beats a broken 3-team one.
+  let selections = {};
+  try {
+    selections = (opts && opts.noKeepers) ? {}
+      : ((typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : getKeeperSelections());
+  } catch (e) { if (typeof console !== "undefined") console.warn("buildMockTeamStates: selections unavailable", e); }
   // Pre-compute history-derived profiles if available
-  const historyProfiles = (typeof computeAllOwnerProfiles === "function") ? computeAllOwnerProfiles() : {};
+  let historyProfiles = {};
+  try {
+    historyProfiles = (typeof computeAllOwnerProfiles === "function") ? computeAllOwnerProfiles() : {};
+  } catch (e) { if (typeof console !== "undefined") console.warn("buildMockTeamStates: profiles unavailable", e); }
   for (const t of LEAGUE.teams) {
     const teamSel = selections[t.id] || {};
     const kept = [];
@@ -50,11 +59,20 @@ function buildMockTeamStates(opts) {
     for (const [name, flags] of Object.entries(teamSel)) {
       if (flags.minorKeeper) continue;
       if (flags.keeper) {
-        const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
-        const price = ci ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
-        const pv = _mockPlayerValue(name);
-        kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
-        keptCost += price;
+        // Fault-isolate keeper resolution PER PLAYER: a single bad lookup
+        // (missing history, half-loaded values, an accented name that trips a
+        // helper) must never abort the team loop — that used to drop every team
+        // AFTER the failing one, leaving the mock with < 12 teams (e.g. only 3).
+        try {
+          const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
+          const price = ci ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
+          const pv = _mockPlayerValue(name);
+          kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
+          keptCost += price;
+        } catch (e) {
+          // Skip this one keeper but keep the team (default $0, UTIL slot).
+          if (typeof console !== "undefined") console.warn("buildMockTeamStates: keeper skipped for", t.id, name, e);
+        }
       }
     }
     // Layer profiles: DEFAULT_PROFILE → history overlay → opts overlay
@@ -73,6 +91,8 @@ function buildMockTeamStates(opts) {
     // Seed the flex slot model with kept players assigned to their best slot.
     const openSlots = initOpenSlots();
     for (const k of kept) assignToSlot(openSlots, k.elig);
+    // INVARIANT: emit exactly one state per LEAGUE team. Every id in LEAGUE.teams
+    // is unique, so this never overwrites — states always ends with LEAGUE.teams.length entries.
     states[t.id] = {
       teamId: t.id,
       teamName: t.name,

@@ -454,14 +454,31 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-ticker div { padding: 1px 0; border-bottom: 1px dotted var(--border); }
 .dm-reco-nums { display: flex; gap: 18px; margin-top: 4px; }
 
-.dm-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 420px); gap: 12px; align-items: start; }
-.dm-side { display: flex; flex-direction: column; gap: 12px; }
+/* Board | drag-handle | side rail. The 8px middle track is the resize handle;
+   JS overrides grid-template-columns inline when a split % is stored. */
+.dm-main { display: grid; grid-template-columns: minmax(0, 1fr) 8px minmax(340px, 420px); gap: 0; column-gap: 12px; align-items: start; }
+.dm-board-col { min-width: 0; }
+.dm-split {
+  align-self: stretch; min-height: 60px; cursor: col-resize;
+  border-radius: 4px; background: var(--border);
+  opacity: .5; transition: opacity .12s;
+}
+.dm-split:hover { opacity: 1; background: var(--accent); }
+.dm-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .dm-side > .card { margin: 0; }
+/* Resizable card body — the height persists (JS reapplies it on render). */
+.dm-cardbody { overflow: auto; resize: vertical; min-height: 40px; }
 
 .dm-board-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .dm-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
-.dm-seg .btn { border-radius: 0; padding: 3px 9px; font-size: 12px; }
-/* Active filter = subtle highlight, not a giant primary button (Jeff) */
+/* Fixed-width, center-aligned mode buttons: selecting one (adds .primary /
+   bold) must NOT change its width or shift the row. min-width holds the box,
+   centered text keeps it steady, and reserving the bold weight up front means
+   the non-selected state doesn't reflow when it becomes selected. */
+.dm-seg .btn { border-radius: 0; padding: 3px 9px; font-size: 12px; min-width: 52px; text-align: center; justify-content: center; box-sizing: border-box; }
+.dm-statview .btn { min-width: 54px; }
+/* Active filter = subtle highlight, not a giant primary button (Jeff). Keep the
+   layout identical to the ghost state — only color/inset shadow change. */
 .dm-seg .btn.primary {
   background: rgba(79,142,247,.14);
   color: var(--accent);
@@ -473,8 +490,31 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-side .card.dm-dragging { opacity: .5; }
 .dm-side .card.dm-dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .dm-bpa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+/* Multi-position board: one column per selected position, auto-fitting to the
+   board's current width (more columns as it's dragged wider, collapse when
+   narrow). */
+.dm-poscols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; align-items: start; }
+.dm-poscol { min-width: 0; }
+/* My Plan — full-width bar under the board / above the bottom drawer. */
+.dm-planbar { margin: 0; }
 .dm-table { font-size: 12px; width: 100%; }
 .dm-table th { position: sticky; top: 0; }
+/* Clickable team rows (Budgets / Projected Standings) → compare rosters (item 16) */
+.dm-table tr.dm-teamrow:hover { background: rgba(79,142,247,.08); }
+/* Endgame — forced-ON top-bar button + the prominent full-width strip (item 10) */
+#dm-endgame.dm-endgame-on {
+  color: var(--warn); border-color: var(--warn); background: rgba(210,153,34,.14);
+  box-shadow: inset 0 -2px 0 var(--warn); font-weight: 600;
+}
+.dm-endgame-strip { display: block; }
+.dm-endgame-strip > .card { margin: 0 0 12px; }
+.dm-endgame-strip > .card:last-child { margin-bottom: 0; }
+/* Compare-roster card (item 16) — subtly distinguished from the persistent cards */
+.dm-side .card.dm-cmpcard { border-color: rgba(79,142,247,.45); }
+/* Expanded per-category standings (item 17) — compact, horizontally scrollable */
+.dm-standings-full { min-width: 520px; }
+.dm-standings-full th, .dm-standings-full td { padding: 2px 5px; white-space: nowrap; }
+.dm-standings-full th.dm-sortcat:hover { color: var(--accent); }
 
 .dm-bottom { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg-2); }
 
@@ -482,7 +522,7 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
    of cards so panels spread across the width instead of stacking into a long
    scroll (Jeff: ESPN lives on the other monitor; use the whole width here). */
 @media (min-width: 1900px) {
-  .dm-main { grid-template-columns: minmax(0, 1fr) minmax(760px, 920px); }
+  .dm-main { grid-template-columns: minmax(0, 1fr) 8px minmax(760px, 920px); }
   .dm-hero { grid-template-columns: minmax(420px, 1.4fr) minmax(280px, 1fr) minmax(320px, 1fr); }
   .dm-player { font-size: 36px; }
   .dm-side { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
@@ -491,14 +531,16 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
   .dm-bpa { gap: 20px; }
 }
 @media (min-width: 2500px) {
-  .dm-main { grid-template-columns: minmax(0, 1fr) minmax(1150px, 1380px); }
+  .dm-main { grid-template-columns: minmax(0, 1fr) 8px minmax(1150px, 1380px); }
   .dm-side { grid-template-columns: 1fr 1fr 1fr; }
 }
 /* Bottom zone spreads horizontally too when open */
 @media (min-width: 1900px) {
   .dm-bottom-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: start; }
 }
-/* Narrow fallback (laptop) — stack, nothing hidden */
+/* Narrow fallback (laptop) — stack, nothing hidden. Board over rail; the resize
+   handle is meaningless when stacked, so hide it. */
 @media (max-width: 1100px) {
   .dm-hero, .dm-main, .dm-bpa { grid-template-columns: 1fr; }
+  .dm-split { display: none; }
 }

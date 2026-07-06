@@ -749,7 +749,8 @@ function wireMockControls() {
 
   // Interactive controls
   document.getElementById("interactive-start")?.addEventListener("click", () => {
-    startInteractiveMock();
+    const r = startInteractiveMock();
+    if (r && r.ok === false) { alert(r.error || "Couldn't start the mock."); return; }
     renderMock();
   });
   document.getElementById("interactive-stop")?.addEventListener("click", () => {

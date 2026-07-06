@@ -28,6 +28,7 @@ function loadProjectionsFromStorage() {
     _projections.hitters = Array.isArray(h) ? h : [];
     _projections.pitchers = Array.isArray(p) ? p : [];
     _projections.meta = m;
+    _invalidateProjIndex();
     if (_projections.hitters.length || _projections.pitchers.length) {
       setStatus("projections", `${_projections.hitters.length} hit / ${_projections.pitchers.length} pit`, "ok");
     } else {
@@ -137,6 +138,7 @@ function importHittersCSV(text, sourceName) {
     out.push(entry);
   }
   _projections.hitters = out;
+  _invalidateProjIndex();
   if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs hitter dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
@@ -181,6 +183,7 @@ function importPitchersCSV(text, sourceName) {
     out.push(entry);
   }
   _projections.pitchers = out;
+  _invalidateProjIndex();
   if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs pitcher dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
@@ -198,6 +201,7 @@ function clearProjections() {
   _projections.hitters = [];
   _projections.pitchers = [];
   _projections.meta = { source: null, importedAt: null, hitterCount: 0, pitcherCount: 0 };
+  _invalidateProjIndex();
   saveProjectionsToStorage();
   setStatus("projections", "none", "warn");
   fireProj();
@@ -206,11 +210,48 @@ function clearProjections() {
 function getHitterProjections() { return _projections.hitters; }
 function getPitcherProjections() { return _projections.pitchers; }
 function getProjectionMeta() { return _projections.meta; }
+
+// Lazily-built normalized-name index for the preseason store, so a keeper whose
+// name differs only by accent / suffix / middle initial (e.g. "José Berríos" vs
+// "Jose Berrios") still matches its projection. Without this, an exact-string
+// lookup silently returned null and the player contributed 0 to every category
+// (the reported "kept SP shows 0 QS" bug). Mirrors the ROS _buildIndex fuzzy
+// match. Invalidated whenever the store changes (see _invalidateProjIndex).
+let _projNameIdx = null;
+function _buildProjNameIndex() {
+  const idx = { exact: new Map(), core: new Map() };
+  if (typeof normalizePlayerName !== "function") return idx;   // normalizer not loaded yet
+  const add = (p, type) => {
+    const rec = { rec: p, type };
+    const k = normalizePlayerName(p.name);
+    if (k && !idx.exact.has(k)) idx.exact.set(k, rec);
+    if (typeof coreNameKey === "function") {
+      const ck = coreNameKey(p.name);
+      if (ck && !idx.core.has(ck)) idx.core.set(ck, rec);
+    }
+  };
+  for (const p of _projections.hitters) add(p, "H");
+  for (const p of _projections.pitchers) add(p, "P");
+  return idx;
+}
+function _invalidateProjIndex() { _projNameIdx = null; }
+
 function getProjection(name) {
   const h = _projections.hitters.find(p => p.name === name);
   if (h) return { ...h, type: "H" };
   const p = _projections.pitchers.find(p => p.name === name);
   if (p) return { ...p, type: "P" };
+  // Fuzzy (normalized) match against the preseason store — rescues accent /
+  // suffix / middle-initial mismatches that the exact lookup above misses. This
+  // is the common cause of a kept SP projecting 0 QS/K when preseason is the
+  // active source (no ROS source to fall through to).
+  if (typeof normalizePlayerName === "function") {
+    if (!_projNameIdx) _projNameIdx = _buildProjNameIndex();
+    const key = normalizePlayerName(name);
+    let hit = _projNameIdx.exact.get(key);
+    if (!hit && typeof coreNameKey === "function") hit = _projNameIdx.core.get(coreNameKey(name));
+    if (hit) return { ...hit.rec, type: hit.type };
+  }
   // In-season the preseason store is empty — the Data tab's ROS sources are
   // the live projections (same fallback the Keepers/Values tabs use). Without
   // this, projected standings / category pace / scorecards claimed "no

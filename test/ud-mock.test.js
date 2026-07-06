@@ -136,7 +136,7 @@ function makeSandbox(seed) {
   sandbox.getDraftDollarAdjustment = () => 0;
   sandbox.getFlaggedPlayers = () => [];
   sandbox.getMyRoster = () => [];
-  sandbox.projectTeamCategories = () => ({});
+  sandbox.projectTeamCategories = () => ({ ranks: {} });
   sandbox.esc = (s) => String(s == null ? "" : s);
   sandbox.setStatus = () => {};
   sandbox.getNfbc = () => null;
@@ -152,7 +152,15 @@ function makeSandbox(seed) {
   sandbox.fetchEspnPlayers = null;
 
   const ESPN_TEAM_ID_MAP = { 1: "matt", 2: "saxton", 3: "sam", 4: "glix", 5: "jeff", 6: "aj", 7: "corey", 8: "jd", 9: "wein", 10: "klin", 11: "dave", 12: "jtl" };
+  // Exposed as a context global too: buildMockFeedScript reverse-maps real team
+  // ids to ESPN ids via the global ESPN_TEAM_ID_MAP (real-owners mock, Jul 2026).
+  sandbox.ESPN_TEAM_ID_MAP = ESPN_TEAM_ID_MAP;
   sandbox.espnTeamIdToOwnerId = (id) => ESPN_TEAM_ID_MAP[id] || null;
+  // Cockpit panels whose source files aren't in this concat (startMockFeed now
+  // enters Draft Mode immediately, so renderDraftMode runs during the test).
+  sandbox.renderNominationsPanel = () => "";
+  sandbox.wireNominationsPanel = () => {};
+  sandbox.renderCategoryDashboard = () => "";
   sandbox.ESPN = { leagueId: 1200, listeners: [], polling: false, proxyUrl: "" };
   sandbox.leagueOverrideActive = () => sandbox.ESPN.leagueId !== sandbox.UD_HOME_LEAGUE_ID;
   sandbox.setLeagueOverride = (id) => {
@@ -330,7 +338,9 @@ async function run() {
       assert(pk, "missing pick for playerId " + sale.playerId);
       assertEq(pk.espnTeamId, sale.teamId, "playerId " + sale.playerId + " team");
       assertEq(pk.price, sale.price, "playerId " + sale.playerId + " price");
-      assert(typeof pk.team === "string" && pk.team.indexOf("espn:") === 0, "pick.team must be espn:N in test mode, got " + pk.team);
+      // Real-owners mock (Jul 2026): frames carry REAL ESPN team ids and the
+      // pick pipeline attributes each pick to the real owner id — not espn:N.
+      assertEq(pk.team, sandbox.ESPN_TEAM_ID_MAP[sale.teamId], "playerId " + sale.playerId + " attributed to the real owner");
     }
   });
 

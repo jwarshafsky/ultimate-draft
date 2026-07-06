@@ -197,6 +197,7 @@ function renderSettings() {
   html += '<div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">';
   html += '<button class="btn" id="set-strategy-save" style="width:auto; padding:6px 14px;">Save strategy</button>';
   html += '<button class="btn primary" id="set-strategy-condense" style="width:auto; padding:6px 14px;">Condense for AI</button>';
+  html += '<button class="btn ghost" id="set-strategy-clear" style="width:auto; padding:6px 14px;">Clear strategy</button>';
   html += '<span class="small muted" id="set-strategy-status">' + (strat.brief ? 'Brief ready' + (strat.briefAt ? ' (' + new Date(strat.briefAt).toLocaleDateString() + ')' : '') : 'No brief yet') + '</span>';
   html += '</div>';
   html += '<div id="set-strategy-brief" class="small" style="margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--bg-3); white-space:pre-wrap;' + (strat.brief ? '' : ' display:none;') + '">' + esc(strat.brief) + '</div>';
@@ -333,6 +334,16 @@ function wireSettingsHandlers() {
     setDraftStrategyText(document.getElementById("set-strategy-text").value);
     const st = document.getElementById("set-strategy-status");
     if (st) st.textContent = "Saved.";
+  });
+  document.getElementById("set-strategy-clear")?.addEventListener("click", () => {
+    if (!confirm("Clear your draft strategy and AI brief?")) return;
+    clearDraftStrategy();
+    const ta = document.getElementById("set-strategy-text");
+    if (ta) ta.value = "";
+    const box = document.getElementById("set-strategy-brief");
+    if (box) { box.textContent = ""; box.style.display = "none"; }
+    const st = document.getElementById("set-strategy-status");
+    if (st) st.textContent = "No brief yet";
   });
   document.getElementById("set-strategy-condense")?.addEventListener("click", async () => {
     const st = document.getElementById("set-strategy-status");

@@ -29,7 +29,10 @@ const SYNC_EXACT_KEYS = new Set([
   "ud_my_keepers_v1", "ud_my_keepers_src_v1",
   "ud_draft_strategy_v1",
   "ud_draft_configs_v1", "ud_budget_adj_v1", "ud_league_url_v1",
-  "ud_dm_layout_v1", "ud_test_my_team",
+  // ud_dm_layout_v1 deliberately NOT synced (Jul 2026): it now carries panel
+  // sizes + the board/side split %, which are monitor-specific — syncing a
+  // desktop layout onto a laptop would wreck it. Device-local, like DM_KEY.
+  "ud_test_my_team",
   "ud_keeper_inflation_v1",
   "ud_scenarios_v1",
   "ud_saved_mocks_v1",

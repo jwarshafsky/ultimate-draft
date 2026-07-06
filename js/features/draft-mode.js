@@ -13,12 +13,26 @@
 // re-render, so nothing jumps mid-keystroke).
 
 const DM_KEY = "ud_draft_mode_v1";   // device-local view state (deliberately not synced)
-const _dmState = { boardMode: "BPA", search: "", needsOnly: false };
+// boardMode = the exclusive preset ("BPA" | "HIT" | "PIT"); boardPos = a Set of
+// position codes for multi-select. When boardPos is non-empty it overrides
+// boardMode (one column per selected position). statView toggles the table
+// columns ("value" | "stats").
+const _dmState = { boardMode: "BPA", boardPos: new Set(), search: "", needsOnly: false, statView: "value",
+  compareTeamId: null,        // item 16: another team's roster shown next to mine
+  standingsExpanded: false,   // item 17: full per-category standings table
+  standingsSort: null };      // item 17: { cat: <key|"roto">, dir: "desc"|"asc" }
 
 function _draftModeOn() {
   try { return localStorage.getItem(DM_KEY) === "1"; } catch (e) { return false; }
 }
 function setDraftMode(on) {
+  // Leaving the cockpit ends a live interactive practice draft (freeze it for
+  // Save/Clear) — the bots must not keep drafting in the background off-screen.
+  if (!on && typeof mockFeedInteractive === "function" && mockFeedInteractive() &&
+      typeof mockFeedFinished === "function" && !mockFeedFinished() &&
+      typeof endInteractiveCockpitMock === "function") {
+    endInteractiveCockpitMock();
+  }
   try { localStorage.setItem(DM_KEY, on ? "1" : "0"); } catch (e) {}
   document.body.classList.toggle("draft-mode", !!on);
   if (!on && typeof _liveDraft !== "undefined") _liveDraft.manualView = false;   // Exit always lands on Draft Setup
@@ -149,7 +163,7 @@ function _fitContext() {
   // Weak categories = bottom-half projected rank (rank is 1=best..12=worst).
   const cats = (typeof projectTeamCategories === "function") ? projectTeamCategories(getMyRoster()) : null;
   const weak = new Set();
-  if (cats) for (const [c, r] of Object.entries(cats.ranks)) if (r >= 7) weak.add(c);
+  if (cats && cats.ranks) for (const [c, r] of Object.entries(cats.ranks)) if (r >= 7) weak.add(c);
   _fitCtx = { openPos, openCount, weak, slotsRemaining: st ? st.slotsRemaining : 99 };
   _fitCtxKey = key;
   return _fitCtx;
@@ -259,22 +273,30 @@ function computeLiveProjStandings() {
     slots[t.id] = Math.max(0, st ? st.slotsRemaining : 0);
     fills[t.id] = [];
   }
+  // Allocate the remaining pool (value-descending) to open teams: the richest
+  // team that can still afford a player lands him. Selecting on ABSOLUTE money
+  // (not $/slot) matters — a $/slot rule rewards buying cheap players (a
+  // below-average buy nudges $/slot UP), so one team runs away and vacuums the
+  // whole pool. Money only ever decreases, so richest-wins spreads studs to the
+  // funded teams and lets cash-rich teams mop up the leftovers, with no runaway.
+  const teamList = (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams);
+  const rank = (t) => money[t.id] * 1000 + slots[t.id];   // money dominates; more open slots breaks ties
   for (const p of pool) {
     const est = Math.max(1, Math.round((p.value || 0) * inflMult));
-    let best = null, bestPerSlot = -1;
-    for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
+    let best = null, bestKey = -Infinity;
+    for (const t of teamList) {
       if (slots[t.id] <= 0) continue;
       const afford = money[t.id] - (slots[t.id] - 1);   // $1 reserved per other slot
-      if (afford < est && !(est <= 1)) continue;
-      const perSlot = money[t.id] / slots[t.id];
-      if (perSlot > bestPerSlot) { bestPerSlot = perSlot; best = t.id; }
+      if (afford < est) continue;
+      const key = rank(t);
+      if (key > bestKey) { bestKey = key; best = t.id; }
     }
     if (best == null) {
       // Nobody can afford him at estimate — richest open team gets him at max
-      for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
+      for (const t of teamList) {
         if (slots[t.id] <= 0) continue;
-        const perSlot = money[t.id] / slots[t.id];
-        if (perSlot > bestPerSlot) { bestPerSlot = perSlot; best = t.id; }
+        const key = rank(t);
+        if (key > bestKey) { bestKey = key; best = t.id; }
       }
       if (best == null) break;   // all rosters full
     }
@@ -305,13 +327,30 @@ function renderDraftMode(root, inflation) {
   document.body.classList.add("draft-mode");
   if (typeof _ensureEspnNames === "function") _ensureEspnNames();   // names + injury flags, best-effort
   if (typeof ensureRotowireNews === "function") ensureRotowireNews();   // player news, best-effort
+  // Restore the persisted Value/Stats toggle before rendering the board (once —
+  // only if the user hasn't already changed it this session).
+  if (!_dmState._statViewLoaded) {
+    const lv = _dmLayout().statView;
+    if (lv) _dmState.statView = lv;
+    const se = _dmLayout().standingsExpanded;   // item 17: restore expanded state
+    if (typeof se === "boolean") _dmState.standingsExpanded = se;
+    _dmState._statViewLoaded = true;
+  }
   let html = '<div class="dm-wrap">';
   html += _dmTopBar(inflation);
   html += _dmHero();
+  // Endgame panel — full-width, directly below the hero and ABOVE the board, so
+  // turning endgame on (or its auto-detecting) is unmistakable rather than buried
+  // in the collapsed bottom drawer (item 10).
+  if (typeof isEndgame === "function" && isEndgame()) {
+    html += '<div class="dm-endgame-strip">' + renderEndgamePanel() + '</div>';
+  }
   html += '<div class="dm-main">';
-  html += '<div>' + _dmBoard(inflation) + '</div>';
+  html += '<div class="dm-board-col">' + _dmBoard(inflation) + '</div>';
+  html += '<div class="dm-split" title="Drag to resize"></div>';
   html += '<div class="dm-side">' + _dmSide() + '</div>';
   html += '</div>';
+  html += _dmPlanBar();   // My Plan — full-width, under the board (item 15)
   html += _dmBottom();
   html += '</div>';
   root.innerHTML = html;
@@ -326,10 +365,15 @@ function _dmTopBar(inflation) {
   html += '<span class="muted small">' + _liveDraft.picks.length + ' picks</span>';
   if (inflation) html += '<span class="badge">infl ' + inflation.multiplier.toFixed(2) + '×</span>';
   if (st) html += '<span class="small">My budget <b>$' + st.budget + '</b> · ' + st.slotsRemaining + ' slots · max bid <b style="color:var(--accent);">$' + st.maxBid + '</b></span>';
+  // Endgame badge — visible whenever endgame is active (forced OR auto-detected),
+  // so the auto path is no longer silent (item 10).
+  const egOn = (typeof isEndgame === "function") && isEndgame();
+  const egForced = (typeof isEndgameForced === "function") && isEndgameForced();
+  if (egOn) html += '<span class="badge" style="color:var(--warn); border-color:var(--warn); background:rgba(210,153,34,.10);" title="' + (egForced ? 'Endgame forced on' : 'Endgame auto-detected — late scarcity phase') + '">🔥 ENDGAME' + (egForced ? '' : ' <span class="muted">(auto)</span>') + '</span>';
   html += '<span id="dm-feedchips" class="small" style="display:inline-flex; gap:10px;">' + _dmFeedChips() + '</span>';
   html += '<span style="flex:1;"></span>';
   if (typeof _mfTopbarHtml === "function") html += _mfTopbarHtml();   // mirrored practice-mock controls
-  html += '<button class="btn ghost" id="dm-endgame" title="Force the endgame tools on (auto-detection stays as fallback)">' + ((typeof isEndgameForced === "function" && isEndgameForced()) ? '🔥 Endgame: ON' : 'Endgame: auto') + '</button>';
+  html += '<button class="btn ghost' + (egForced ? ' dm-endgame-on' : '') + '" id="dm-endgame" title="Force the endgame tools on (auto-detection stays as fallback)">' + (egForced ? '🔥 Endgame: ON' : 'Endgame: auto') + '</button>';
   html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit to setup</button>';
   html += '</div>';
@@ -369,10 +413,20 @@ function _dmHero() {
   // visible name now carries an injury chip so its textContent can't be used)
   html += '<div class="card dm-otc" id="dm-otc" data-player="' + esc(name || "") + '">';
   if (!name) {
-    html += '<div class="otc-label">On the Clock</div>';
-    html += '<div class="dm-player muted">Waiting for a nomination…</div>';
-    html += '<div class="small muted">Nominations on ESPN appear here automatically' + (getFeedMode() === "off" ? ' — turn the pick feed ON below.' : '.') + '</div>';
-    if (lotIsPlaceholder) html += '<div class="small dim" style="margin-top:4px;">(ESPN sent a placeholder nomination id — the room is between lots, or player names are still loading.)</div>';
+    const icOn = typeof mockFeedInteractive === "function" && mockFeedInteractive();
+    if (icOn && typeof mockFeedFinished === "function" && mockFeedFinished()) {
+      html += '<div class="otc-label">Practice draft</div>';
+      html += '<div class="dm-player muted">Practice draft complete 🎉</div>';
+      html += '<div class="small muted">Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> or <b>Clear</b> from the top bar.</div>';
+    } else if (icOn) {
+      html += '<div class="otc-label">Practice draft</div>';
+      html += _dmInteractiveNominateHtml();
+    } else {
+      html += '<div class="otc-label">On the Clock</div>';
+      html += '<div class="dm-player muted">Waiting for a nomination…</div>';
+      html += '<div class="small muted">Nominations on ESPN appear here automatically' + (getFeedMode() === "off" ? ' — turn the pick feed ON below.' : '.') + '</div>';
+      if (lotIsPlaceholder) html += '<div class="small dim" style="margin-top:4px;">(ESPN sent a placeholder nomination id — the room is between lots, or player names are still loading.)</div>';
+    }
   } else {
     const val = getPlayerValue(name);
     const nfbc = getNfbc(name);
@@ -422,6 +476,13 @@ function _dmHero() {
 
 function _dmTeamLabel(espnOrOwnerId) {
   if (draftTestMode()) return "Team " + espnOrOwnerId;
+  // A running practice mock feeds REAL ESPN ids — resolve them to the real owner
+  // via the mock's own id→owner map (covers even a synthetic seat with no
+  // ESPN_TEAM_ID_MAP entry). Real drafts fall through to the standard mapping.
+  if (typeof mockFeedActive === "function" && mockFeedActive() && typeof mockFeedOwnerName === "function") {
+    const nm = mockFeedOwnerName(espnOrOwnerId);
+    if (nm) return nm;
+  }
   const owner = espnTeamIdToOwnerId(espnOrOwnerId);
   return (owner && getTeam(owner)?.owner) || ("Team " + espnOrOwnerId);
 }
@@ -482,12 +543,12 @@ function _dmBidMeter(lot) {
   const grad = 'linear-gradient(90deg, var(--good) 0%, var(--good) ' + bargainEnd.toFixed(1) +
     '%, var(--warn) ' + fairMid.toFixed(1) + '%, var(--bad) ' + overpayStart.toFixed(1) + '%, var(--bad) 100%)';
   let h = '<div style="position:relative; height:13px; border-radius:7px; margin:8px 0 3px; background:' + grad + '; box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);">';
-  h += '<div title="fair / walk-away $' + Math.round(fair) + '" style="position:absolute; left:' + fairMid.toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.7);"></div>';
+  h += '<div title="fair $' + Math.round(fair) + '" style="position:absolute; left:' + fairMid.toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:var(--warn);"></div>';
   if (stretch) h += '<div title="your stretch $' + Math.round(stretch) + '" style="position:absolute; left:' + pct(stretch).toFixed(1) + '%; top:-3px; bottom:-3px; width:2px; background:var(--accent);"></div>';
   h += '<div style="position:absolute; left:' + bidPct.toFixed(1) + '%; top:-6px; transform:translateX(-50%); font-size:12px; line-height:1; text-shadow:0 1px 2px rgba(0,0,0,.6);">▼</div>';
   h += '</div>';
   h += '<div class="small" style="display:flex; justify-content:space-between; gap:6px;"><span style="color:var(--good);">bargain</span>' +
-    '<span><span style="color:var(--warn);">walk $' + Math.round(fair) + '</span>' +
+    '<span><span style="color:var(--warn);">Fair $' + Math.round(fair) + '</span>' +
     (stretch ? ' <span style="color:var(--accent);">· stretch $' + Math.round(stretch) + '</span>' : '') + '</span>' +
     '<span style="color:var(--bad);">overpay</span></div>';
   return h;
@@ -499,9 +560,84 @@ function _dmTickerHtml(lot) {
   return rows.map(b => '<div class="small">' + '$' + b.amount + ' — ' + esc(_dmTeamLabel(b.teamId)) + (b.ack ? '' : '') + '</div>').join("");
 }
 
+// ---------------------------------------------------------------------------
+// Interactive practice-mock cockpit controls (mock-interactive.js drives the
+// auction; these are YOUR nominate + bid/pass buttons). Wired once via document
+// delegation (see the bottom of this file) so they survive the innerHTML
+// rebuilds of updateDraftModeLive.
+
+// The nominate box shown in the hero when it's your turn (no lot open yet).
+function _dmInteractiveNominateHtml() {
+  const s = (typeof getInteractiveState === "function") ? getInteractiveState() : null;
+  const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+  if (!s || s.phase !== "nominating" || !me) return '<div class="dm-player muted">Setting up…</div>';
+  const nomId = s.nominationOrder[s.currentNominator % s.nominationOrder.length];
+  if (nomId !== me.id) {
+    const espn = (typeof mockFeedEspnId === "function") ? mockFeedEspnId(nomId) : null;
+    return '<div class="dm-player muted" style="font-size:20px;">' + esc(espn != null ? _dmTeamLabel(espn) : "A team") + ' is choosing…</div>' +
+      '<div class="small muted">They\'ll nominate a player in a moment.</div>';
+  }
+  const myState = s.states[me.id];
+  const maxBid = myState ? Math.max(0, myState.budget - Math.max(0, myState.slotsRemaining - 1)) : 0;
+  let html = '<div class="dm-player" style="color:var(--accent); font-size:22px;">Your turn to nominate</div>';
+  html += '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">';
+  html += '<input id="dm-icnom-name" list="dm-icnom-list" placeholder="Player name…" autocomplete="off" style="flex:1; min-width:220px; font-size:16px;">';
+  html += '<datalist id="dm-icnom-list">';
+  for (const p of s.pool.slice(0, 200)) html += '<option value="' + esc(p.name) + '">' + esc(p.posKey) + ' · $' + p.value.toFixed(0) + '</option>';
+  html += '</datalist>';
+  html += '<input id="dm-icnom-open" type="number" min="1" value="1" style="width:100px; font-size:16px;" title="Opening bid">';
+  html += '<button class="btn primary" data-icnom="1" style="width:auto; padding:10px 18px;">Nominate</button>';
+  html += '</div>';
+  html += '<div class="small muted" style="margin-top:6px;">Type a name (or click one on the board below). Your max bid: <b>$' + maxBid + '</b>.</div>';
+  return html;
+}
+
+// Your bid / pass panel, shown at the top of Your Call during a live lot.
+function _dmInteractiveBidControls(lot) {
+  const s = (typeof getInteractiveState === "function") ? getInteractiveState() : null;
+  const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
+  if (!s || s.phase !== "bidding" || !me) return "";
+  const myState = s.states[me.id];
+  if (!myState) return "";
+  const cur = s.currentBid;
+  const isMyBid = s.currentWinner === me.id;
+  const iHavePassed = s.passedTeams && s.passedTeams.has(me.id);
+  const myMax = Math.max(0, myState.budget - Math.max(0, myState.slotsRemaining - 1));
+  const pricedOut = myMax <= cur;
+  const canAct = !isMyBid && !iHavePassed && !pricedOut;
+  const fair = _dmFairValue(lot ? lot.name : (s.current && s.current.name)) || 0;
+  const parVal = Math.round(fair);
+  let html = '<div class="dm-icbid" style="margin:0 0 10px; padding:8px; border:1px solid var(--accent); border-radius:8px; background:rgba(79,142,247,.06);">';
+  html += '<div class="small" style="margin-bottom:6px;">';
+  if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bots responding…</span>';
+  else if (iHavePassed) html += '<span class="muted">You passed on this lot.</span>';
+  else if (pricedOut) html += '<span class="bad">Priced out — your max is $' + myMax + '.</span>';
+  else html += '<span>Your turn — bid or pass. Max <b>$' + myMax + '</b>.</span>';
+  html += '</div>';
+  html += '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">';
+  for (const inc of [1, 2, 5]) {
+    const en = canAct && (cur + inc) <= myMax;
+    html += '<button class="btn primary" data-icbid="' + inc + '"' + (en ? '' : ' disabled') + ' style="width:auto; padding:6px 12px; min-width:46px;">+$' + inc + '</button>';
+  }
+  const parEn = canAct && parVal > cur && parVal <= myMax;
+  if (parVal > 0) html += '<button class="btn" data-icbidto="' + parVal + '"' + (parEn ? '' : ' disabled') + ' style="width:auto; padding:6px 10px;" title="Bid to fair value">→ $' + parVal + '</button>';
+  html += '<input id="dm-icbid-custom" type="number" min="' + (cur + 1) + '" placeholder="$" style="width:70px;"' + (canAct ? '' : ' disabled') + '>';
+  html += '<button class="btn" data-icbidcustom="1"' + (canAct ? '' : ' disabled') + ' style="width:auto; padding:6px 10px;">Bid</button>';
+  const passEn = !isMyBid && !iHavePassed;
+  html += '<button class="btn ghost" data-icpass="1"' + (passEn ? '' : ' disabled') + ' style="width:auto; padding:6px 12px;">Pass</button>';
+  html += '</div>';
+  if (!iHavePassed) {
+    if (s.proxyMax != null) html += '<div class="small" style="margin-top:6px;"><span class="good">Auto-bidding up to <b>$' + s.proxyMax + '</b></span> <button class="btn ghost" data-icproxy="cancel" style="width:auto; padding:2px 10px; font-size:11px;">Cancel</button></div>';
+    else html += '<div class="small" style="margin-top:6px; display:flex; align-items:center; gap:6px;"><span class="muted">Auto-bid up to</span><input id="dm-icproxy" type="number" min="' + (cur + 1) + '" placeholder="$max" style="width:70px;"><button class="btn" data-icproxy="set" style="width:auto; padding:3px 10px; font-size:11px;">Set</button></div>';
+  }
+  html += '</div>';
+  return html;
+}
+
 function _dmRecoHtml(name, lot) {
+  const pre = (typeof mockFeedInteractive === "function" && mockFeedInteractive()) ? _dmInteractiveBidControls(lot) : "";
   const r = recommendBid(name);
-  if (!r) return '<span class="muted small">no value data for ' + esc(name) + '</span>';
+  if (!r) return pre + '<span class="muted small">no value data for ' + esc(name) + '</span>';
   const high = lot ? lot.highBid : (_liveDraft.highBid || 0);
   let verdict, vcolor;
   if (high < r.walk) { verdict = "room to bid"; vcolor = "var(--good)"; }
@@ -515,7 +651,24 @@ function _dmRecoHtml(name, lot) {
   html += '<div class="muted small" style="margin-top:6px;">' + esc(r.rationale) + '</div>';
   const tactic = _bidTactic(name, high, r, lot);
   if (tactic) html += '<div class="small" style="margin-top:4px; color:var(--accent);">💡 ' + esc(tactic) + '</div>';
-  return html;
+  // Practice-mock bid controls (item 3). In a real ESPN draft Jeff bids on ESPN,
+  // so these appear ONLY during a running UD-native mock with a live lot. A "+$1"
+  // quick-raise plus a number box (pre-filled at high+1) + Bid. Wired in
+  // wireDraftMode(); userMockBid() clamps + re-resolves the lot (mock-live-feed.js).
+  // watch-only mock (legacy playback): the interactive mock has its own richer
+  // bid/pass panel prepended above, so gate this out when interactive.
+  const watchOnlyMock = typeof mockFeedActive === "function" && mockFeedActive() &&
+    !(typeof mockFeedInteractive === "function" && mockFeedInteractive());
+  if (lot && lot.playerId != null && watchOnlyMock) {
+    const next = high + 1;
+    html += '<div style="display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap;">';
+    html += '<button class="btn primary" id="dm-mock-bid1" style="width:auto; padding:6px 12px;" title="Quick raise to $' + next + '">+$1 → $' + next + '</button>';
+    html += '<input id="dm-mock-bidamt" type="number" min="' + next + '" value="' + next + '" style="width:80px; font-size:16px; padding:5px 8px; border:1px solid var(--border); background:var(--bg-3); color:var(--text);">';
+    html += '<button class="btn ghost" id="dm-mock-bid" style="width:auto; padding:6px 12px;">Bid</button>';
+    html += '</div>';
+    html += '<div class="small muted" style="margin-top:3px;">You bid here; the bots react and can counter — win a lot by topping the room.</div>';
+  }
+  return pre + html;
 }
 
 // One tactical nudge (kept deliberately light): break a round-number wall, or
@@ -541,23 +694,35 @@ const _DM_MODES = ["BPA", "HIT", "PIT", "C", "1B", "2B", "SS", "3B", "MI", "CI",
 const _DM_FLEX = { MI: ["2B", "SS"], CI: ["1B", "3B"], UTIL: ["C", "1B", "2B", "SS", "3B", "OF", "UTIL", "DH"] };
 const _DM_HIT_POS = ["C", "1B", "2B", "SS", "3B", "OF", "UTIL", "DH"];
 
-function _dmPoolRows(inflation) {
+// The set of positions that pass a single mode code (BPA = everything, HIT/PIT
+// the two big buckets, flex codes their eligibility list, a bare position code
+// itself). Shared by single- and multi-column rendering.
+function _dmModeMatch(p, m) {
+  if (m === "BPA") return true;
+  if (m === "HIT") return _DM_HIT_POS.includes(p.posKey);
+  if (m === "PIT") return p.posKey === "SP" || p.posKey === "RP";
+  if (_DM_FLEX[m]) return _DM_FLEX[m].includes(p.posKey);
+  return p.posKey === m;
+}
+
+// The available pool with the global search + "my needs" filters applied, but
+// WITHOUT any mode/position filter (callers slice per column/mode themselves).
+function _dmBasePool() {
   let pool = availableDraftPool();
   if (_dmState.search) {
     const q = _dmState.search.toLowerCase();
     pool = pool.filter(p => p.name.toLowerCase().includes(q));
   }
-  const m = _dmState.boardMode;
-  if (m === "HIT") pool = pool.filter(p => _DM_HIT_POS.includes(p.posKey));
-  else if (m === "PIT") pool = pool.filter(p => p.posKey === "SP" || p.posKey === "RP");
-  else if (_DM_FLEX[m]) pool = pool.filter(p => _DM_FLEX[m].includes(p.posKey));
-  else if (m !== "BPA") pool = pool.filter(p => p.posKey === m);
   if (_dmState.needsOnly) {
     const me = (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : getMyTeam());
     const st = me ? computeLiveTeamStates()[me.id] : null;
     if (st) pool = pool.filter(p => (st.posCounts[p.posKey] || 0) === 0);
   }
   return pool;
+}
+
+function _dmPoolRows(inflation) {
+  return _dmBasePool().filter(p => _dmModeMatch(p, _dmState.boardMode));
 }
 
 // Scan the available pool for tier cliffs: a position whose best remaining tier
@@ -596,17 +761,42 @@ function _dmTierCliffBanner() {
   return '<div class="small" style="margin-bottom:8px; padding:5px 8px; border:1px solid var(--warn); background:rgba(210,153,34,.08);">⛰️ <b>Tier cliffs:</b> ' + shown + '</div>';
 }
 
+// The positions that participate in multi-select (BPA/HIT/PIT are exclusive
+// presets that clear the multi-set; everything else toggles in/out).
+const _DM_PRESETS = ["BPA", "HIT", "PIT"];
+const _DM_POS_MODES = _DM_MODES.filter(m => !_DM_PRESETS.includes(m));
+
 function _dmBoard(inflation) {
+  const posSel = _dmState.boardPos;   // Set of selected position codes
+  const multi = posSel && posSel.size > 0;
   let html = '<div class="card">';
   html += _dmTierCliffBanner();
   html += '<div class="dm-board-head">';
-  html += '<div class="seg dm-seg">' + _DM_MODES.map(m =>
-    '<button class="btn' + (_dmState.boardMode === m ? ' primary' : ' ghost') + '" data-dm-mode="' + m + '">' + (m === "HIT" ? "Hitters" : m === "PIT" ? "Pitchers" : m) + '</button>').join("") + '</div>';
+  html += '<div class="seg dm-seg">' + _DM_MODES.map(m => {
+    const isPreset = _DM_PRESETS.includes(m);
+    const active = isPreset ? (!multi && _dmState.boardMode === m) : posSel.has(m);
+    return '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-dm-mode="' + m + '">' + (m === "HIT" ? "Hitters" : m === "PIT" ? "Pitchers" : m) + '</button>';
+  }).join("") + '</div>';
   html += '<input id="dm-search" placeholder="Search…" value="' + esc(_dmState.search) + '" style="width:180px;">';
+  // Value / Stats column toggle (item 12).
+  html += '<div class="seg dm-seg dm-statview">' +
+    '<button class="btn' + (_dmState.statView === "value" ? ' primary' : ' ghost') + '" data-dm-statview="value">Value</button>' +
+    '<button class="btn' + (_dmState.statView === "stats" ? ' primary' : ' ghost') + '" data-dm-statview="stats">Stats</button></div>';
   html += '<label class="small muted" style="white-space:nowrap;"><input type="checkbox" id="dm-needs"' + (_dmState.needsOnly ? " checked" : "") + '> my needs</label>';
   html += '</div>';
 
-  if (_dmState.boardMode === "BPA") {
+  if (multi) {
+    // One column PER selected position, side by side, auto-fitting to width.
+    const base = _dmBasePool();
+    // Preserve the segmented-control order for readable, stable columns.
+    const cols = _DM_POS_MODES.filter(m => posSel.has(m));
+    html += '<div class="dm-poscols">';
+    for (const m of cols) {
+      const rows = base.filter(p => _dmModeMatch(p, m)).slice(0, 40);
+      html += '<div class="dm-poscol"><h3 style="margin:6px 0;">' + esc(m) + '</h3>' + _dmTable(rows, inflation) + '</div>';
+    }
+    html += '</div>';
+  } else if (_dmState.boardMode === "BPA") {
     const pool = _dmPoolRows(inflation);
     const hit = pool.filter(p => _DM_HIT_POS.includes(p.posKey)).slice(0, 18);
     const pit = pool.filter(p => p.posKey === "SP" || p.posKey === "RP").slice(0, 18);
@@ -621,9 +811,36 @@ function _dmBoard(inflation) {
   return html;
 }
 
+// Stats-view columns: per-row we show the right set (hitter vs pitcher). The
+// header is a compact combined set so a mixed table still lines up.
+const _DM_HIT_STATS = [["R", "R"], ["HR", "HR"], ["RBI", "RBI"], ["SB", "SB"], ["OBP", "OBP"]];
+const _DM_PIT_STATS = [["QS", "QS"], ["K", "K"], ["SV+H", "SV_HLD"], ["ERA", "ERA"], ["WHIP", "WHIP"]];
+
+// The projected-stat <td> cells for one player (5 numeric cells). Missing
+// projection → dim dashes. Rates: OBP 3dp; ERA/WHIP 2dp.
+function _dmStatCells(name) {
+  const proj = (typeof getProjection === "function") ? getProjection(name) : null;
+  const cell = (v, dec) => {
+    if (v == null || v === "" || (typeof v === "number" && !isFinite(v))) return '<td class="num dim">—</td>';
+    const out = (dec != null) ? Number(v).toFixed(dec) : v;
+    return '<td class="num">' + out + '</td>';
+  };
+  if (!proj) return '<td class="num dim">—</td>'.repeat(5);
+  if (proj.type === "H") {
+    return cell(proj.R) + cell(proj.HR) + cell(proj.RBI) + cell(proj.SB) + cell(proj.OBP, 3);
+  }
+  return cell(proj.QS) + cell(proj.K) + cell(proj.SV_HLD) + cell(proj.ERA, 2) + cell(proj.WHIP, 2);
+}
+
 function _dmTable(players, inflation) {
   if (!players.length) return '<p class="muted small">nobody left here.</p>';
-  let html = '<table class="dm-table"><thead><tr><th>Player</th><th>Fit</th><th>Pos</th><th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">Δmkt</th><th></th></tr></thead><tbody>';
+  const stats = _dmState.statView === "stats";
+  // Combined header for the stats view (hitter cats then pitcher cats collapse
+  // onto the same 5 columns; per-row cells pick the matching set).
+  const statHead = stats
+    ? '<th class="num">R/QS</th><th class="num">HR/K</th><th class="num">RBI/SV+H</th><th class="num">SB/ERA</th><th class="num">OBP/WHIP</th>'
+    : '<th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">Δmkt</th>';
+  let html = '<table class="dm-table"><thead><tr><th>Player</th><th>Fit</th><th>Pos</th>' + statHead + '<th></th></tr></thead><tbody>';
   for (const p of players) {
     const inf = inflatedValue(p, inflation);
     const nfbc = getNfbc(p.name);
@@ -637,10 +854,14 @@ function _dmTable(players, inflation) {
       (typeof renderTagIcons === "function" ? renderTagIcons(p.name) : '') + '</td>';
     html += '<td class="small">' + (fit ? '<span title="' + esc(fit.label) + '" style="color:' + (fit.strong ? 'var(--good)' : 'var(--accent)') + ';">' + (fit.strong ? '★ ' : '• ') + esc(fit.label) + '</span>' : '<span class="dim">—</span>') + '</td>';
     html += '<td>' + esc(p.posKey) + '</td>';
-    html += '<td class="num">$' + p.value.toFixed(0) + '</td>';
-    html += '<td class="num"><b>$' + inf.toFixed(0) + '</b></td>';
-    html += '<td class="num' + (nfbc?.avg ? '' : ' dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
-    html += '<td class="num' + (delta == null ? ' dim' : delta > 3 ? '" style="color:var(--warn);' : delta < -3 ? '" style="color:var(--good);' : '') + '">' + (delta == null ? '—' : (delta > 0 ? '+' : '') + delta.toFixed(0)) + '</td>';
+    if (stats) {
+      html += _dmStatCells(p.name);
+    } else {
+      html += '<td class="num">$' + p.value.toFixed(0) + '</td>';
+      html += '<td class="num"><b>$' + inf.toFixed(0) + '</b></td>';
+      html += '<td class="num' + (nfbc?.avg ? '' : ' dim') + '">' + (nfbc?.avg ? '$' + nfbc.avg.toFixed(0) : '—') + '</td>';
+      html += '<td class="num' + (delta == null ? ' dim' : delta > 3 ? '" style="color:var(--warn);' : delta < -3 ? '" style="color:var(--good);' : '') + '">' + (delta == null ? '—' : (delta > 0 ? '+' : '') + delta.toFixed(0)) + '</td>';
+    }
     // With a live feed, nominations happen on ESPN — a manual ▶ here looks
     // dead (Jeff: "arrows don't do anything"). Make the action useful: 🎯
     // toggles the player as a target (feeds fit/reco/nomination goals).
@@ -658,14 +879,41 @@ function _dmTable(players, inflation) {
 
 // --- side panels ---
 // Each card has an id; order is user-arrangeable (drag the card title) and
-// persisted (ud_dm_layout_v1, synced).
+// per-card height is resizable. Layout is DEVICE-LOCAL (monitor-specific) — the
+// same rationale as DM_KEY, so it is deliberately NOT in the cloud-sync
+// whitelist. Stored under ud_dm_layout_v1 as an object:
+//   { order: [cardId,...], split: <number|null>, heights: { cardId: px },
+//     statView: "value"|"stats" }
+// split = board-column width as a % of the .dm-main track (10–90). heights map
+// a card id → its user-dragged pixel height. MIGRATION: the original schema was
+// a bare order array — a stored Array is transparently read as { order: array }.
 const _DM_CARD_ORDER_KEY = "ud_dm_layout_v1";
-function _dmCardOrder() {
-  try { const v = JSON.parse(localStorage.getItem(_DM_CARD_ORDER_KEY) || "null"); return Array.isArray(v) ? v : null; } catch (e) { return null; }
+function _dmLayout() {
+  try {
+    const v = JSON.parse(localStorage.getItem(_DM_CARD_ORDER_KEY) || "null");
+    if (Array.isArray(v)) return { order: v, split: null, heights: {}, statView: null };   // legacy array → object
+    if (v && typeof v === "object") return {
+      order: Array.isArray(v.order) ? v.order : null,
+      split: (typeof v.split === "number" ? v.split : null),
+      heights: (v.heights && typeof v.heights === "object") ? v.heights : {},
+      statView: (v.statView === "value" || v.statView === "stats") ? v.statView : null,
+      standingsExpanded: (typeof v.standingsExpanded === "boolean") ? v.standingsExpanded : null,
+    };
+  } catch (e) {}
+  return { order: null, split: null, heights: {}, statView: null, standingsExpanded: null };
 }
-function _dmSaveCardOrder(order) {
-  try { localStorage.setItem(_DM_CARD_ORDER_KEY, JSON.stringify(order)); } catch (e) {}
+function _dmSaveLayout(patch) {
+  const cur = _dmLayout();
+  const next = { order: cur.order, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
+  if (patch && "order" in patch) next.order = patch.order;
+  if (patch && "split" in patch) next.split = patch.split;
+  if (patch && "heights" in patch) next.heights = patch.heights;
+  if (patch && "statView" in patch) next.statView = patch.statView;
+  if (patch && "standingsExpanded" in patch) next.standingsExpanded = patch.standingsExpanded;
+  try { localStorage.setItem(_DM_CARD_ORDER_KEY, JSON.stringify(next)); } catch (e) {}
 }
+function _dmCardOrder() { return _dmLayout().order; }
+function _dmSaveCardOrder(order) { _dmSaveLayout({ order }); }
 
 function _dmMyRosterHtml() {
   const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : null;
@@ -689,40 +937,189 @@ function _dmMyRosterHtml() {
   return html;
 }
 
-function _dmBudgetsHtml() {
-  const states = Object.values(computeLiveTeamStates());
-  states.sort((a, b) => b.budget - a.budget);
-  let html = '<table class="dm-table"><thead><tr><th>Team</th><th class="num">$</th><th class="num">Slots</th><th class="num">Max</th></tr></thead><tbody>';
-  for (const st of states) {
-    html += '<tr' + (st.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '><td>' + esc(st.ownerName) + '</td><td class="num">$' + st.budget + '</td><td class="num">' + st.slotsRemaining + '</td><td class="num">$' + st.maxBid + '</td></tr>';
+// Another team's roster, shown next to "My Roster" for comparison (item 16).
+// Same data approach as _dmMyRosterHtml but for an arbitrary teamId.
+function _dmCompareRosterHtml(teamId) {
+  const t = (typeof getTeam === "function") ? getTeam(teamId) : null;
+  const st = computeLiveTeamStates()[teamId];
+  const kept = [];
+  if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[teamId] || {})) if (f.keeper) kept.push({ name: n, how: "keeper" });
+  }
+  const picks = _liveDraft.picks.filter(p => p.team === teamId)
+    .map(p => ({ name: p.player, how: "$" + p.price }));
+  const roster = [...kept, ...picks];
+  let html = '<p class="small" style="margin:0 0 4px;">' + roster.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
+  if (!roster.length) return html + '<p class="muted small" style="margin:0;">No keepers or picks yet.</p>';
+  html += '<table class="dm-table"><tbody>';
+  for (const r of roster) {
+    const v = getPlayerValue(r.name);
+    html += '<tr><td>' + esc(v?.posKey || "?") + '</td><td>' + esc(r.name) + '</td><td class="num muted">' + esc(r.how) + '</td></tr>';
   }
   html += '</tbody></table>';
   return html;
 }
 
-function _dmSide() {
+function _dmBudgetsHtml() {
+  const states = Object.values(computeLiveTeamStates());
+  states.sort((a, b) => b.budget - a.budget);
+  let html = '<table class="dm-table"><thead><tr><th>Team</th><th class="num">$</th><th class="num">Slots</th><th class="num">Max</th></tr></thead><tbody>';
+  for (const st of states) {
+    // Clicking an opponent's row opens their roster next to mine (item 16).
+    html += '<tr' + (st.isMe ? ' style="background:rgba(79,142,247,.10);"'
+      : ' class="dm-teamrow" data-dm-teamview="' + esc(String(st.teamId)) + '" style="cursor:pointer;" title="Compare ' + esc(st.ownerName) + '\'s roster"') +
+      '><td>' + esc(st.ownerName) + '</td><td class="num">$' + st.budget + '</td><td class="num">' + st.slotsRemaining + '</td><td class="num">$' + st.maxBid + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+// My Plan card — moved OUT of the side rail (item 15) to a full-width bar under
+// the board. Keeps the strategyForAi brief or the "no strategy" hint.
+function _dmPlanBar() {
   const brief = (typeof strategyForAi === "function") ? strategyForAi() : null;
+  const body = brief
+    ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
+    : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>';
+  return '<div class="card dm-planbar"><h3 style="margin:0 0 6px;">My Plan</h3>' + body + '</div>';
+}
+
+function _dmSide() {
   const cards = [
-    { id: "plan", title: "My Plan", body: brief
-        ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
-        : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>' },
     { id: "roster", title: "My Roster", body: _dmMyRosterHtml() },
     { id: "budgets", title: "Budgets", body: _dmBudgetsHtml() },
     { id: "standings", title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() },
     { id: "noms", title: "Nominations", body: renderNominationsPanel() },
+    { id: "history", title: "Draft History", body: _dmHistoryHtml() },
   ];
   const order = _dmCardOrder();
   if (order) cards.sort((a, b) => {
     const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
+  // Transient compare card (item 16) — inserted right AFTER "My Roster"
+  // regardless of the persisted order, so it always sits next to my roster.
+  if (_dmState.compareTeamId != null) {
+    const cmpTeam = (typeof getTeam === "function") ? getTeam(_dmState.compareTeamId) : null;
+    if (cmpTeam) {
+      const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
+        '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
+      const cmpCard = { id: "compare", title, body: _dmCompareRosterHtml(_dmState.compareTeamId), transient: true };
+      const ri = cards.findIndex(c => c.id === "roster");
+      cards.splice(ri < 0 ? 0 : ri + 1, 0, cmpCard);
+    } else {
+      _dmState.compareTeamId = null;   // stale id (team no longer exists)
+    }
+  }
+  const heights = _dmLayout().heights || {};
   let html = '';
   for (const c of cards) {
-    html += '<div class="card" data-dm-card="' + c.id + '" draggable="true"><h3 style="margin:0 0 6px;" title="Drag to rearrange">⠿ ' + c.title + '</h3>' + c.body + '</div>';
+    const h = heights[c.id];
+    const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
+    // Transient cards (the compare roster) are NOT draggable and carry no
+    // data-dm-card, so they never enter the persisted order (item 16).
+    if (c.transient) {
+      html += '<div class="card dm-rcard dm-cmpcard"><h3 style="margin:0 0 6px;">' + c.title + '</h3>' +
+        '<div class="dm-cardbody"' + hStyle + '>' + c.body + '</div></div>';
+      continue;
+    }
+    html += '<div class="card dm-rcard" data-dm-card="' + c.id + '" draggable="true"><h3 style="margin:0 0 6px;" title="Drag to rearrange">⠿ ' + c.title + '</h3>' +
+      '<div class="dm-cardbody" data-dm-cardbody="' + c.id + '"' + hStyle + '>' + c.body + '</div></div>';
   }
   html += renderCategoryDashboard();
   html += renderAiAssistantPanel();
   return html;
+}
+
+// Full pick-by-pick draft history (newest first), for the "history" side card.
+function _dmHistoryHtml() {
+  const picks = (typeof _liveDraft !== "undefined" && _liveDraft.picks) ? _liveDraft.picks : [];
+  if (!picks.length) return '<p class="muted small" style="margin:0;">No picks yet — the running board appears here newest-first.</p>';
+  let html = '<table class="dm-table"><thead><tr><th class="num">#</th><th>Player</th><th>Pos</th><th class="num">$</th><th>Won by</th></tr></thead><tbody>';
+  for (let i = picks.length - 1; i >= 0; i--) {
+    const pk = picks[i];
+    const pos = pk.pos || (getPlayerValue(pk.player)?.posKey) || "?";
+    const who = _dmTeamLabel(pk.espnTeamId != null ? pk.espnTeamId : pk.team);
+    html += '<tr><td class="num dim">' + (i + 1) + '</td><td>' + esc(pk.player) + '</td><td>' + esc(pos) +
+      '</td><td class="num">$' + pk.price + '</td><td class="small">' + esc(who) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+// Apply + wire the resizable split between the board and the side rail. The
+// stored split is the board column's width as a % of the .dm-main track; the
+// side rail takes the remainder. Reapplied on every render (renders rebuild
+// innerHTML). Dragging the .dm-split handle updates it live and persists on
+// release. When no split is stored the CSS default (media-query grid) stands.
+// Module-level drag state so the document-level move/up listeners (bound ONCE,
+// see below) always act on the current .dm-main, never accumulate per render.
+let _dmSplitDrag = false;
+function _dmApplySplitTemplate(main, pct) {
+  const p = Math.max(20, Math.min(85, pct));
+  main.style.gridTemplateColumns = p.toFixed(2) + "% 8px minmax(0, 1fr)";
+}
+function _dmWireSplit() {
+  const main = document.querySelector(".dm-main");
+  const handle = main ? main.querySelector(".dm-split") : null;
+  if (!main || !handle) return;
+  const stored = _dmLayout().split;
+  if (typeof stored === "number") _dmApplySplitTemplate(main, stored);
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    _dmSplitDrag = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+  // Bind the global move/up handlers exactly once for the whole session.
+  if (!document._dmSplitBound) {
+    document._dmSplitBound = true;
+    document.addEventListener("mousemove", (e) => {
+      if (!_dmSplitDrag) return;
+      const m = document.querySelector(".dm-main");
+      if (!m) return;
+      const rect = m.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      _dmApplySplitTemplate(m, ((e.clientX - rect.left) / rect.width) * 100);
+    });
+    document.addEventListener("mouseup", () => {
+      if (!_dmSplitDrag) return;
+      _dmSplitDrag = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      const m = document.querySelector(".dm-main");
+      const boardCol = m ? m.querySelector(".dm-board-col") : null;
+      const rect = m ? m.getBoundingClientRect() : null;
+      if (boardCol && rect && rect.width > 0) {
+        const pct = (boardCol.getBoundingClientRect().width / rect.width) * 100;
+        _dmSaveLayout({ split: Math.max(20, Math.min(85, +pct.toFixed(2))) });
+      }
+    });
+  }
+}
+
+// Per-card resizable HEIGHT: the card body is CSS `resize: vertical`; capture
+// the chosen height on release and persist it, reapplied on render via _dmSide.
+function _dmWireCardResize() {
+  const rail = document.querySelector(".dm-side");
+  if (!rail) return;
+  const save = (id, px) => {
+    const heights = Object.assign({}, _dmLayout().heights);
+    if (px && px > 40) heights[id] = Math.round(px);
+    _dmSaveLayout({ heights });
+  };
+  rail.querySelectorAll(".dm-cardbody[data-dm-cardbody]").forEach(body => {
+    const id = body.dataset.dmCardbody;
+    if (typeof ResizeObserver === "function" && !body._dmRO) {
+      // Debounce the observer so we persist the settled height, not every frame.
+      let t = null;
+      body._dmRO = new ResizeObserver(() => {
+        clearTimeout(t);
+        t = setTimeout(() => save(id, body.offsetHeight), 250);
+      });
+      body._dmRO.observe(body);
+    }
+  });
 }
 
 // HTML5 drag-to-reorder for the side cards; order persists across sessions.
@@ -749,23 +1146,93 @@ function _dmWireCardDrag() {
   });
 }
 
+// Compact category-total label for the expanded standings (item 17): OBP 3dp,
+// ERA/WHIP 2dp, everything else rounded whole.
+const _DM_STANDINGS_CATS = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
+const _DM_CAT_HEAD = { R: "R", HR: "HR", RBI: "RBI", SB: "SB", OBP: "OBP", QS: "QS", K: "K", SV_HLD: "SV+H", ERA: "ERA", WHIP: "WHIP" };
+function _dmCatTotal(totals, c) {
+  const v = totals ? totals[c] : null;
+  if (v == null || (typeof v === "number" && !isFinite(v))) return "—";
+  if (c === "OBP") return Number(v).toFixed(3);
+  if (c === "ERA" || c === "WHIP") return Number(v).toFixed(2);
+  return Math.round(v);
+}
+
 function _dmStandingsHtml() {
   let res = null;
   try { res = computeLiveProjStandings(); } catch (e) { console.warn("proj standings failed:", e); }
   if (!res || !res.teams || !res.anyData) return '<p class="muted small">Needs stat projections (Data tab) — showing nothing rather than junk.</p>';
-  let html = '<table class="dm-table"><thead><tr><th class="num">#</th><th>Team</th><th class="num">Roto</th></tr></thead><tbody>';
-  res.teams.forEach((t, i) => {
-    html += '<tr' + (t.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '><td class="num">' + (i + 1) + '</td><td>' + esc(t.owner) + '</td><td class="num">' + t.rotoPoints.toFixed(1) + '</td></tr>';
-  });
-  html += '</tbody></table>';
-  const me = res.teams.find(t => t.isMe);
-  if (me) {
-    const cats = Object.entries(me.catPoints || {}).sort((a, b) => a[1] - b[1]);
-    if (cats.length) {
-      html += '<div class="small muted" style="margin-top:4px;">Weakest: ' + cats.slice(0, 3).map(c => c[0]).join(", ") +
-        ' · Strongest: ' + cats.slice(-2).map(c => c[0]).join(", ") + '</div>';
+
+  const expanded = !!_dmState.standingsExpanded;
+  const toggle = '<button class="btn ghost dm-standings-expand" title="' +
+    (expanded ? 'Collapse to ranks' : 'Expand — per-category totals, sortable') + '" style="float:right; padding:0 8px; font-size:12px;">' +
+    (expanded ? '⤢ Collapse' : '⤢ Expand') + '</button>';
+
+  if (!expanded) {
+    // Collapsed: rank / owner / roto. Rows clickable to compare rosters (item 16).
+    let html = toggle;
+    html += '<table class="dm-table"><thead><tr><th class="num">#</th><th>Team</th><th class="num">Roto</th></tr></thead><tbody>';
+    res.teams.forEach((t, i) => {
+      const clickable = !t.isMe && t.teamId != null;
+      html += '<tr' + (t.isMe ? ' style="background:rgba(79,142,247,.10);"'
+        : (clickable ? ' class="dm-teamrow" data-dm-teamview="' + esc(String(t.teamId)) + '" style="cursor:pointer;" title="Compare ' + esc(t.owner) + '\'s roster"' : '')) +
+        '><td class="num">' + (i + 1) + '</td><td>' + esc(t.owner) + '</td><td class="num">' + t.rotoPoints.toFixed(1) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    const me = res.teams.find(t => t.isMe);
+    if (me) {
+      const cats = Object.entries(me.catPoints || {}).sort((a, b) => a[1] - b[1]);
+      if (cats.length) {
+        html += '<div class="small muted" style="margin-top:4px;">Weakest: ' + cats.slice(0, 3).map(c => c[0]).join(", ") +
+          ' · Strongest: ' + cats.slice(-2).map(c => c[0]).join(", ") + '</div>';
+      }
     }
+    return html;
   }
+
+  // Expanded: one row per team, one column per category (total + roto points),
+  // sortable by any category. Default sort = total roto (descending).
+  const sort = _dmState.standingsSort;
+  const teams = res.teams.slice();
+  if (sort && sort.cat && sort.cat !== "roto") {
+    const c = sort.cat;
+    const lower = (c === "ERA" || c === "WHIP");
+    const raw = (t) => {
+      const v = t.totals ? t.totals[c] : null;
+      if (v == null || (typeof v === "number" && !isFinite(v))) return lower ? Infinity : -Infinity;
+      return v;
+    };
+    teams.sort((a, b) => {
+      const d = raw(a) - raw(b);
+      // "desc" = best first: for lower-is-better cats best = smallest.
+      return sort.dir === "asc" ? (lower ? -d : d) : (lower ? d : -d);
+    });
+  } else if (sort && sort.cat === "roto" && sort.dir === "asc") {
+    teams.sort((a, b) => a.rotoPoints - b.rotoPoints);
+  }
+  // (default order from computeLiveProjStandings is already roto desc)
+
+  const arrow = (key) => (sort && sort.cat === key) ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
+  let html = toggle;
+  html += '<div style="overflow-x:auto;">';
+  html += '<table class="dm-table dm-standings-full"><thead><tr>';
+  html += '<th>Team</th>';
+  for (const c of _DM_STANDINGS_CATS) {
+    html += '<th class="num dm-sortcat" data-dm-sortcat="' + c + '" style="cursor:pointer;" title="Sort by ' + esc(_DM_CAT_HEAD[c]) + '">' + esc(_DM_CAT_HEAD[c]) + arrow(c) + '</th>';
+  }
+  html += '<th class="num dm-sortcat" data-dm-sortcat="roto" style="cursor:pointer;" title="Sort by total roto">Roto' + arrow("roto") + '</th>';
+  html += '</tr></thead><tbody>';
+  for (const t of teams) {
+    html += '<tr' + (t.isMe ? ' style="background:rgba(79,142,247,.10);"' : '') + '><td>' + esc(t.owner) + '</td>';
+    for (const c of _DM_STANDINGS_CATS) {
+      const pts = t.catPoints ? t.catPoints[c] : null;
+      const ptsLabel = (pts != null) ? '<span class="muted" style="font-size:10px;"> ' + (Math.round(pts * 10) / 10) + '</span>' : '';
+      html += '<td class="num">' + _dmCatTotal(t.totals, c) + ptsLabel + '</td>';
+    }
+    html += '<td class="num"><b>' + t.rotoPoints.toFixed(1) + '</b></td>';
+  }
+  html += '</tbody></table></div>';
+  html += '<div class="small muted" style="margin-top:4px;">Big number = projected category total; small = roto points. Click a column to sort.</div>';
   return html;
 }
 
@@ -773,7 +1240,7 @@ function _dmStandingsHtml() {
 function _dmBottom() {
   let html = '<details class="dm-bottom"><summary class="small muted" style="cursor:pointer;">Pick tracker · teams · feed</summary>';
   html += '<div style="margin-top:8px;">';
-  if (isEndgame()) html += renderEndgamePanel();
+  // Endgame panel now renders prominently below the hero (item 10), not here.
   html += '<div class="dm-bottom-grid">';
   html += '<div>' + renderDraftFeedPanel() + '</div>';
   html += '<div class="card" style="padding:8px;"><h3 style="margin:0 0 6px;">Teams</h3>' + renderTeamStrip() + '</div>';
@@ -816,13 +1283,50 @@ function updateDraftModeLive() {
 
 function wireDraftMode() {
   document.getElementById("dm-exit")?.addEventListener("click", () => setDraftMode(false));
+  // Practice-mock bid controls (item 3). Only meaningful during a running mock.
+  // Delegate on #dm-reco (a stable element whose innerHTML updateDraftModeLive
+  // swaps in place on every bid) so +$1 / Bid keep working without a full
+  // re-render + re-wire. userMockBid clamps the amount and re-resolves the lot.
+  if (typeof mockFeedActive === "function" && mockFeedActive()) {
+    const reco = document.getElementById("dm-reco");
+    if (reco && !reco._mockBidWired) {
+      reco._mockBidWired = true;
+      reco.addEventListener("click", (e) => {
+        const t = e.target && e.target.closest ? e.target.closest("#dm-mock-bid1,#dm-mock-bid") : null;
+        if (!t || typeof userMockBid !== "function") return;
+        const lot = (typeof currentLotFromEvents === "function") ? currentLotFromEvents() : null;
+        const high = (lot && Number.isFinite(lot.highBid)) ? lot.highBid : 0;
+        let amt;
+        if (t.id === "dm-mock-bid1") amt = high + 1;
+        else {
+          const box = document.getElementById("dm-mock-bidamt");
+          amt = box ? (parseInt(box.value, 10) || (high + 1)) : (high + 1);
+        }
+        userMockBid(amt);
+      });
+    }
+  }
   document.getElementById("dm-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
   document.getElementById("dm-endgame")?.addEventListener("click", () => { if (typeof setEndgameForced === "function") { setEndgameForced(!isEndgameForced()); renderDraft(); } });
   // Kick the AI injury-return estimate for the player on the clock (if hurt).
   const otcName = document.getElementById("dm-otc")?.getAttribute("data-player");
   if (otcName && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(otcName);
   document.querySelectorAll("[data-dm-mode]").forEach(b => b.addEventListener("click", () => {
-    _dmState.boardMode = b.dataset.dmMode;
+    const m = b.dataset.dmMode;
+    if (_DM_PRESETS.includes(m)) {
+      // Exclusive preset — clears any multi-position selection.
+      _dmState.boardPos.clear();
+      _dmState.boardMode = m;
+    } else {
+      // Position — toggle it in/out of the multi-select set.
+      if (_dmState.boardPos.has(m)) _dmState.boardPos.delete(m);
+      else _dmState.boardPos.add(m);
+    }
+    renderDraft();
+  }));
+  document.querySelectorAll("[data-dm-statview]").forEach(b => b.addEventListener("click", () => {
+    _dmState.statView = b.dataset.dmStatview;
+    _dmSaveLayout({ statView: _dmState.statView });   // persisted alongside the layout
     renderDraft();
   }));
   document.getElementById("dm-search")?.addEventListener("input", (e) => {
@@ -838,6 +1342,29 @@ function wireDraftMode() {
     if (typeof toggleTag === "function") { toggleTag(b.dataset.name, "target"); renderDraft(); }
   }));
   document.querySelectorAll("#view-root .player-name").forEach(el => el.addEventListener("click", () => openNoteEditor(el.dataset.player)));
+  // Compare-roster (item 16): clicking an opponent row in Budgets / Standings
+  // opens their roster next to mine; ✕ closes it.
+  document.querySelectorAll(".dm-teamrow[data-dm-teamview]").forEach(row => row.addEventListener("click", () => {
+    const id = row.dataset.dmTeamview;
+    const num = Number(id);
+    _dmState.compareTeamId = Number.isFinite(num) && String(num) === id ? num : id;
+    renderDraft();
+  }));
+  document.querySelector(".dm-cmp-close")?.addEventListener("click", () => { _dmState.compareTeamId = null; renderDraft(); });
+  // Projected-standings expand toggle + sortable columns (item 17).
+  document.querySelector(".dm-standings-expand")?.addEventListener("click", () => {
+    _dmState.standingsExpanded = !_dmState.standingsExpanded;
+    _dmSaveLayout({ standingsExpanded: _dmState.standingsExpanded });
+    renderDraft();
+  });
+  document.querySelectorAll(".dm-sortcat[data-dm-sortcat]").forEach(th => th.addEventListener("click", () => {
+    const cat = th.dataset.dmSortcat;
+    const cur = _dmState.standingsSort;
+    // First click on a column → sort desc (best first); click again → asc.
+    if (cur && cur.cat === cat) _dmState.standingsSort = { cat, dir: cur.dir === "desc" ? "asc" : "desc" };
+    else _dmState.standingsSort = { cat, dir: "desc" };
+    renderDraft();
+  }));
   // Feed-panel buttons are wired once via delegation in draft.js.
   document.querySelectorAll(".live-revert").forEach(b => b.addEventListener("click", () => {
     const idx = parseInt(b.dataset.idx, 10);
@@ -850,6 +1377,8 @@ function wireDraftMode() {
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => { _liveDraft.showAllPicks = !_liveDraft.showAllPicks; renderDraft(); });
   _dmWireCardDrag();
+  _dmWireSplit();
+  _dmWireCardResize();
   if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   if (typeof wireAiPanel === "function") wireAiPanel();
 }

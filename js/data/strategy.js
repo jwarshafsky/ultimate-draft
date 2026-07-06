@@ -24,6 +24,16 @@ function setDraftStrategyText(text) {
   _strategySave();
 }
 
+// Wipe both the free-text plan and the AI-condensed brief, then persist the
+// same way setDraftStrategyText does so the cleared state syncs across devices.
+function clearDraftStrategy() {
+  const s = getDraftStrategy();
+  s.text = "";
+  s.brief = "";
+  delete s.briefAt;
+  _strategySave();
+}
+
 // The line the AI sees: the condensed brief if fresh, else the raw text.
 function strategyForAi() {
   const s = getDraftStrategy();

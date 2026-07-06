@@ -29,7 +29,18 @@ const _interactive = {
   proxyMax: null,    // auto-bid cap for the CURRENT lot (engine bids for you up to this)
   nomSlot: "random", // where you sit in the nomination order: "random" | "first" | "last" | 0-based seat #
   heat: "normal",    // market-heat label: "cold" | "normal" | "hot" (UI; engine global does the work)
+  cockpit: false,    // true when this mock drives the Live Draft cockpit (frames mirrored via _mockCockpitEmit)
 };
+
+// Cockpit bridge: when this interactive mock is driving the Live Draft cockpit
+// (not the Mock-tab UI), mirror each nomination / bid / sale into the cockpit's
+// ESPN-style event pipeline through the global installed by mock-live-feed.js,
+// so the real hero / ticker / budgets / standings / picks all update unchanged.
+// A no-op in the ordinary Mock-tab interactive mode.
+function _icEmit(cmd, realTeamId, playerName, amount) {
+  if (!_interactive.cockpit) return;
+  if (typeof _mockCockpitEmit === "function") _mockCockpitEmit(cmd, realTeamId, playerName, amount);
+}
 
 const HEAT_FACTORS = { cold: 0.92, normal: 1.0, hot: 1.10 };
 function setMockClock(secsOrOff) {
@@ -87,11 +98,31 @@ function setMockTimerEnabled(on) {
   _fireChange();
 }
 
-function startInteractiveMock() {
+function startInteractiveMock(opts) {
+  opts = opts || {};
+  // GUARD: the mock must run the full league. If LEAGUE.teams isn't loaded yet
+  // (or is short), refuse to start rather than silently run a 3-team draft.
+  const expectedTeams = (typeof LEAGUE !== "undefined" && Array.isArray(LEAGUE.teams)) ? LEAGUE.teams.length : 0;
+  if (expectedTeams < 2) {
+    return { ok: false, error: "League not loaded yet — try again in a moment." };
+  }
   _interactive.gen++;   // invalidate any timers from a prior session
-  _interactive.states = buildMockTeamStates({});
+  _interactive.cockpit = !!opts.cockpit;   // drive the Live Draft cockpit instead of the Mock-tab UI
+  if (_interactive.cockpit) _interactive.useTimer = false;   // self-paced: never auto-pass the user in the cockpit
+  // Cockpit practice mocks are keeper-FREE ($260 / full rosters) so the bots'
+  // budgets/slots match the generic keeper-free cockpit, exactly like the
+  // watch-mode UD-native feed (noKeepers). The Mock-tab mode keeps real keepers.
+  const noKeepers = !!opts.noKeepers;
+  const built = buildMockTeamStates(noKeepers ? { noKeepers: true } : {});
+  // Belt-and-suspenders: if the build somehow came back short of the league,
+  // abort with a clear message instead of starting a partial (< full) mock.
+  if (Object.keys(built).length < expectedTeams) {
+    return { ok: false, error: "Couldn't build all " + expectedTeams + " teams — reload and try again." };
+  }
+  _interactive.states = built;
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
-  const keptNames = (typeof _mockKeptSet === "function") ? _mockKeptSet() : new Set(collectKeepers().map(k => _nk(k.name)));
+  const keptNames = noKeepers ? new Set()
+    : ((typeof _mockKeptSet === "function") ? _mockKeptSet() : new Set(collectKeepers().map(k => _nk(k.name))));
   _interactive.pool = getValues().filter(p => p.value > 0 && !keptNames.has(_nk(p.name))).slice();
   _interactive.pool.sort((a, b) => b.value - a.value);
   _interactive.picks = [];
@@ -127,6 +158,7 @@ function startInteractiveMock() {
   if (typeof setMockMarketHeat === "function") setMockMarketHeat(HEAT_FACTORS[_interactive.heat] || 1.0);
   _interactive.inflation = inflationForMockState(_interactive.states);
   _advanceToNominatingTeam();
+  return { ok: true };
 }
 
 function stopInteractiveMock() {
@@ -208,6 +240,9 @@ function _startAuction(player, nominatorId, opening) {
   // Seed the escalation ticker with the opening (nominating) bid.
   const nom = _interactive.states[nominatorId];
   _interactive.bidLog = [{ owner: nom ? (nom.isMe ? "You" : nom.ownerName) : "—", bid: opening, mine: !!(nom && nom.isMe) }];
+  // Cockpit mirror: open the lot (NOMINATION) then the opening bid.
+  _icEmit("NOMINATION", nominatorId, player.name, null);
+  _icEmit("BID", nominatorId, player.name, opening);
   _fireChange();
   // AI gets first crack at responding (one step at a time, so the price climbs visibly).
   _later(() => _runAiBidsUntilUserTurn(), _d(450));
@@ -269,6 +304,7 @@ function _aiBidsOnce() {
         _interactive.currentWinner = id;
         _interactive.bidLog.push({ owner: state.ownerName, bid: newBid, mine: false });
         if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
+        _icEmit("BID", id, _interactive.current.name, newBid);   // cockpit mirror
         return state.ownerName;
       }
     }
@@ -353,6 +389,7 @@ function userBid(amount) {
   _interactive.passedTeams.delete(me.id);   // re-enter if they'd passed earlier
   _interactive.bidLog.push({ owner: "You", bid, mine: true });
   if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
+  _icEmit("BID", me.id, _interactive.current.name, bid);   // cockpit mirror
   _fireChange();
   _later(() => _runAiBidsUntilUserTurn(), _d(450));
   return { ok: true };
@@ -384,8 +421,11 @@ function _completeSale() {
   // player, void the sale rather than charge them / burn a slot for someone they
   // can't roster (only happens on an uncontested nomination of an unrosterable
   // player). Remove from pool and move on.
+  // In cockpit mode we already emitted NOMINATION + bids for this lot, so it
+  // MUST close with a SOLD or the hero would hang on it — proceed as a normal
+  // sale (generic slot) rather than voiding, keeping engine ↔ cockpit in lockstep.
   const filledSlot = assignToSlot(winner.openSlots, player.elig || [player.posKey]);
-  if (!filledSlot) {
+  if (!filledSlot && !_interactive.cockpit) {
     _interactive.pool = _interactive.pool.filter(p => p.name !== player.name);
     _interactive.current = null; _interactive.currentBid = 0; _interactive.currentWinner = null;
     _interactive.passedTeams = new Set();
@@ -415,6 +455,7 @@ function _completeSale() {
     winnerOwner: winner.ownerName,
     nominatorTeamId: getCurrentNominatorId(),
   });
+  _icEmit("SOLD", winnerId, player.name, price);   // cockpit mirror — closes the lot, adds the pick
 
   // Remove from pool
   _interactive.pool = _interactive.pool.filter(p => p.name !== player.name);
