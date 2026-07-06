@@ -108,10 +108,11 @@ function startInteractiveMock(opts) {
   }
   _interactive.gen++;   // invalidate any timers from a prior session
   _interactive.cockpit = !!opts.cockpit;   // drive the Live Draft cockpit instead of the Mock-tab UI
-  if (_interactive.cockpit) _interactive.useTimer = false;   // self-paced: never auto-pass the user in the cockpit
-  // Cockpit practice mocks are keeper-FREE ($260 / full rosters) so the bots'
-  // budgets/slots match the generic keeper-free cockpit, exactly like the
-  // watch-mode UD-native feed (noKeepers). The Mock-tab mode keeps real keepers.
+  // The draft clock stays ON in the cockpit (Jeff: "there is no countdown for
+  // picks") — real auction pressure; expiry auto-passes, same as the Mock tab.
+  // Keepers are REAL by default everywhere (item 6 — a kept player like Nick
+  // Kurtz must never be nominable); noKeepers stays as an explicit opt-in for
+  // tests/simulations only.
   const noKeepers = !!opts.noKeepers;
   const built = buildMockTeamStates(noKeepers ? { noKeepers: true } : {});
   // Belt-and-suspenders: if the build somehow came back short of the league,

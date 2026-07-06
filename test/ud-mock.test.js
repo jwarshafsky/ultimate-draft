@@ -188,6 +188,7 @@ function makeSandbox(seed) {
   const files = [
     "js/core/inflation.js",
     "js/core/mock-engine.js",
+    "js/core/mock-interactive.js",
     "js/features/endgame.js",
     "js/features/draft-mode.js",
     "js/features/draft.js",
@@ -615,6 +616,42 @@ async function run() {
     assertEq(ud.liveDraft.picks.length, 1, "real draft restored");
     assertEq(ud.liveDraft.picks[0].player, "RealHome", "the real pick is back, not the espn:N test pick");
   });
+
+  // === Interactive cockpit mock (Jeff's live-test bugs, Jul 6) ==============
+  // Bugs: (1) keeper (Nick Kurtz) was nominated — the interactive cockpit path
+  // still ran noKeepers with generic Team-N ids; (2) Bid did nothing — engine
+  // works but must be reachable mid-lot; (3) no pick countdown — cockpit
+  // force-disabled the engine's timer.
+  ud.eval("setLeagueOverride(''); setFeedMode('off');");
+  const keeperName = ud.eval("getValues()[0].name");   // top player = the keeper
+  ud.eval(
+    "getEffectiveKeeperSelections = () => ({ corey: { '" + keeperName + "': { keeper: true } } });" +
+    "startInteractiveCockpitMock();"
+  );
+  test("#IC-1 interactive cockpit mock excludes keepers from the pool", () => {
+    assertEq(ud.eval("mockFeedActive() && _mockFeed.interactive"), true, "interactive mock armed");
+    assertEq(ud.eval("getInteractiveState().pool.some(p => p.name === '" + keeperName + "')"), false,
+      "kept player must not be nominable");
+  });
+  test("#IC-2 interactive cockpit mock uses REAL ESPN team ids + owner names", () => {
+    assertEq(ud.eval("_icMaps.teamMap['jeff']"), 5, "Jeff's seat is his real ESPN id");
+    assertEq(ud.eval("mockFeedSeat()"), 5, "announced seat = real id");
+    assertEq(ud.eval("mockFeedOwnerName(7)"), "Corey", "owner names resolve for the cockpit");
+  });
+  test("#IC-3 cockpit keeps the draft clock ON (countdown pressure)", () => {
+    assertEq(ud.eval("getInteractiveState().useTimer"), true, "timer not force-disabled");
+  });
+  // (2) the user can actually act mid-lot: open a lot as another team, then bid.
+  ud.eval("_startAuction(getInteractiveState().pool[1], 'corey', 1);");
+  const bidRes = JSON.parse(ud.eval("JSON.stringify(userBid(getInteractiveState().currentBid + 1))"));
+  test("#IC-4 userBid lands mid-lot and mirrors into the cockpit event stream", () => {
+    assertEq(bidRes.ok, true, "bid accepted: " + (bidRes.error || ""));
+    assertEq(ud.eval("getInteractiveState().currentWinner"), "jeff", "user is the high bidder");
+    assert(ud.eval("_dlog.events.filter(e => e.cmd === 'BID' && e.teamId === 5).length") >= 1,
+      "user BID frame reached the cockpit log");
+  });
+  ud.eval("stopInteractiveMock();");
+  ud.clearMock();
 
   summary("UD-native mock feed");
 }

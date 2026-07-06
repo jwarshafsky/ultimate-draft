@@ -297,10 +297,13 @@ function mockFeedSeat() { return _mockFeed.myEspnId != null ? _mockFeed.myEspnId
 // the real owner even for a team that has no ESPN_TEAM_ID_MAP entry (a synthetic
 // seat). Null if the mock isn't running or the id isn't known.
 function mockFeedOwnerName(espnId) {
-  const s = _mockFeed.script;
-  if (!s || !s.espnToOwner) return null;
+  // Watch-mode carries the map on the script; the interactive cockpit mock
+  // (script=null) carries it on _icMaps.
+  const map = (_mockFeed.script && _mockFeed.script.espnToOwner) ||
+    (_icMaps && _icMaps.espnToOwner) || null;
+  if (!map) return null;
   const n = (typeof espnId === "string" && espnId.indexOf("espn:") === 0) ? Number(espnId.slice(5)) : Number(espnId);
-  return s.espnToOwner[n] || null;
+  return map[n] || null;
 }
 
 function _mfSeedNames(nameById) {
@@ -407,16 +410,32 @@ function startInteractiveCockpitMock(opts) {
     if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice mock.");
     return false;
   }
-  // Synthetic id maps (same scheme as the watch-mode feed): real team id → ESPN
-  // 1..N (generic Team-N in the cockpit); player name → playerId > 1000.
-  const teamMap = {}; let myEspnId = 1;
-  LEAGUE.teams.forEach((t, i) => { teamMap[t.id] = i + 1; if (t.isMe) myEspnId = i + 1; });
+  // REAL id maps (same scheme as the watch-mode feed, R11 reversed): real team
+  // id → its REAL ESPN id, so the pick pipeline attributes every sale to the
+  // real owner and the keeper-aware cockpit context (budgets/pool/inflation)
+  // lines up. Player name → synthetic playerId > 1000.
+  const espnIdOf = (tid) => {
+    if (typeof ESPN_TEAM_ID_MAP !== "undefined") {
+      for (const [eid, oid] of Object.entries(ESPN_TEAM_ID_MAP)) if (oid === tid) return Number(eid);
+    }
+    return null;
+  };
+  const teamMap = {}, espnToOwner = {};
+  let myEspnId = null, synthNext = 90;
+  LEAGUE.teams.forEach((t) => {
+    let eid = espnIdOf(t.id);
+    if (eid == null) eid = synthNext++;   // no ESPN mapping — keep a distinct seat
+    teamMap[t.id] = eid;
+    espnToOwner[eid] = t.owner;
+    if (t.isMe) myEspnId = eid;
+  });
+  if (myEspnId == null) myEspnId = teamMap[LEAGUE.teams[0].id];
   const idByName = {}, nameById = {};
   values.forEach((p, i) => { const id = 900001 + i; idByName[p.name] = id; nameById[id] = p.name; });
-  _icMaps = { teamMap, idByName, nameById };
+  _icMaps = { teamMap, idByName, nameById, espnToOwner };
   _icLastKey = "";
 
-  // Arm the ephemeral cockpit context (generic Team-N / $260 / no keepers).
+  // Arm the ephemeral cockpit context (real owners / real keepers / real budgets).
   _mockFeed.active = true;
   _mockFeed.interactive = true;
   _mockFeed.finished = false;
@@ -433,8 +452,10 @@ function startInteractiveCockpitMock(opts) {
   _mockFeed.startedAt = startedAt;
 
   if (opts.bidSpeed && typeof setMockBidSpeed === "function") setMockBidSpeed(opts.bidSpeed);
-  // Start the live engine in cockpit mode (keeper-free to match the generic cockpit).
-  const r = (typeof startInteractiveMock === "function") ? startInteractiveMock({ cockpit: true, noKeepers: true }) : { ok: false, error: "engine unavailable" };
+  // Start the live engine in cockpit mode. Keepers ON (item 6): kept players
+  // (e.g. Nick Kurtz) are never nominable, and bot budgets/slots reflect their
+  // real keeper costs — matching the keeper-aware cockpit context.
+  const r = (typeof startInteractiveMock === "function") ? startInteractiveMock({ cockpit: true }) : { ok: false, error: "engine unavailable" };
   if (r && r.ok === false) {
     // Roll back so a failed start never leaves a half-live mock behind.
     _mockFeed.active = false; _mockFeed.interactive = false; _icMaps = null;
@@ -492,6 +513,14 @@ let _icLastKey = "";
 function _icCockpitRefresh(s) {
   const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
   const iPassed = !!(me && s.passedTeams && s.passedTeams.has(me.id));
+  // Per-second countdown: timer ticks fire a change but must NOT full-render
+  // (that would steal a half-typed bid) — patch the clock text in place.
+  const clk = (typeof document !== "undefined") ? document.getElementById("dm-icclock") : null;
+  if (clk) {
+    const winner = me && s.currentWinner === me.id;
+    clk.textContent = (s.phase === "bidding" && s.useTimer && !winner && !iPassed && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
+    clk.style.color = s.secondsLeft <= 4 ? "var(--bad)" : "var(--warn)";
+  }
   const key = [s.phase, s.currentNominator, s.current ? s.current.name : "", iPassed ? "P" : "", s.picks.length, _mockFeed.finished ? "F" : ""].join("|");
   if (key === _icLastKey) return;
   _icLastKey = key;

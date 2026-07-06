@@ -49,6 +49,37 @@ document.addEventListener("keydown", (e) => {
   if (_draftModeOn() && typeof currentView !== "undefined" && currentView === "draft") setDraftMode(false);
 });
 
+// Interactive practice-mock controls (nominate / bid / pass / auto-bid) — wired
+// ONCE via document delegation so they survive the innerHTML rebuilds that
+// updateDraftModeLive does on every bot bid. The engine (mock-interactive.js)
+// owns all the rules; on a rejected action we just surface its error.
+document.addEventListener("click", (e) => {
+  const t = e.target && e.target.closest ? e.target.closest("[data-icnom],[data-icbid],[data-icbidto],[data-icbidcustom],[data-icpass],[data-icproxy]") : null;
+  if (!t || !t.closest("#view-root")) return;
+  if (!(typeof mockFeedInteractive === "function" && mockFeedInteractive())) return;
+  if (typeof userBid !== "function" || typeof userPass !== "function" || typeof userNominate !== "function") return;
+  const show = (r) => { if (r && r.ok === false && r.error && typeof alert === "function") alert(r.error); };
+  const num = (id) => { const el = document.getElementById(id); const v = el ? parseInt(el.value, 10) : NaN; return isFinite(v) ? v : null; };
+  if (t.dataset.icnom) {
+    const name = (document.getElementById("dm-icnom-name")?.value || "").trim();
+    if (!name) return;
+    show(userNominate(name, num("dm-icnom-open") || 1));
+  } else if (t.dataset.icbid) {
+    const s = getInteractiveState();
+    show(userBid(s.currentBid + (parseInt(t.dataset.icbid, 10) || 1)));
+  } else if (t.dataset.icbidto) {
+    show(userBid(parseInt(t.dataset.icbidto, 10)));
+  } else if (t.dataset.icbidcustom) {
+    const amt = num("dm-icbid-custom");
+    if (amt != null) show(userBid(amt));
+  } else if (t.dataset.icpass) {
+    userPass();
+  } else if (t.dataset.icproxy) {
+    if (typeof setProxyMax !== "function") return;
+    setProxyMax(t.dataset.icproxy === "set" ? num("dm-icproxy") : null);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Current lot from the event stream: walk the log; a NOMINATION (or first BID)
 // after the last SOLD opens a lot, SOLD closes it.
@@ -608,11 +639,15 @@ function _dmInteractiveBidControls(lot) {
   const fair = _dmFairValue(lot ? lot.name : (s.current && s.current.name)) || 0;
   const parVal = Math.round(fair);
   let html = '<div class="dm-icbid" style="margin:0 0 10px; padding:8px; border:1px solid var(--accent); border-radius:8px; background:rgba(79,142,247,.06);">';
-  html += '<div class="small" style="margin-bottom:6px;">';
+  html += '<div class="small" style="margin-bottom:6px; display:flex; justify-content:space-between; gap:8px;"><span>';
   if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bots responding…</span>';
   else if (iHavePassed) html += '<span class="muted">You passed on this lot.</span>';
   else if (pricedOut) html += '<span class="bad">Priced out — your max is $' + myMax + '.</span>';
   else html += '<span>Your turn — bid or pass. Max <b>$' + myMax + '</b>.</span>';
+  // Countdown while the clock is on you (engine ticks it; _icCockpitRefresh
+  // patches the text per second — expiry auto-passes, like a real draft room).
+  const clk = (s.useTimer && !isMyBid && !iHavePassed && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
+  html += '</span><b id="dm-icclock" style="color:' + (s.secondsLeft <= 4 ? 'var(--bad)' : 'var(--warn)') + '; font-size:15px; min-width:44px; text-align:right;">' + clk + '</b>';
   html += '</div>';
   html += '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">';
   for (const inc of [1, 2, 5]) {
