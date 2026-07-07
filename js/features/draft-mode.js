@@ -448,8 +448,11 @@ function _dmPanelHtml(id, p, heights) {
   // min-height, but stored junk can't strangle a card (R17).
   const hStyle = (typeof h === "number" && h >= 120) ? ' style="height:' + h + 'px;"' : '';
   const cls = "card dm-rcard dm-panel" + (p.cls ? " " + p.cls : "");
-  return '<div class="' + cls + '" data-dm-card="' + id + '" draggable="true">' +
-    '<h3 class="dm-panel-title" style="margin:0 0 6px;" title="Drag to move / rearrange">⠿ ' + p.title + '</h3>' +
+  // The card is NOT draggable by default — pressing the title bar arms it (see
+  // _dmWireCardDrag), so only the handle moves a panel. Everything in the body
+  // (buttons, inputs, the roster player-drag, text selection) stays live.
+  return '<div class="' + cls + '" data-dm-card="' + id + '">' +
+    '<h3 class="dm-panel-title" title="Drag this bar to move or rearrange the panel"><span class="dm-grip" aria-hidden="true">⠿</span> ' + p.title + '</h3>' +
     '<div class="dm-cardbody" data-dm-cardbody="' + id + '"' + hStyle + '>' + p.body + '</div></div>';
 }
 
@@ -883,17 +886,6 @@ function _dmTierCliffBanner() {
 const _DM_PRESETS = ["BPA", "HIT", "PIT"];
 const _DM_POS_MODES = _DM_MODES.filter(m => !_DM_PRESETS.includes(m));
 
-// How many position columns fit in the board panel at the current view's
-// per-column minimum (stats tables are much wider than value tables). Measured
-// from the live DOM; a headless/first render falls back to 2.
-const _DM_COL_MIN = { value: 300, stats: 500 };
-function _dmBoardColCapacity() {
-  const el = (typeof document !== "undefined") ? document.querySelector('[data-dm-card="board"] .dm-cardbody') : null;
-  const w = el ? el.clientWidth : 0;
-  if (!w) return 2;
-  return Math.max(1, Math.floor(w / (_DM_COL_MIN[_dmState.statView] || 300)));
-}
-
 function _dmBoard(inflation) {
   const posSel = _dmState.boardPos;   // Set of selected position codes
   const multi = posSel && posSel.size > 0;
@@ -910,8 +902,8 @@ function _dmBoard(inflation) {
   // ＋ add-a-column: only in a position view; options exclude already-shown
   // positions. Capacity is re-checked on selection (board width can change).
   if (multi) {
-    html += '<select id="dm-addcol" title="Show another position side-by-side (needs board width)" style="width:auto;">';
-    html += '<option value="">＋ column</option>';
+    html += '<select id="dm-addcol" title="Show another position alongside — cards flow and wrap to fit" style="width:auto;">';
+    html += '<option value="">＋ position</option>';
     for (const m of _DM_POS_MODES.filter(x => !posSel.has(x))) html += '<option value="' + m + '">' + esc(m) + '</option>';
     html += '</select>';
   }
@@ -924,14 +916,13 @@ function _dmBoard(inflation) {
   html += '</div>';
 
   if (multi) {
-    // One column PER selected position, side by side. Column count is capped
-    // by the ＋ selector (capacity-gated); each column min-width matches the
-    // view so tables can never overlap — overflow scrolls instead.
+    // One card PER selected position. FREE-FLOW: cards size to their own content
+    // and wrap (see .dm-poscols) — no forced equal-width columns, no capacity
+    // gate. Add as many positions as you like; they flow and wrap.
     const base = _dmBasePool();
-    // Preserve the segmented-control order for readable, stable columns.
+    // Preserve the segmented-control order for readable, stable cards.
     const cols = _DM_POS_MODES.filter(m => posSel.has(m));
-    const minW = _DM_COL_MIN[_dmState.statView] || 300;
-    html += '<div class="dm-poscols" style="grid-template-columns: repeat(' + cols.length + ', minmax(' + minW + 'px, 1fr));">';
+    html += '<div class="dm-poscols">';
     for (const m of cols) {
       const rows = base.filter(p => _dmModeMatch(p, m)).slice(0, 40);
       html += '<div class="dm-poscol"><h3 style="margin:6px 0; display:flex; align-items:center; gap:6px;">' + esc(m) +
@@ -1139,48 +1130,142 @@ function _dmResetLayout() {
   _dmSaveLayout({ zones: _dmNormalizeZones(null), split: null, heights: {} });
 }
 
+// --- roster slots (fixed template) ---------------------------------------
+// Jeff's canonical roster: ALWAYS render all of these, in this exact order, with
+// "--" for an empty slot. 26 slots total.
+const _DM_ROSTER_SLOTS = [
+  "C", "1B", "2B", "SS", "3B", "CI", "MI", "OF", "OF", "OF", "OF", "OF", "Util",
+  "P", "P", "P", "P", "P", "P", "P", "P", "P", "BN", "BN", "BN", "BN",
+];
+
+// Can a player (its value record, carrying .elig / .type / .posKey) legally fill
+// a given slot type? BN accepts anyone; Util any hitter; P any pitcher.
+function _dmSlotAccepts(slotType, val) {
+  if (slotType === "BN") return true;
+  const isP = val && (val.type === "P" || val.posKey === "SP" || val.posKey === "RP");
+  if (slotType === "P") return !!isP;
+  if (slotType === "Util") return !!val && !isP;          // any hitter
+  if (!val) return false;
+  const elig = val.elig || [];
+  if (slotType === "CI") return elig.includes("CI") || elig.includes("1B") || elig.includes("3B");
+  if (slotType === "MI") return elig.includes("MI") || elig.includes("2B") || elig.includes("SS");
+  return elig.includes(slotType);                          // C/1B/2B/SS/3B/OF
+}
+
+// Manual slot pins (drag overrides), device-local per team:
+//   { [teamKey]: { [playerName]: slotIndex } }
+const _DM_ROSTER_SLOTS_KEY = "ud_dm_roster_slots_v1";
+let _dmRosterOverridesCache = null;
+function _dmRosterOverrides() {
+  if (_dmRosterOverridesCache) return _dmRosterOverridesCache;
+  try { _dmRosterOverridesCache = JSON.parse(localStorage.getItem(_DM_ROSTER_SLOTS_KEY) || "{}") || {}; }
+  catch (e) { _dmRosterOverridesCache = {}; }
+  return _dmRosterOverridesCache;
+}
+function _dmSaveRosterOverrides() {
+  try { localStorage.setItem(_DM_ROSTER_SLOTS_KEY, JSON.stringify(_dmRosterOverrides())); } catch (e) {}
+}
+function _dmSetRosterPin(teamKey, playerName, slotIndex) {
+  const all = _dmRosterOverrides();
+  const t = (all[teamKey] = all[teamKey] || {});
+  for (const n of Object.keys(t)) if (t[n] === slotIndex) delete t[n];   // one player per slot
+  t[playerName] = slotIndex;
+  _dmSaveRosterOverrides();
+}
+function _dmClearRosterPin(teamKey, playerName) {
+  const all = _dmRosterOverrides();
+  if (all[teamKey] && all[teamKey][playerName] != null) { delete all[teamKey][playerName]; _dmSaveRosterOverrides(); }
+}
+
+// A roster entry: { name, how, val, value }. `how` is the display badge.
+function _dmRosterEntry(name, how) {
+  const val = (typeof getPlayerValue === "function") ? getPlayerValue(name) : null;
+  return { name, how, val, value: (val && val.value) || 0 };
+}
+
+// Assign entries to the fixed slot template. Manual pins win; the rest autofill
+// best-effort (most-constrained player first, then value), starters before
+// bench. Returns { slots:[{type,i,player}], overflow:[entry] }.
+function _dmAssignRoster(entries, overrides) {
+  const slots = _DM_ROSTER_SLOTS.map((type, i) => ({ type, i, player: null }));
+  const byName = new Map(entries.map(e => [e.name, e]));
+  const placed = new Set();
+  // 1) manual pins — highest value first so a collision resolves deterministically
+  const pins = Object.entries(overrides || {})
+    .filter(([n, idx]) => byName.has(n) && slots[idx])
+    .sort((a, b) => (byName.get(b[0]).value || 0) - (byName.get(a[0]).value || 0));
+  for (const [n, idx] of pins) {
+    if (!slots[idx].player) { slots[idx].player = byName.get(n); placed.add(n); }
+  }
+  // 2) autofill the rest
+  const startTypes = ["C", "1B", "2B", "SS", "3B", "CI", "MI", "OF", "Util", "P"];
+  const eligCount = e => startTypes.reduce((n, t) => n + (_dmSlotAccepts(t, e.val) ? 1 : 0), 0);
+  const rest = entries.filter(e => !placed.has(e.name))
+    .sort((a, b) => eligCount(a) - eligCount(b) || (b.value || 0) - (a.value || 0));
+  for (const e of rest) {
+    const primary = e.val && e.val.posKey;   // prefer the player's own position slot
+    let s = primary ? slots.find(x => !x.player && x.type === primary && _dmSlotAccepts(x.type, e.val)) : null;
+    if (!s) s = slots.find(x => !x.player && x.type !== "BN" && _dmSlotAccepts(x.type, e.val));
+    if (!s) s = slots.find(x => !x.player && x.type === "BN");
+    if (s) { s.player = e; placed.add(e.name); }
+  }
+  return { slots, overflow: entries.filter(e => !placed.has(e.name)) };
+}
+
+// Render the fixed-slot roster table. teamKey scopes the drag pins.
+function _dmRosterSlotsHtml(entries, teamKey) {
+  const overrides = _dmRosterOverrides()[teamKey] || {};
+  const { slots, overflow } = _dmAssignRoster(entries, overrides);
+  const tk = esc(String(teamKey));
+  let html = '<table class="dm-table dm-roster-slots"><tbody>';
+  for (const s of slots) {
+    const p = s.player;
+    html += '<tr class="dm-slotrow" data-dm-slot="' + s.i + '" data-dm-team="' + tk + '">';
+    html += '<td class="dm-slotlabel">' + esc(s.type) + '</td>';
+    if (p) {
+      html += '<td><span class="dm-slotplayer" draggable="true" data-dm-player="' + esc(p.name) + '" data-dm-team="' + tk +
+        '" title="Drag to another slot · double-click to auto-fill">' + esc(p.name) + '</span></td>';
+      html += '<td class="num muted">' + esc(p.how) + '</td>';
+    } else {
+      html += '<td class="dm-slotempty">--</td><td></td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  if (overflow.length) {
+    html += '<p class="small" style="margin:4px 0 0; color:var(--warn);">Over roster limit: ' +
+      overflow.map(e => esc(e.name)).join(", ") + '</p>';
+  }
+  return html;
+}
+
 function _dmMyRosterHtml() {
   const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : null;
   if (!me) return '<p class="muted small">Pick your team on Draft Setup (Test mode) to see your roster.</p>';
   const st = computeLiveTeamStates()[me.id];
-  const kept = [];
+  const entries = [];
   if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
-    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[me.id] || {})) if (f.keeper) kept.push({ name: n, how: "keeper" });
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[me.id] || {})) if (f.keeper) entries.push(_dmRosterEntry(n, "keeper"));
   }
-  const picks = _liveDraft.picks.filter(p => p.team === me.id || (me.espnTeamId != null && p.espnTeamId === me.espnTeamId))
-    .map(p => ({ name: p.player, how: "$" + p.price }));
-  const roster = [...kept, ...picks];
-  let html = '<p class="small" style="margin:0 0 4px;">' + roster.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
-  if (!roster.length) return html + '<p class="muted small" style="margin:0;">Nobody yet — keepers + your picks appear here.</p>';
-  html += '<table class="dm-table"><tbody>';
-  for (const r of roster) {
-    const v = getPlayerValue(r.name);
-    html += '<tr><td>' + esc(v?.posKey || "?") + '</td><td>' + esc(r.name) + '</td><td class="num muted">' + esc(r.how) + '</td></tr>';
+  for (const p of _liveDraft.picks.filter(p => p.team === me.id || (me.espnTeamId != null && p.espnTeamId === me.espnTeamId))) {
+    entries.push(_dmRosterEntry(p.player, "$" + p.price));
   }
-  html += '</tbody></table>';
+  let html = '<p class="small" style="margin:0 0 4px;">' + entries.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
+  html += _dmRosterSlotsHtml(entries, me.id);
   return html;
 }
 
 // Another team's roster, shown next to "My Roster" for comparison (item 16).
 // Same data approach as _dmMyRosterHtml but for an arbitrary teamId.
 function _dmCompareRosterHtml(teamId) {
-  const t = (typeof getTeam === "function") ? getTeam(teamId) : null;
   const st = computeLiveTeamStates()[teamId];
-  const kept = [];
+  const entries = [];
   if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
-    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[teamId] || {})) if (f.keeper) kept.push({ name: n, how: "keeper" });
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[teamId] || {})) if (f.keeper) entries.push(_dmRosterEntry(n, "keeper"));
   }
-  const picks = _liveDraft.picks.filter(p => p.team === teamId)
-    .map(p => ({ name: p.player, how: "$" + p.price }));
-  const roster = [...kept, ...picks];
-  let html = '<p class="small" style="margin:0 0 4px;">' + roster.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
-  if (!roster.length) return html + '<p class="muted small" style="margin:0;">No keepers or picks yet.</p>';
-  html += '<table class="dm-table"><tbody>';
-  for (const r of roster) {
-    const v = getPlayerValue(r.name);
-    html += '<tr><td>' + esc(v?.posKey || "?") + '</td><td>' + esc(r.name) + '</td><td class="num muted">' + esc(r.how) + '</td></tr>';
-  }
-  html += '</tbody></table>';
+  for (const p of _liveDraft.picks.filter(p => p.team === teamId)) entries.push(_dmRosterEntry(p.player, "$" + p.price));
+  let html = '<p class="small" style="margin:0 0 4px;">' + entries.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
+  html += _dmRosterSlotsHtml(entries, teamId);
   return html;
 }
 
@@ -1335,13 +1420,23 @@ function _dmWireCardDrag() {
     else parent.insertBefore(dragging, card.nextSibling);
   };
   document.querySelectorAll(".dm-zone .card[data-dm-card]").forEach(card => {
+    // Handle-only dragging: the card stays inert until you press its title bar,
+    // so a click/scroll/text-selection or a nested drag (roster players) in the
+    // body never starts a panel move. mousedown on the handle arms it.
+    const handle = card.querySelector(".dm-panel-title");
+    if (handle) {
+      handle.addEventListener("mousedown", () => card.setAttribute("draggable", "true"));
+      handle.addEventListener("mouseup", () => card.setAttribute("draggable", "false"));
+    }
     card.addEventListener("dragstart", (e) => {
+      if (card.getAttribute("draggable") !== "true") { e.preventDefault(); return; }   // not armed → not from the handle
       dragging = card; card.classList.add("dm-dragging");
       try { e.dataTransfer.effectAllowed = "move"; } catch (_) {}
       document.body.classList.add("dm-dragging-active");   // reveal empty-zone drop strips
     });
     card.addEventListener("dragend", () => {
       card.classList.remove("dm-dragging");
+      card.setAttribute("draggable", "false");
       document.body.classList.remove("dm-dragging-active");
       clearOver();
       dragging = null;
@@ -1355,6 +1450,16 @@ function _dmWireCardDrag() {
     });
     card.addEventListener("dragleave", () => card.classList.remove("dm-dragover"));
   });
+  // Safety net: a handle press released WITHOUT a drag (mouseup off the handle)
+  // must disarm every card. One-time document listeners — wireDraftMode re-runs
+  // on every render, so guard against stacking duplicates.
+  if (!window._dmCardDragDisarmWired) {
+    window._dmCardDragDisarmWired = true;
+    const disarm = () => document.querySelectorAll('.dm-zone .card[data-dm-card][draggable="true"]')
+      .forEach(c => { if (!c.classList.contains("dm-dragging")) c.setAttribute("draggable", "false"); });
+    document.addEventListener("mouseup", disarm);
+    document.addEventListener("dragend", disarm);
+  }
   // Zone-level drop target: handles empty zones and the gap below the last card.
   zones.forEach(z => {
     z.addEventListener("dragover", (e) => {
@@ -1583,16 +1688,11 @@ function wireDraftMode() {
     }
     renderDraft();
   }));
-  // ＋ add-a-column selector (multi-position view) — gated on the board panel
-  // actually having room for another column at the current view's width.
+  // ＋ add-a-position selector (multi-position view). Free-flow: cards wrap to
+  // fit, so there's no capacity gate — add as many as you want.
   document.getElementById("dm-addcol")?.addEventListener("change", (e) => {
     const m = e.target.value;
     if (!m) return;
-    if (_dmState.boardPos.size >= _dmBoardColCapacity()) {
-      alert("No room for another column — widen the board (drag the divider between the columns, or move the board to the full-width top zone), or switch Stats → Value.");
-      e.target.value = "";
-      return;
-    }
     _dmState.boardPos.add(m);
     renderDraft();
   });
@@ -1628,6 +1728,37 @@ function wireDraftMode() {
     renderDraft();
   }));
   document.querySelector(".dm-cmp-close")?.addEventListener("click", () => { _dmState.compareTeamId = null; renderDraft(); });
+  // Roster slot drag-to-reposition. Autofill is the default; dragging a player
+  // onto an eligible slot pins them there (double-click a player = back to auto).
+  // Pins are scoped per team, so you can't drag a player between two rosters.
+  document.querySelectorAll(".dm-slotplayer").forEach(el => {
+    el.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", JSON.stringify({ team: el.dataset.dmTeam, player: el.dataset.dmPlayer }));
+      e.dataTransfer.effectAllowed = "move";
+      el.classList.add("dm-slot-dragging");
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dm-slot-dragging"));
+    el.addEventListener("dblclick", () => { _dmClearRosterPin(el.dataset.dmTeam, el.dataset.dmPlayer); renderDraft(); });
+  });
+  document.querySelectorAll(".dm-slotrow").forEach(row => {
+    row.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; row.classList.add("dm-slot-over"); });
+    row.addEventListener("dragleave", () => row.classList.remove("dm-slot-over"));
+    row.addEventListener("drop", (e) => {
+      e.preventDefault(); row.classList.remove("dm-slot-over");
+      let data; try { data = JSON.parse(e.dataTransfer.getData("text/plain")); } catch (_) { return; }
+      if (!data || String(row.dataset.dmTeam) !== String(data.team)) return;   // same roster only
+      const slotIndex = Number(row.dataset.dmSlot);
+      const slotType = _DM_ROSTER_SLOTS[slotIndex];
+      const val = (typeof getPlayerValue === "function") ? getPlayerValue(data.player) : null;
+      if (!_dmSlotAccepts(slotType, val)) {   // reject clearly-illegal drops (hitter→P, etc.)
+        row.classList.add("dm-slot-invalid");
+        setTimeout(() => row.classList.remove("dm-slot-invalid"), 400);
+        return;
+      }
+      _dmSetRosterPin(data.team, data.player, slotIndex);
+      renderDraft();
+    });
+  });
   // Projected-standings expand toggle + sortable columns (item 17).
   document.querySelector(".dm-standings-expand")?.addEventListener("click", () => {
     _dmState.standingsExpanded = !_dmState.standingsExpanded;

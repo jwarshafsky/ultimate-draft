@@ -525,20 +525,45 @@ body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--ac
   width: auto;
   padding: 3px 9px;
 }
-.dm-zone .card[data-dm-card] .dm-panel-title { cursor: grab; }
+/* Panel title = the drag handle (only place a panel move can start). Make it
+   read as grabbable: full-width target, grip glyph, grab cursor, hover tint,
+   and non-selectable so a grab never turns into a text selection. */
+.dm-panel-title {
+  margin: 0 0 6px; padding: 3px 6px; border-radius: 6px;
+  cursor: grab; user-select: none; -webkit-user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  transition: background .12s;
+}
+.dm-panel-title:hover { background: rgba(127,127,127,.10); }
+.dm-zone .card[data-dm-card][draggable="true"] .dm-panel-title,
+.dm-panel-title:active { cursor: grabbing; }
+.dm-grip { color: var(--text-3); font-size: 13px; line-height: 1; letter-spacing: -2px; flex: none; }
+.dm-panel-title:hover .dm-grip { color: var(--accent); }
 .dm-zone .card.dm-dragging { opacity: .5; }
 .dm-zone .card.dm-dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .dm-bpa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-/* Multi-position board: one column per selected position, auto-fitting to the
-   board's current width (more columns as it's dragged wider, collapse when
-   narrow). */
-/* Multi-position columns: the template is set INLINE per render (explicit
-   column count × the view's min width — stats tables need ~500px each). The
-   container scroll is the never-overlap guarantee: if the panel is narrower
-   than the columns need, they scroll horizontally instead of colliding (R17). */
-.dm-poscols { display: grid; gap: 14px; align-items: start; overflow-x: auto; padding-bottom: 4px; }
-.dm-poscol { min-width: 0; overflow-x: auto; }
+/* Multi-position board: FREE-FLOW (Jeff) — each selected position is a card
+   sized to its own content and the cards flow left-to-right, wrapping to the
+   next line when they run out of room. No forced equal-width columns and no
+   capacity gate: put 5 side by side if the panel is wide enough, otherwise they
+   wrap. Each card caps its width and scrolls internally so one long name can't
+   blow out the row. */
+.dm-poscols { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.dm-poscol { flex: 0 1 auto; min-width: 200px; max-width: 480px; overflow-x: auto; }
+.dm-poscol .dm-table { width: auto; min-width: 190px; }
 .dm-table { font-size: 12px; width: 100%; }
+
+/* Fixed roster slots (My Roster / compare roster) — ALWAYS all 26 slots in the
+   canonical order; "--" for empty. A player can be dragged to another eligible
+   slot to override the autofill (double-click reverts to auto). */
+.dm-roster-slots td { padding: 2px 6px; }
+.dm-slotlabel { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dm-slotplayer { cursor: grab; display: inline-block; }
+.dm-slotplayer:active { cursor: grabbing; }
+.dm-slotplayer.dm-slot-dragging { opacity: .45; }
+.dm-slotrow.dm-slot-over { outline: 1px dashed var(--accent); outline-offset: -1px; background: rgba(79,142,247,.12); }
+.dm-slotrow.dm-slot-invalid { background: rgba(210,80,80,.20); }
+.dm-slotempty { color: var(--muted); }
 .dm-table th { position: sticky; top: 0; }
 /* Clickable team rows (Budgets / Projected Standings) → compare rosters (item 16) */
 .dm-table tr.dm-teamrow:hover { background: rgba(79,142,247,.08); }

@@ -283,8 +283,15 @@ function _invalidateProjIndex() { _projNameIdx = null; }
 // Jeff's preseason slot held an upload that parsed with all-zero stat columns
 // (names fine, every number 0) — those records won every lookup and made the
 // whole app project 0 R / 0 QS while his ROS sources were fully loaded (R17).
+//
+// PLAYING-TIME FIELDS ARE EXCLUDED (PA / IP): a FanGraphs Auction-Calculator
+// export carries PA/IP + Dollars but ZERO counting/rate stats. Counting PA/IP
+// as "has stats" made such a $-only preseason record pass this guard and shadow
+// the real ROS projections — so every category read 0 and the Live Draft Stats
+// view (and Standings / Category dashboard) showed all-zero. Require a genuine
+// category stat, not just that the player is projected to play.
 function _projHasStats(rec, type) {
-  const ks = type === "H" ? ["R", "HR", "RBI", "SB", "PA", "OBP"] : ["QS", "K", "IP", "SV", "HLD", "ERA"];
+  const ks = type === "H" ? ["R", "HR", "RBI", "SB", "OBP"] : ["QS", "K", "SV", "HLD", "ERA"];
   return ks.some(k => { const v = rec[k]; return v != null && isFinite(v) && Number(v) !== 0; });
 }
 

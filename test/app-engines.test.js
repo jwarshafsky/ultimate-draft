@@ -462,6 +462,58 @@ test("recommendBid: walk/stretch capped at my maxBid", () => {
 });
 
 // =====================================================================
+section("App engines — roster slot assignment (draft-mode.js)");
+// =====================================================================
+
+test("fixed 26-slot template in Jeff's canonical order", () => {
+  const slots = global._dmAssignRoster([], {}).slots;   // (const template isn't a global; read it off the result)
+  assertEq(slots.length, 26, "26 slots");
+  assertEq(slots.map(s => s.type).join(" "),
+    "C 1B 2B SS 3B CI MI OF OF OF OF OF Util P P P P P P P P P BN BN BN BN",
+    "exact slot order");
+});
+
+test("_dmSlotAccepts: eligibility, flex, Util/P/BN rules", () => {
+  const of = { elig: ["OF", "UTIL"], type: "H" };
+  const firstBase = { elig: ["1B", "CI", "UTIL"], type: "H" };
+  const sp = { elig: ["SP"], type: "P" };
+  assert(global._dmSlotAccepts("OF", of), "OF fits OF");
+  assert(!global._dmSlotAccepts("P", of), "hitter does NOT fit P");
+  assert(global._dmSlotAccepts("Util", of), "any hitter fits Util");
+  assert(global._dmSlotAccepts("CI", firstBase), "1B fits CI");
+  assert(!global._dmSlotAccepts("MI", firstBase), "1B does NOT fit MI");
+  assert(global._dmSlotAccepts("P", sp), "pitcher fits P");
+  assert(!global._dmSlotAccepts("C", sp), "pitcher does NOT fit C");
+  assert(global._dmSlotAccepts("BN", sp) && global._dmSlotAccepts("BN", of), "BN accepts anyone");
+});
+
+test("autofill places everyone in an eligible slot; overflow past 26 flagged", () => {
+  const mk = (elig, type, value) => ({ elig, type, value });
+  const db = {
+    "Cat": mk(["C", "UTIL"], "H", 15), "Mookie": mk(["SS", "MI", "2B", "UTIL"], "H", 30),
+    "FB": mk(["1B", "CI", "UTIL"], "H", 20), "TB": mk(["3B", "CI", "UTIL"], "H", 18),
+    "OF1": mk(["OF", "UTIL"], "H", 25), "Ohtani": mk(["UTIL"], "H", 40),
+    "SP1": mk(["SP"], "P", 35), "RP1": mk(["RP"], "P", 10),
+  };
+  const entries = Object.entries(db).map(([name, val]) => ({ name, how: "$1", val, value: val.value }));
+  const { slots, overflow } = global._dmAssignRoster(entries, {});
+  assertEq(overflow.length, 0, "nobody overflows an 8-man roster");
+  for (const s of slots) if (s.player) assert(global._dmSlotAccepts(s.type, s.player.val), s.player.name + " sits in an eligible " + s.type);
+  assert(slots.find(s => s.type === "P" && s.player && s.player.name === "SP1"), "SP1 in a P slot");
+  assert(slots.find(s => s.type === "Util" && s.player && s.player.name === "Ohtani"), "Ohtani (UTIL-only) in Util");
+});
+
+test("manual pin wins over autofill and reroutes the rest", () => {
+  const mk = (elig, type, value) => ({ elig, type, value });
+  const db = { "FB": mk(["1B", "CI", "UTIL"], "H", 20), "Mookie": mk(["SS", "MI", "2B", "UTIL"], "H", 30) };
+  const entries = Object.entries(db).map(([name, val]) => ({ name, how: "$1", val, value: val.value }));
+  const ci = global._dmAssignRoster([], {}).slots.findIndex(s => s.type === "CI");
+  const { slots } = global._dmAssignRoster(entries, { "FB": ci });
+  assertEq(slots[ci].player.name, "FB", "FB pinned to CI, not autofilled to 1B");
+  assert(!slots.find(s => s.type === "1B" && s.player), "1B now empty (FB took its pin)");
+});
+
+// =====================================================================
 section("App engines — draftTeams discovery (draft.js)");
 // =====================================================================
 
