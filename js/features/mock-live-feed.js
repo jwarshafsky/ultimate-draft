@@ -371,7 +371,7 @@ function startMockFeed(opts) {
   opts = opts || {};
   const script = buildMockFeedScript(opts);
   if (!script || !script.frames.length) {
-    if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice mock.");
+    if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice draft.");
     return false;
   }
   if (opts.speed) _mockFeed.speed = opts.speed;
@@ -407,7 +407,7 @@ function startInteractiveCockpitMock(opts) {
   opts = opts || {};
   const values = (typeof getValues === "function") ? getValues() : [];
   if (!values.length) {
-    if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice mock.");
+    if (typeof alert === "function") alert("No projections loaded — import values on the Data tab first, then start a practice draft.");
     return false;
   }
   // REAL id maps (same scheme as the watch-mode feed, R11 reversed): real team
@@ -629,7 +629,7 @@ function saveMockToArchive(label) {
   const tm = Object.values(states).find(x => x.isMe);
   const rec = {
     id: "mf" + Date.now(), ts: Date.now(),
-    label: label || ("Practice mock — " + new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+    label: label || ("Practice draft — " + new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
     anyData: st.anyData,
     grade: (mine && typeof _mockGrade === "function") ? _mockGrade(mine.rank, st.N) : "—",
     myRank: mine ? mine.rank : null, n: st.N, picks: (_liveDraft.picks || []).length,
@@ -812,7 +812,7 @@ function _mfStatusText() {
   if (!s) return "Idle — press Start to run a full auction against the bots.";
   const total = s.totalLots, done = _mockFeed.soldLots;
   if (_mockFeed.finished) {
-    return "✓ Done — " + done + " lots. Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> (keeps the result in your mocks list) or <b>Clear</b> to wipe the slate.";
+    return "✓ Done — " + done + " picks. Open <b>Debrief</b> to review, then <b>Save &amp; clear</b> (keeps the result in your saved drafts) or <b>Clear</b> to wipe the slate.";
   }
   return (_mockFeed.paused ? "⏸ Paused" : "● Running") + " — lot <b>" + done + "</b> / " + total +
     " · $" + _mfSpentSoFar() + " spent · " + esc(_mockFeed.speed);
@@ -890,7 +890,7 @@ function renderMockFeedControls(compact) {
   const speedSeg = finished ? "" : (interactive || !active ? _mfBotSpeedSeg() : _mfSpeedSeg());
   if (compact) {
     let s = '<span class="small" style="display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap;">';
-    if (active) s += '<span class="muted">🤖 mock <b id="mf-status-compact">' + _mockFeed.soldLots + (interactive ? '' : '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0)) + '</b></span>';
+    if (active) s += '<span class="muted">🤖 picks <b id="mf-status-compact">' + _mockFeed.soldLots + (interactive ? '' : '/' + (_mockFeed.script ? _mockFeed.script.totalLots : 0)) + '</b></span>';
     s += controls + (active ? _mfSkipControls(true) : "") + speedSeg + '</span>';
     return s;
   }
@@ -923,7 +923,7 @@ function renderMockArchive() {
   const gc = (typeof _gradeColor === "function") ? _gradeColor : () => "inherit";
   const ord = (typeof _ord === "function") ? _ord : (n) => String(n);
   let html = '<div class="card"><h3 style="margin:0 0 6px;">📋 Saved mocks (' + list.length + ')</h3>';
-  html += '<p class="muted small" style="margin:0 0 6px;">Results from finished practice mocks (and the Mock Draft tab). The working slate is wiped after each — these are the keepsakes.</p>';
+  html += '<p class="muted small" style="margin:0 0 6px;">Results from finished practice drafts (and the Mock Draft tab). The working slate is wiped after each — these are the keepsakes.</p>';
   html += '<table style="font-size:12px;"><tbody>';
   for (const m of list) {
     const grade = m.grade || "—";

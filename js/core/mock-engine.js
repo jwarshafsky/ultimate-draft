@@ -65,7 +65,10 @@ function buildMockTeamStates(opts) {
         // AFTER the failing one, leaving the mock with < 12 teams (e.g. only 3).
         try {
           const ci = (typeof getLeagueContractByName === "function") ? getLeagueContractByName(name) : null;
-          const price = ci ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
+          // Guard the cost read like keeperCostFor does — a contract row with a
+          // missing/null cost otherwise NaNs (or zeroes) this team's budget and
+          // silently stops its bidding for the whole draft (R16).
+          const price = (ci && typeof ci.cost === "number") ? ci.cost : (getCurrentKeeperSalary(name) ?? 0);
           const pv = _mockPlayerValue(name);
           kept.push({ name, price, pos: pv?.posKey || "UTIL", elig: pv?.elig || [pv?.posKey || "UTIL"] });
           keptCost += price;
@@ -83,7 +86,11 @@ function buildMockTeamStates(opts) {
       if (overlay) profile = { ...profile, ...overlay, posBias: { ...profile.posBias, ...overlay.posBias } };
     }
     if (opts.profiles?.[t.id]) profile = { ...profile, ...opts.profiles[t.id] };
-    const startingBudget = LEAGUE.draftBudget - keptCost;
+    // Traded draft dollars / manual budget overrides (R16): match
+    // computeLiveTeamStates exactly, or a team with +$20 of traded dollars has
+    // the AI bidding to a different ceiling than the max-bid shown on screen.
+    const adj = (typeof getBudgetAdjustment === "function") ? (getBudgetAdjustment(t.id) || 0) : 0;
+    const startingBudget = LEAGUE.draftBudget + adj - keptCost;
     const slotsToFill = LEAGUE.rosterSize - kept.length;
     // Floor budget at slotsToFill ($1 per remaining slot minimum) so a team
     // with very expensive keepers can still afford $1 picks the rest of the way.

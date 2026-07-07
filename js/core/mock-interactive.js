@@ -231,7 +231,13 @@ function userNominate(playerName, opening) {
   const q = nk(playerName);
   const player = _interactive.pool.find(p => p.name.toLowerCase() === playerName.toLowerCase()) ||
                  _interactive.pool.find(p => nk(p.name) === q);
-  if (!player) return { ok: false, error: "Player not in pool: " + playerName };
+  if (!player) {
+    // A keeper deserves a specific message — "not in pool" reads like a bug
+    // when Jeff types a real player's name (R16).
+    const kept = (typeof _mockKeptSet === "function") ? _mockKeptSet() : null;
+    if (kept && kept.has(q)) return { ok: false, error: playerName + " is a keeper — already on a roster, not in this auction." };
+    return { ok: false, error: "Player not in pool: " + playerName };
+  }
   const openingBid = Math.max(1, Math.min(opening || 1, myState.budget - Math.max(0, myState.slotsRemaining - 1)));
   _startAuction(player, me.id, openingBid);
   return { ok: true };

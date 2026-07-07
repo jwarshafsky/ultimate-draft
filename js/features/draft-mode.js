@@ -418,7 +418,7 @@ function _dmFeedChips() {
   // A UD-native mock has no extension/ESPN-tab — show a clean practice-mock chip
   // instead of grey ext/tab dots + "mode off" (R14).
   if (typeof mockFeedActive === "function" && mockFeedActive()) {
-    return '<span>' + dot(true, "var(--good)") + '🤖 practice mock</span>' +
+    return '<span>' + dot(true, "var(--good)") + '🤖 practice draft</span>' +
       '<span>' + dot(lastFrame && quiet < 30, "var(--good)") + (lastFrame ? 'feed ' + Math.round(quiet) + 's' : 'starting…') + '</span>';
   }
   const stalled = (typeof _feedStallState === "function") ? _feedStallState().level === "stalled"
@@ -635,12 +635,16 @@ function _dmInteractiveBidControls(lot) {
   const iHavePassed = s.passedTeams && s.passedTeams.has(me.id);
   const myMax = Math.max(0, myState.budget - Math.max(0, myState.slotsRemaining - 1));
   const pricedOut = myMax <= cur;
-  const canAct = !isMyBid && !iHavePassed && !pricedOut;
+  // While paused the engine rejects every action — grey the controls out too,
+  // so a live-looking button doesn't invite a dead click (R16).
+  const icPaused = (typeof _mockFeed !== "undefined") && !!_mockFeed.paused;
+  const canAct = !icPaused && !isMyBid && !iHavePassed && !pricedOut;
   const fair = _dmFairValue(lot ? lot.name : (s.current && s.current.name)) || 0;
   const parVal = Math.round(fair);
   let html = '<div class="dm-icbid" style="margin:0 0 10px; padding:8px; border:1px solid var(--accent); border-radius:8px; background:rgba(79,142,247,.06);">';
   html += '<div class="small" style="margin-bottom:6px; display:flex; justify-content:space-between; gap:8px;"><span>';
-  if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bots responding…</span>';
+  if (icPaused) html += '<span class="muted">⏸ Paused — resume from the top bar to keep bidding.</span>';
+  else if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bots responding…</span>';
   else if (iHavePassed) html += '<span class="muted">You passed on this lot.</span>';
   else if (pricedOut) html += '<span class="bad">Priced out — your max is $' + myMax + '.</span>';
   else html += '<span>Your turn — bid or pass. Max <b>$' + myMax + '</b>.</span>';
@@ -658,7 +662,7 @@ function _dmInteractiveBidControls(lot) {
   if (parVal > 0) html += '<button class="btn" data-icbidto="' + parVal + '"' + (parEn ? '' : ' disabled') + ' style="width:auto; padding:6px 10px;" title="Bid to fair value">→ $' + parVal + '</button>';
   html += '<input id="dm-icbid-custom" type="number" min="' + (cur + 1) + '" placeholder="$" style="width:70px;"' + (canAct ? '' : ' disabled') + '>';
   html += '<button class="btn" data-icbidcustom="1"' + (canAct ? '' : ' disabled') + ' style="width:auto; padding:6px 10px;">Bid</button>';
-  const passEn = !isMyBid && !iHavePassed;
+  const passEn = !icPaused && !isMyBid && !iHavePassed;
   html += '<button class="btn ghost" data-icpass="1"' + (passEn ? '' : ' disabled') + ' style="width:auto; padding:6px 12px;">Pass</button>';
   html += '</div>';
   if (!iHavePassed) {
@@ -1138,19 +1142,28 @@ function _dmWireSplit() {
 function _dmWireCardResize() {
   const rail = document.querySelector(".dm-side");
   if (!rail) return;
-  const save = (id, px) => {
+  const save = (id, px, body) => {
+    // Persist only a REAL user resize (R16): the element must still be in the
+    // document (a debounced read after an innerHTML rebuild sees a detached
+    // node → 0/garbage), and must have MOVED from the height we applied at
+    // render (the observer fires once per observe(), i.e. on every render).
+    if (!body.isConnected || !(px && px > 40)) return;
+    const applied = parseInt(body.dataset.dmAppliedH || "", 10);
+    if (isFinite(applied) && Math.abs(px - applied) <= 8) return;
     const heights = Object.assign({}, _dmLayout().heights);
-    if (px && px > 40) heights[id] = Math.round(px);
+    heights[id] = Math.round(px);
     _dmSaveLayout({ heights });
+    body.dataset.dmAppliedH = String(Math.round(px));
   };
   rail.querySelectorAll(".dm-cardbody[data-dm-cardbody]").forEach(body => {
     const id = body.dataset.dmCardbody;
+    if (!body.dataset.dmAppliedH) body.dataset.dmAppliedH = String(body.offsetHeight || "");
     if (typeof ResizeObserver === "function" && !body._dmRO) {
       // Debounce the observer so we persist the settled height, not every frame.
       let t = null;
       body._dmRO = new ResizeObserver(() => {
         clearTimeout(t);
-        t = setTimeout(() => save(id, body.offsetHeight), 250);
+        t = setTimeout(() => save(id, body.offsetHeight, body), 250);
       });
       body._dmRO.observe(body);
     }
@@ -1306,7 +1319,26 @@ function updateDraftModeLive() {
     const temp = document.getElementById("dm-temp");
     if (temp) { const t = lotTemperature(lot); temp.innerHTML = t ? _dmTempChip(t) : ''; }
     const reco = document.getElementById("dm-reco");
-    if (reco) reco.innerHTML = _dmRecoHtml(lot.name, lot);
+    if (reco) {
+      // Preserve half-typed bid/proxy inputs (+focus/caret) across the patch —
+      // bots bid every ~0.5s, and the innerHTML rewrite otherwise eats Jeff's
+      // keystrokes mid-number, making custom bids untypable (R16).
+      const keep = {};
+      for (const kid of ["dm-icbid-custom", "dm-icproxy", "dm-mock-bidamt"]) {
+        const el = document.getElementById(kid);
+        if (el && (el.value !== "" || document.activeElement === el)) {
+          keep[kid] = { v: el.value, f: document.activeElement === el, s: el.selectionStart, e: el.selectionEnd };
+        }
+      }
+      reco.innerHTML = _dmRecoHtml(lot.name, lot);
+      for (const kid of Object.keys(keep)) {
+        const el = document.getElementById(kid);
+        if (!el) continue;
+        const k = keep[kid];
+        if (k.v !== "") el.value = k.v;
+        if (k.f) { el.focus(); try { if (k.s != null) el.setSelectionRange(k.s, k.e); } catch (_) {} }
+      }
+    }
     const interest = document.getElementById("dm-interest");
     if (interest) interest.innerHTML = _dmInterestHtml(lot.name);
     const idleEl = document.getElementById("dm-idle");

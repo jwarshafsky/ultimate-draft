@@ -120,6 +120,15 @@ function _nomResolveName(typed) {
 function computeLiveInflation() {
   const flat = computeFlatInflation();
   if (!flat) return null;
+  // Interactive practice draft (R16): the DISPLAYED prices must be the SAME
+  // numbers the bots bid against — the engine keeps its own inflation current
+  // (refreshed per sale). Without this the hero/meter called $41 "fair" while
+  // the room paid $73. Merge over flat so fields like leagueRemaining survive.
+  if (typeof mockFeedInteractive === "function" && mockFeedInteractive() &&
+      typeof getInteractiveState === "function") {
+    const eng = getInteractiveState().inflation;
+    if (eng && isFinite(eng.multiplier)) return { ...flat, ...eng, mode: eng.mode || "tiered" };
+  }
   const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
   const draftedNames = new Set(_liveDraft.picks.map(p => _nk(p.player)));
   const spent = _liveDraft.picks.reduce((s, p) => s + p.price, 0);
@@ -1464,7 +1473,7 @@ function renderDraftFeedPanel() {
   let detect = '<div class="small" style="margin-top:6px; display:flex; gap:16px; flex-wrap:wrap;">';
   const _mockRunning = typeof mockFeedActive === "function" && mockFeedActive();
   detect += '<span>' + dot(_mockRunning || _feed.extPresent, "var(--good)") +
-    (_mockRunning ? "Practice mock — no ESPN tab needed" : _feed.extPresent ? "Keeper Edge connected" : "Keeper Edge not detected") + '</span>';
+    (_mockRunning ? "Practice draft — no ESPN tab needed" : _feed.extPresent ? "Keeper Edge connected" : "Keeper Edge not detected") + '</span>';
   detect += '<span>' + dot(tabOpen, "var(--good)") +
     (tabOpen ? "ESPN draft tab open — " + esc(_feed.tabSport === "ffl" ? "football" : _feed.tabSport === "flb" ? "baseball" : (_feed.tabSport || "?")) + " · league " + esc(String(_feed.tabLeagueId || "?"))
              : "No ESPN draft tab open") + '</span>';
@@ -1475,7 +1484,7 @@ function renderDraftFeedPanel() {
     // A UD-native mock feeds the cockpit directly (no extension, no ESPN tab) —
     // never show the "reload Keeper Edge / reopen this tab" prompt for it.
     cls = "good";
-    status = "● Practice mock running — <b>" + (_feed.count || _liveDraft.picks.length) + "</b> pick" +
+    status = "● Practice draft running — <b>" + (_feed.count || _liveDraft.picks.length) + "</b> pick" +
       ((_feed.count || _liveDraft.picks.length) === 1 ? "" : "s") + " so far (in-memory rehearsal; no ESPN tab needed).";
   } else if (_feed.staleInfo && !_feed.connected) {
     const age = Math.round((Date.now() - _feed.staleInfo.at) / 3600000);
