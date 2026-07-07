@@ -103,6 +103,39 @@ function toNum(v) {
   return isFinite(n) ? n : 0;
 }
 
+// Import-time garbage guard (R17). A stats file whose every row parses to
+// all-zero stat columns is almost always the WRONG file in the slot (Jeff once
+// dropped an auction-$ CSV into the stats importer — names parsed, every stat 0,
+// and those zero records then shadowed his real ROS projections everywhere).
+// `statKeys` are the meaningful columns for the store; a row "has stats" if any
+// is a finite non-zero number. Returns { total, zeroRows, allZero, ratio }.
+function summarizeStatRows(rows, statKeys) {
+  let zeroRows = 0;
+  for (const r of rows) {
+    const has = statKeys.some(k => { const v = r[k]; return v != null && isFinite(v) && Number(v) !== 0; });
+    if (!has) zeroRows++;
+  }
+  const total = rows.length;
+  return { total, zeroRows, allZero: total > 0 && zeroRows === total, ratio: total ? zeroRows / total : 0 };
+}
+
+// Throws (blocks the save) if EVERY row is stat-less; returns a non-empty warning
+// string if >30% are (store-but-warn); returns "" when clean. Shared by every
+// stats importer so the guard is identical in spirit everywhere (R17).
+function assertStatsNotGarbage(entries, statKeys, label) {
+  const s = summarizeStatRows(entries, statKeys);
+  if (s.allZero) {
+    throw new Error("These " + s.total + " " + (label || "rows") +
+      " have names but NO stats — every stat column is zero or missing. " +
+      "Did you upload a dollar-values file into the stats slot? Nothing was saved.");
+  }
+  if (s.ratio > 0.30) {
+    return "\n\n⚠ " + s.zeroRows + " of " + s.total + " " + (label || "rows") +
+      " have no stats (all-zero). They were saved, but check you uploaded the right file.";
+  }
+  return "";
+}
+
 function importHittersCSV(text, sourceName) {
   const rows = parseCSV(text);
   const out = [];
@@ -137,12 +170,18 @@ function importHittersCSV(text, sourceName) {
     }
     out.push(entry);
   }
+  // Block an all-zero stats upload before it can shadow good projections (R17).
+  // Skip the check when the file is purely a $-values file (every row carried an
+  // fgDollars) — that's a legitimate FG Auction Calculator export, not garbage.
+  const dollarOnly = out.length > 0 && dollarHits === out.length;
+  if (!dollarOnly) assertStatsNotGarbage(out, ["R", "HR", "RBI", "SB", "PA", "OBP"], "hitters");
   _projections.hitters = out;
   _invalidateProjIndex();
   if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs hitter dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
     importedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     hitterCount: out.length,
     pitcherCount: _projections.pitchers.length,
   };
@@ -182,12 +221,16 @@ function importPitchersCSV(text, sourceName) {
     }
     out.push(entry);
   }
+  // Block an all-zero stats upload before it can shadow good projections (R17).
+  const dollarOnly = out.length > 0 && dollarHits === out.length;
+  if (!dollarOnly) assertStatsNotGarbage(out, ["QS", "K", "IP", "SV", "HLD", "ERA"], "pitchers");
   _projections.pitchers = out;
   _invalidateProjIndex();
   if (dollarHits > 0) console.log("Imported " + dollarHits + " FanGraphs pitcher dollar values");
   _projections.meta = {
     source: sourceName || _projections.meta.source || "manual",
     importedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     hitterCount: _projections.hitters.length,
     pitcherCount: out.length,
   };

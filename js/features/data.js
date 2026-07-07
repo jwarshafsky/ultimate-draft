@@ -2,6 +2,273 @@
 
 let _dataRosSel = null; // currently-selected ROS source in the Data tab
 
+// ---------------------------------------------------------------------------
+// Data health (R17). Inventory every importable / refetchable user-data store:
+// row counts, last-updated stamp (or "no stamp — old data"), and warnings —
+// all-zero stats, stale-past-TTL cache, empty-but-referenced. The incident this
+// prevents: a zero-stat projection upload silently shadowed good data for weeks
+// because nothing flagged the store as garbage. See _projHasStats / R17.
+//
+// Only "flaggable" stores (refetchable caches + re-importable feeds) can be
+// cleaned up. Work-product stores (keepers, notes, strategy, saved mocks, draft
+// history) are Jeff's own — LISTED with age info, NEVER auto-flagged.
+// ---------------------------------------------------------------------------
+
+// Days since an ISO/date stamp, or null if no stamp.
+function _dhAgeDays(stamp) {
+  if (!stamp) return null;
+  const t = (typeof stamp === "string" && stamp.length <= 10) ? new Date(stamp + "T12:00:00").getTime() : new Date(stamp).getTime();
+  if (!isFinite(t)) return null;
+  return Math.floor((Date.now() - t) / 86400000);
+}
+
+// All-zero-stats check over an array of stat records (the import-time garbage
+// signature). statKeys are the meaningful columns. Empty array → not all-zero.
+function _dhAllZero(records, statKeys) {
+  if (!records || !records.length) return false;
+  return records.every(r => !statKeys.some(k => { const v = r[k]; return v != null && isFinite(v) && Number(v) !== 0; }));
+}
+
+// Build the health report: { flaggable: [store…], workProduct: [store…], hosted }.
+// Each store: { key, label, rows, stamp, ageDays, warnings:[], canClean }.
+function buildDataHealth() {
+  const flaggable = [];
+  const workProduct = [];
+
+  // --- Preseason projection store (the R17 incident's origin) ---
+  const meta = (typeof getProjectionMeta === "function") ? getProjectionMeta() : {};
+  const hit = (typeof getHitterProjections === "function") ? getHitterProjections() : [];
+  const pit = (typeof getPitcherProjections === "function") ? getPitcherProjections() : [];
+  if ((meta.hitterCount || 0) + (meta.pitcherCount || 0) > 0 || hit.length || pit.length) {
+    const w = [];
+    // Only flag all-zero when there are no fgDollars either (a pure $-file is valid).
+    const hitStatless = _dhAllZero(hit, ["R", "HR", "RBI", "SB", "PA", "OBP"]) && !hit.some(h => h.fgDollars != null);
+    const pitStatless = _dhAllZero(pit, ["QS", "K", "IP", "SV", "HLD", "ERA"]) && !pit.some(p => p.fgDollars != null);
+    if (hitStatless && hit.length) w.push("hitters have names but ALL stats zero — likely a $-file in the stats slot");
+    if (pitStatless && pit.length) w.push("pitchers have names but ALL stats zero — likely a $-file in the stats slot");
+    flaggable.push({
+      keys: ["ud_proj_hitters_v1", "ud_proj_pitchers_v1", "ud_proj_meta_v1"],
+      label: "Preseason projections (" + (meta.source || "FanGraphs") + ")",
+      rows: hit.length + " hit / " + pit.length + " pit",
+      stamp: meta.updatedAt || meta.importedAt || null,
+      ageDays: _dhAgeDays(meta.updatedAt || meta.importedAt), warnings: w,
+      onClean: (typeof clearProjections === "function") ? clearProjections : null,
+    });
+  }
+
+  // --- ROS sources (stats + $) ---
+  for (const s of (typeof ROS_SOURCES !== "undefined" ? ROS_SOURCES : [])) {
+    const has = (typeof rosHasData === "function" && rosHasData(s.id));
+    const hasDol = (typeof rosHasDollars === "function" && rosHasDollars(s.id));
+    if (!has && !hasDol) continue;
+    const d = (typeof _ros !== "undefined" && _ros.data[s.id]) || {};
+    const c = (typeof getRosCounts === "function") ? getRosCounts(s.id) : { hitters: 0, pitchers: 0 };
+    const dc = (typeof getRosDollarCounts === "function") ? getRosDollarCounts(s.id) : { hitters: 0, pitchers: 0 };
+    const w = [];
+    if (_dhAllZero(d.hitters, ["R", "HR", "RBI", "SB", "PA", "OBP"]) && (d.hitters || []).length)
+      w.push("hitter stats all zero — likely a $-file in the stats slot");
+    if (_dhAllZero(d.pitchers, ["QS", "K", "IP", "SV", "HLD", "ERA"]) && (d.pitchers || []).length)
+      w.push("pitcher stats all zero — likely a $-file in the stats slot");
+    const stamp = d.updatedAt || d.updated || c.importedAt || null;
+    const age = _dhAgeDays(stamp);
+    // Drafting-season imports — flag if very stale (>60d), since a new season's
+    // ROS numbers should be re-pulled well before then.
+    if (age != null && age > 60) w.push("older than 60 days — refresh before drafting");
+    flaggable.push({
+      keys: [_rosKey(s.id)], label: s.label + " (ROS)",
+      rows: c.hitters + " hit / " + c.pitchers + " pit · $" + dc.hitters + "h/" + dc.pitchers + "p",
+      stamp, ageDays: age, warnings: w,
+      onClean: (typeof clearRosSource === "function") ? () => { clearRosSource(s.id); } : null,
+    });
+  }
+
+  // --- NFBC market prices ---
+  const nfbcMeta = (typeof getNfbcMeta === "function") ? getNfbcMeta() : { count: 0 };
+  if (nfbcMeta.count) {
+    const recs = (typeof _nfbc !== "undefined") ? Object.values(_nfbc.byName) : [];
+    const w = [];
+    if (_dhAllZero(recs, ["avg", "min", "max", "adp"])) w.push("all prices/ADP zero — wrong file uploaded?");
+    const age = _dhAgeDays(nfbcMeta.updatedAt || nfbcMeta.importedAt);
+    if (age != null && age > 60) w.push("older than 60 days — a stale market read");
+    flaggable.push({
+      keys: ["ud_nfbc_v1"], label: "NFBC market prices", rows: nfbcMeta.count + " players",
+      stamp: nfbcMeta.updatedAt || nfbcMeta.importedAt || null, ageDays: age, warnings: w,
+      onClean: (typeof clearNfbc === "function") ? clearNfbc : null,
+    });
+  }
+
+  // --- Statcast / Savant ---
+  const scHit = (typeof _statcast !== "undefined") ? Object.keys(_statcast.hitters).length : 0;
+  const scPit = (typeof _statcast !== "undefined") ? Object.keys(_statcast.pitchers).length : 0;
+  if (scHit || scPit) {
+    const recs = (typeof _statcast !== "undefined") ? Object.values(_statcast.hitters).concat(Object.values(_statcast.pitchers)) : [];
+    const w = [];
+    if (_dhAllZero(recs, ["xwOBA", "xBA", "xSLG", "xERA", "wOBA", "EV", "barrel"])) w.push("all expected-stats zero — wrong export uploaded?");
+    const stamp = (typeof getStatcastUpdatedAt === "function") ? getStatcastUpdatedAt() : null;
+    const age = _dhAgeDays(stamp);
+    if (age != null && age > 60) w.push("older than 60 days — a stale Statcast read");
+    flaggable.push({
+      keys: ["ud_savant_hit_v1", "ud_savant_pit_v1"], label: "Statcast (Baseball Savant)",
+      rows: scHit + " hit / " + scPit + " pit", stamp, ageDays: age, warnings: w,
+      onClean: (typeof clearStatcast === "function") ? clearStatcast : null,
+    });
+  }
+
+  // --- League rosters cache (12h TTL) ---
+  if (typeof getLeagueRostersUpdatedAt === "function") {
+    const at = getLeagueRostersUpdatedAt();
+    if (at || localStorage.getItem("ud_league_rosters_v1")) {
+      const hrs = at ? (Date.now() - new Date(at).getTime()) / 3600000 : null;
+      const w = [];
+      if (hrs != null && hrs > 12) w.push("older than its 12h refresh window — reload the Keepers tab");
+      flaggable.push({
+        keys: ["ud_league_rosters_v1"], label: "League rosters/contracts cache",
+        rows: "cache", stamp: at, ageDays: _dhAgeDays(at), warnings: w,
+        onClean: () => { localStorage.removeItem("ud_league_rosters_v1"); if (typeof _leagueRosters !== "undefined") { _leagueRosters = null; _leagueRostersAt = null; _leagueIdx = null; } },
+      });
+    }
+  }
+
+  // --- Draft-dollar sheet cache (~1d) ---
+  if (typeof getDraftDollarsUpdatedAt === "function") {
+    const at = getDraftDollarsUpdatedAt();
+    if (at || localStorage.getItem("ud_draft_dollars_v1")) {
+      const w = [];
+      const age = _dhAgeDays(at);
+      if (age != null && age > 1) w.push("older than a day — reload to catch traded draft dollars");
+      flaggable.push({
+        keys: ["ud_draft_dollars_v1"], label: "Traded draft-dollars cache",
+        rows: "cache", stamp: at, ageDays: age, warnings: w,
+        onClean: () => { localStorage.removeItem("ud_draft_dollars_v1"); if (typeof _draftDollars !== "undefined") { _draftDollars = {}; _draftDollarsAt = null; } },
+      });
+    }
+  }
+
+  // --- Hosted-feed availability (the projections/ dir is never committed) ---
+  const hosted = { available: (typeof _dhHostedAvailable !== "undefined") ? _dhHostedAvailable : null };
+
+  // --- Work product (listed, never flagged for cleanup) ---
+  const wp = (label, key, count) => { if (count) workProduct.push({ label, key, rows: count }); };
+  try {
+    if (typeof _myKeepers !== "undefined") {
+      let n = 0; for (const t in _myKeepers.teams) n += Object.keys(_myKeepers.teams[t] || {}).length;
+      wp("My keeper picks/predictions", "ud_my_keepers_v1", n && (n + " marks"));
+    }
+    if (typeof _notes !== "undefined") wp("Player notes/tags", "ud_player_notes_v1", Object.keys(_notes.byName || {}).length && (Object.keys(_notes.byName).length + " players"));
+    if (typeof getSavedMocks === "function") { const m = getSavedMocks(); wp("Saved mock drafts", "ud_saved_mocks_v1", m.length && (m.length + " mocks")); }
+    if (typeof getDraftStrategy === "function") { const s = getDraftStrategy(); wp("Draft strategy", "ud_draft_strategy_v1", (s.text || s.brief) && "written"); }
+  } catch (e) { /* best-effort listing */ }
+
+  return { flaggable, workProduct, hosted };
+}
+
+// Hosted-feed availability, probed once. The repo's projections/ directory is
+// never committed (scripts/fetch_ros_projections.py exists but nothing runs it),
+// so the manifest fetch 404s. We surface that FACT in the panel instead of
+// letting the auto-load fail silently. null = not probed yet.
+let _dhHostedAvailable = null;
+function probeHostedFeed() {
+  if (typeof fetchRosManifest !== "function") { _dhHostedAvailable = false; return; }
+  fetchRosManifest().then(m => {
+    const next = !!m;
+    if (next !== _dhHostedAvailable) { _dhHostedAvailable = next; if (typeof renderData === "function" && _activeTabIsData()) renderData(); }
+    else _dhHostedAvailable = next;
+  }).catch(() => { _dhHostedAvailable = false; });
+}
+function _activeTabIsData() {
+  return (location.hash || "").indexOf("data") >= 0;
+}
+
+// Escape helper alias — data.js already relies on the global esc().
+function renderDataHealthCard() {
+  if (_dhHostedAvailable === null) probeHostedFeed();
+  const rep = buildDataHealth();
+  const flaggedCount = rep.flaggable.filter(s => s.warnings.length).length;
+
+  let h = '<div class="card"><h2>Data health</h2>';
+  h += '<p class="muted small">Every imported / cached data store, its freshness, and any problems. Warnings in red mean a store may be garbage or stale — the kind of thing that once silently zeroed out the whole app.</p>';
+
+  // Hosted-feed status line.
+  if (rep.hosted.available === false) {
+    h += '<div class="small" style="margin-bottom:8px; color: var(--warn);">⚠ Hosted projection feed: <b>not available</b> — the refresh job isn\'t wired up, so ROS sources are <b>manual upload only</b> (paste/upload each source below).</div>';
+  } else if (rep.hosted.available === true) {
+    h += '<div class="small muted" style="margin-bottom:8px;">Hosted projection feed: available.</div>';
+  }
+
+  h += '<table><thead><tr><th>Store</th><th class="num">Rows</th><th>Last updated</th><th>Status</th></tr></thead><tbody>';
+  for (const s of rep.flaggable) {
+    const stampTxt = s.stamp
+      ? esc(new Date(s.stamp).toLocaleDateString()) + (s.ageDays != null ? ' <span class="muted">(' + s.ageDays + 'd)</span>' : '')
+      : '<span class="bad">no stamp — old data</span>';
+    const status = s.warnings.length
+      ? s.warnings.map(w => '<span class="bad">⚠ ' + esc(w) + '</span>').join('<br>')
+      : '<span class="good">ok</span>';
+    h += '<tr><td>' + esc(s.label) + '</td><td class="num">' + esc(String(s.rows)) + '</td><td>' + stampTxt + '</td><td>' + status + '</td></tr>';
+  }
+  h += '</tbody></table>';
+
+  // Work product — listed with age, never cleanup-flagged.
+  if (rep.workProduct.length) {
+    h += '<div class="small muted" style="margin-top:8px;"><b>Your work (kept, never auto-cleared):</b> ' +
+      rep.workProduct.map(w => esc(w.label) + ' — ' + esc(String(w.rows))).join(' · ') + '</div>';
+  }
+
+  // Cleanup button — only offered when something is actually flagged.
+  if (flaggedCount) {
+    h += '<div style="margin-top:12px;"><button class="btn danger" id="dh-cleanup" style="width:auto;">🧹 Clean up flagged data (' + flaggedCount + ')</button></div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// The confirm-first cleanup flow. Lists ONLY flagged stores with per-item
+// checkboxes; NEVER deletes without the confirm step. Clears localStorage +
+// resets the store's in-memory copy + refreshes.
+function openDataCleanup() {
+  const rep = buildDataHealth();
+  const flagged = rep.flaggable.filter(s => s.warnings.length && s.onClean);
+  if (!flagged.length) { alert("Nothing is flagged — nothing to clean up."); return; }
+
+  let host = document.getElementById("dh-cleanup-modal");
+  if (host) host.remove();
+  host = document.createElement("div");
+  host.id = "dh-cleanup-modal";
+  host.className = "modal-host";
+  let rows = "";
+  flagged.forEach((s, i) => {
+    rows += '<label style="display:block; margin:6px 0;">' +
+      '<input type="checkbox" class="dh-ck" data-i="' + i + '" checked> <b>' + esc(s.label) + '</b>' +
+      '<div class="small bad" style="margin-left:22px;">' + s.warnings.map(esc).join('; ') + '</div></label>';
+  });
+  host.innerHTML =
+    '<div class="modal-bg"></div><div class="modal-card">' +
+    '<h3>Clean up flagged data</h3>' +
+    '<p class="muted small">These stores look garbage or stale. Unchecked ones are left alone. Your keeper picks, notes, strategy, saved mocks, and draft history are never touched.</p>' +
+    rows +
+    '<div style="display:flex; gap:8px; margin-top:14px; justify-content:flex-end;">' +
+    '<button class="btn" id="dh-cancel">Cancel</button>' +
+    '<button class="btn danger" id="dh-confirm" style="width:auto; padding:8px 16px;">Clear selected</button></div></div>';
+  document.body.appendChild(host);
+  const close = () => host.remove();
+  host.querySelector(".modal-bg").addEventListener("click", close);
+  host.querySelector("#dh-cancel").addEventListener("click", close);
+  host.querySelector("#dh-confirm").addEventListener("click", () => {
+    const picked = Array.from(host.querySelectorAll(".dh-ck")).filter(c => c.checked).map(c => flagged[+c.dataset.i]);
+    if (!picked.length) { close(); return; }
+    for (const s of picked) {
+      try { s.onClean(); } catch (e) { console.warn("cleanup failed for " + s.label, e); }
+      // Belt-and-suspenders: ensure every backing key is gone even if onClean
+      // only reset in-memory state.
+      for (const k of (s.keys || [])) { try { localStorage.removeItem(k); } catch (e) {} }
+    }
+    if (typeof refreshValues === "function") refreshValues();
+    if (typeof fireData === "function") fireData();
+    close();
+    if (typeof rerender === "function") rerender(); else renderData();
+    alert("Cleared " + picked.length + " store" + (picked.length > 1 ? "s" : "") + ".");
+  });
+}
+
 function renderData() {
   const root = document.getElementById("view-root");
   const meta = getProjectionMeta();
@@ -10,6 +277,9 @@ function renderData() {
   const savantPit = Object.keys(_statcast.pitchers).length;
 
   let html = "";
+
+  // === Data health (R17) ===
+  html += renderDataHealthCard();
 
   // Status block — per-source stat + dollar coverage.
   html += '<div class="card"><h2>Data Status</h2>';
@@ -147,6 +417,9 @@ function renderData() {
 
   root.innerHTML = html;
 
+  // Data health cleanup button.
+  document.getElementById("dh-cleanup")?.addEventListener("click", openDataCleanup);
+
   // Wire all imports with a consistent helper
   function wireImport(textareaId, fileId, sourceId, fn, label) {
     const btnId = textareaId.replace("-csv", "-import");
@@ -221,20 +494,24 @@ function renderData() {
     document.getElementById(btnId)?.addEventListener("click", () => {
       const text = document.getElementById(textareaId).value;
       if (!text.trim()) { alert("Paste CSV data first."); return; }
-      const count = fn(_dataRosSel, text);
-      setRosManual(_dataRosSel, true);   // your upload overrides the live default
-      alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ". This source will no longer auto-update (your manual override). Use “Load latest projections” to switch back to live.");
-      renderData();
+      try {
+        const count = fn(_dataRosSel, text);
+        setRosManual(_dataRosSel, true);   // your upload overrides the live default
+        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + ". This source will no longer auto-update (your manual override). Use “Load latest projections” to switch back to live.");
+        renderData();
+      } catch (e) { alert(e.message || String(e)); }
     });
     document.getElementById(fileId)?.addEventListener("change", (ev) => {
       const file = ev.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => {
-        const count = fn(_dataRosSel, reader.result);
-        setRosManual(_dataRosSel, true);
-        alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ". Manual override set; use “Load latest projections” to switch back to live.");
-        renderData();
+        try {
+          const count = fn(_dataRosSel, reader.result);
+          setRosManual(_dataRosSel, true);
+          alert("Imported " + count + " " + label + " into " + getRosSourceLabel(_dataRosSel) + " from " + file.name + ". Manual override set; use “Load latest projections” to switch back to live.");
+          renderData();
+        } catch (e) { alert(e.message || String(e)); }
       };
       reader.readAsText(file);
     });

@@ -29,8 +29,10 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
 - `js/data/` — loaders. Supabase league data (`league-data.js`, tables:
   keeper_selections, callup_overrides, league_state, trades, roster_moves;
   realtime-subscribed), ROS projections (`ros-projections.js` — hosted CSVs
-  under `projections/` auto-loaded unless a source is flagged `manual`), ESPN
-  via the proxy (`espn.js`), League App rosters/contracts
+  under `projections/` auto-load ONLY if that dir exists; it is NOT committed and
+  the refresh job (`scripts/fetch_ros_projections.py`) is not wired up, so in
+  practice ROS is **manual upload only** — the Data-tab health panel says so),
+  ESPN via the proxy (`espn.js`), League App rosters/contracts
   (`league-rosters.js` — fetched from jwarshafsky/the-league data.js, 12h cache),
   draft history, NFBC, Statcast, draft-dollar trades (published Google Sheet).
 - `js/core/` — pure engines: `valuation.js` (player $), `inflation.js` (keeper

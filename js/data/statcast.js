@@ -14,22 +14,41 @@ const STATCAST_PIT_KEY = "ud_savant_pit_v1";
 const _statcast = {
   hitters: {}, // { normalizedName: { xBA, xSLG, xwOBA, Barrel, HardHit, EV, ... } }
   pitchers: {},
+  updatedAt: null,   // ISO stamp of the last import (health panel freshness)
 };
+
+// Freshness stamp key stored inside the persisted maps. It contains a "$" so
+// normKey() (which strips everything but [a-z0-9]) can NEVER produce it, meaning
+// getStatcast() will never mistake it for a player. Backward-compatible: absent
+// in old stores → treated as "no stamp — old data".
+const STATCAST_STAMP_KEY = "$updatedAt";
 
 function loadStatcastFromStorage() {
   try {
     _statcast.hitters = JSON.parse(localStorage.getItem(STATCAST_HIT_KEY) || "{}");
     _statcast.pitchers = JSON.parse(localStorage.getItem(STATCAST_PIT_KEY) || "{}");
+    // Lift the freshness stamp out of the maps (if present) so lookups never see it.
+    _statcast.updatedAt = _statcast.hitters[STATCAST_STAMP_KEY] || _statcast.pitchers[STATCAST_STAMP_KEY] || null;
+    delete _statcast.hitters[STATCAST_STAMP_KEY];
+    delete _statcast.pitchers[STATCAST_STAMP_KEY];
   } catch (e) {
     _statcast.hitters = {};
     _statcast.pitchers = {};
+    _statcast.updatedAt = null;
   }
 }
 
 function saveStatcastToStorage() {
-  localStorage.setItem(STATCAST_HIT_KEY, JSON.stringify(_statcast.hitters));
-  localStorage.setItem(STATCAST_PIT_KEY, JSON.stringify(_statcast.pitchers));
+  _statcast.updatedAt = new Date().toISOString();
+  // Persist the stamp inside each map under a "$"-prefixed key that can't be a
+  // normKey (so it never shadows a player). Stripped again on load.
+  const h = { ..._statcast.hitters, [STATCAST_STAMP_KEY]: _statcast.updatedAt };
+  const p = { ..._statcast.pitchers, [STATCAST_STAMP_KEY]: _statcast.updatedAt };
+  localStorage.setItem(STATCAST_HIT_KEY, JSON.stringify(h));
+  localStorage.setItem(STATCAST_PIT_KEY, JSON.stringify(p));
 }
+
+function getStatcastUpdatedAt() { return _statcast.updatedAt; }
 
 // "Smith, Will" → "Will Smith"; "Will Smith" → "Will Smith".
 function normalizeName(raw) {
@@ -103,9 +122,20 @@ function clearStatcast() {
   if (typeof rerender === "function") rerender();
 }
 
+// A Statcast record with no meaningful expected-stat payload is a MISS, not a
+// hit — same zero-record-falls-through pattern as _projHasStats (R17). Guards
+// against an all-zero Savant upload (wrong export in the slot) surfacing as
+// bogus buy/sell signals.
+function _statcastHasData(rec) {
+  return ["xwOBA", "xBA", "xSLG", "xERA", "wOBA", "EV", "barrel"].some(k => {
+    const v = rec[k]; return v != null && isFinite(v) && Number(v) !== 0;
+  });
+}
+
 function getStatcast(playerName) {
   const k = normKey(playerName);
-  return _statcast.hitters[k] || _statcast.pitchers[k] || null;
+  const rec = _statcast.hitters[k] || _statcast.pitchers[k];
+  return (rec && _statcastHasData(rec)) ? rec : null;
 }
 
 function statcastBuySell(playerName) {

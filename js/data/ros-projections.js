@@ -139,9 +139,12 @@ function importRosHitters(sourceId, text) {
       dollars: _pickDollars(r),
     });
   }
+  // Block an all-zero stats upload before it can shadow good projections (R17).
+  if (typeof assertStatsNotGarbage === "function") assertStatsNotGarbage(out, ["R", "HR", "RBI", "SB", "PA", "OBP"], "ROS hitters");
   const d = _ensureSource(sourceId);
   d.hitters = out;
   d.importedAt = new Date().toISOString();
+  d.updatedAt = new Date().toISOString();
   _saveRos(sourceId);
   fireData && fireData();
   return out.length;
@@ -163,9 +166,12 @@ function importRosPitchers(sourceId, text) {
       dollars: _pickDollars(r),
     });
   }
+  // Block an all-zero stats upload before it can shadow good projections (R17).
+  if (typeof assertStatsNotGarbage === "function") assertStatsNotGarbage(out, ["QS", "K", "IP", "SV", "HLD", "ERA"], "ROS pitchers");
   const d = _ensureSource(sourceId);
   d.pitchers = out;
   d.importedAt = new Date().toISOString();
+  d.updatedAt = new Date().toISOString();
   _saveRos(sourceId);
   fireData && fireData();
   return out.length;
@@ -217,19 +223,25 @@ function importRosJSON(sourceId, kind, text) {
   const nm = o => o.PlayerName || o.Name;
   const d = _ensureSource(sourceId);
   if (kind === "pit") {
-    d.pitchers = arr.filter(nm).map(o => ({
+    const pit = arr.filter(nm).map(o => ({
       name: nm(o), K: n(o, "SO"), QS: n(o, "QS"), SV: n(o, "SV"), HLD: n(o, "HLD"), GS: n(o, "GS"),
       IP: n(o, "IP"), ERA: n(o, "ERA"), WHIP: n(o, "WHIP"), ER: n(o, "ER"), HA: n(o, "H"), BBA: n(o, "BB"),
       dollars: _pickDollarsJSON(o),
     }));
+    // Block an all-zero stats paste before it can shadow good projections (R17).
+    if (typeof assertStatsNotGarbage === "function") assertStatsNotGarbage(pit, ["QS", "K", "IP", "SV", "HLD", "ERA"], "ROS pitchers");
+    d.pitchers = pit;
   } else {
-    d.hitters = arr.filter(nm).map(o => ({
+    const hit = arr.filter(nm).map(o => ({
       name: nm(o), R: n(o, "R"), HR: n(o, "HR"), RBI: n(o, "RBI"), SB: n(o, "SB"), OBP: n(o, "OBP"),
       PA: n(o, "PA"), AB: n(o, "AB"), H: n(o, "H"), BB: n(o, "BB"), HBP: n(o, "HBP"), SF: n(o, "SF"),
       dollars: _pickDollarsJSON(o),
     }));
+    if (typeof assertStatsNotGarbage === "function") assertStatsNotGarbage(hit, ["R", "HR", "RBI", "SB", "PA", "OBP"], "ROS hitters");
+    d.hitters = hit;
   }
   d.importedAt = new Date().toISOString();
+  d.updatedAt = new Date().toISOString();
   d.updated = new Date().toISOString().slice(0, 10);
   _saveRos(sourceId);
   fireData && fireData();
@@ -279,6 +291,15 @@ function _buildIndex(sourceId) {
   return idx;
 }
 
+// A matched ROS record with NO real stats must not shadow another source's real
+// line (same incident as _projHasStats in projections.js, R17): a zero-stat
+// upload sitting in one source used to win getProjection's chain and zero out
+// the whole app. Treat a stat-less record as a MISS, not a hit.
+function _rosHasStats(rec, type) {
+  const ks = type === "P" ? ["K", "QS", "SV", "HLD", "IP", "ERA"] : ["R", "HR", "RBI", "SB", "OBP", "PA"];
+  return ks.some(k => { const v = rec[k]; return v != null && isFinite(v) && Number(v) !== 0; });
+}
+
 // Get a ROS line for a player by name + type ("H"|"P"), normalized to the
 // shape standings.js consumes. Returns null if no match.
 function getRosLine(sourceId, name, type) {
@@ -287,12 +308,12 @@ function getRosLine(sourceId, name, type) {
   const key = normalizePlayerName(name);
   if (type === "P") {
     const p = idx.P.get(key) || idx.Pc.get(coreNameKey(name));   // fallback: drop middle initials
-    if (!p) return null;
+    if (!p || !_rosHasStats(p, "P")) return null;                // R17: stat-less record is a miss
     return { name: p.name, type: "P", K: p.K, QS: p.QS, SV: p.SV, HLD: p.HLD, GS: p.GS || 0,
       IP: p.IP, ER: p.ER || null, HA: p.HA || null, BBA: p.BBA || null, ERA: p.ERA, WHIP: p.WHIP };
   }
   const h = idx.H.get(key) || idx.Hc.get(coreNameKey(name));   // fallback: drop middle initials
-  if (!h) return null;
+  if (!h || !_rosHasStats(h, "H")) return null;                 // R17: stat-less record is a miss
   return { name: h.name, type: "H", R: h.R, HR: h.HR, RBI: h.RBI, SB: h.SB,
     OBP: h.OBP, PA: h.PA, AB: h.AB || null, H: h.H || null, BB: h.BB || null,
     HBP: h.HBP || null, SF: h.SF || null };
@@ -314,6 +335,7 @@ function importRosDollars(sourceId, kind, text) {
     const pos = pickCol(r, ["POS", "Pos", "Position", "pos"]) || "";
     if (name && dol != null) { d[k][normalizePlayerName(name)] = { v: dol, name, pos }; n++; }
   }
+  d.updatedAt = new Date().toISOString();
   _saveRos(sourceId);
   fireData && fireData();
   return n;

@@ -45,14 +45,23 @@ function importNfbcCSV(text, sourceName) {
     added++;
   }
   _nfbc.byName = out;
-  _nfbc.meta = { source: sourceName || "NFBC", importedAt: new Date().toISOString(), count: added };
+  _nfbc.meta = { source: sourceName || "NFBC", importedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), count: added };
   saveNfbcToStorage();
   if (typeof rerender === "function") rerender();
   return added;
 }
 
+// A record with no meaningful price/ADP payload is a MISS, not a hit — same
+// zero-record-falls-through pattern as _projHasStats (R17). Prevents an
+// all-zero market-price upload (wrong file in the slot) from shadowing the
+// SGP-based value everywhere NFBC is joined.
+function _nfbcHasData(rec) {
+  return ["avg", "min", "max", "adp"].some(k => { const v = rec[k]; return v != null && isFinite(v) && Number(v) !== 0; });
+}
+
 function getNfbc(playerName) {
-  return _nfbc.byName[normKey(playerName)] || null;
+  const rec = _nfbc.byName[normKey(playerName)];
+  return (rec && _nfbcHasData(rec)) ? rec : null;
 }
 
 function getNfbcMeta() { return _nfbc.meta; }
