@@ -367,25 +367,97 @@ function renderDraftMode(root, inflation) {
     if (typeof se === "boolean") _dmState.standingsExpanded = se;
     _dmState._statViewLoaded = true;
   }
+  const zones = _dmZones();
+  const heights = _dmLayout().heights || {};
+  const ctx = { inflation, heights, panels: _dmBuildPanels(inflation) };
   let html = '<div class="dm-wrap">';
   html += _dmTopBar(inflation);
-  html += _dmHero();
-  // Endgame panel — full-width, directly below the hero and ABOVE the board, so
-  // turning endgame on (or its auto-detecting) is unmistakable rather than buried
-  // in the collapsed bottom drawer (item 10).
+  // TOP zone (default: the on-the-clock hero) — full-width, above the columns.
+  html += _dmRenderZone("top", zones.top, ctx);
+  // Endgame panel — full-width, directly BELOW the top zone and ABOVE the
+  // columns, so turning endgame on (or its auto-detecting) is unmistakable
+  // rather than buried in the collapsed bottom drawer (item 10). NOT a panel
+  // (conditional, fixed position).
   if (typeof isEndgame === "function" && isEndgame()) {
     html += '<div class="dm-endgame-strip">' + renderEndgamePanel() + '</div>';
   }
+  // LEFT | split | RIGHT — the two resizable columns.
   html += '<div class="dm-main">';
-  html += '<div class="dm-board-col">' + _dmBoard(inflation) + '</div>';
+  html += _dmRenderZone("left", zones.left, ctx);
   html += '<div class="dm-split" title="Drag to resize"></div>';
-  html += '<div class="dm-side">' + _dmSide() + '</div>';
+  html += _dmRenderZone("right", zones.right, ctx);
   html += '</div>';
-  html += _dmPlanBar();   // My Plan — full-width, under the board (item 15)
+  // BOTTOM zone (default: My Plan) — full-width, under the columns.
+  html += _dmRenderZone("bottom", zones.bottom, ctx);
   html += _dmBottom();
   html += '</div>';
   root.innerHTML = html;
   wireDraftMode();
+}
+
+// Build the content (title + inner HTML) for every panel, once per render. The
+// inner content functions (_dmHero, _dmBoard, renderCategoryDashboard, …) are
+// untouched — they're just wrapped in the panel card shell here.
+function _dmBuildPanels(inflation) {
+  const p = {};
+  p.hero = { title: "On the Clock", body: _dmHero(), cls: "dm-panel-hero" };
+  p.board = { title: "Available Players", body: _dmBoard(inflation), cls: "dm-panel-board" };
+  p.roster = { title: "My Roster", body: _dmMyRosterHtml() };
+  p.budgets = { title: "Budgets", body: _dmBudgetsHtml() };
+  p.standings = { title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() };
+  p.noms = { title: "Nominations", body: (typeof renderNominationsPanel === "function") ? renderNominationsPanel() : "" };
+  p.history = { title: "Draft History", body: _dmHistoryHtml() };
+  p.cats = { title: "Category Dashboard", body: (typeof renderCategoryDashboard === "function") ? renderCategoryDashboard() : "" };
+  p.ai = { title: "AI Assistant", body: (typeof renderAiAssistantPanel === "function") ? renderAiAssistantPanel() : "" };
+  p.plan = { title: "My Plan", body: _dmPlanBar() };
+  return p;
+}
+
+// Render one zone: a <div class="dm-zone dm-zone-{name}"> holding each panel in
+// its persisted order, plus the transient compare card pinned right after the
+// roster panel (wherever roster lives). Empty zones still render (with a slim
+// drop strip) so they remain drag targets.
+function _dmRenderZone(name, ids, ctx) {
+  const isCol = (name === "left" || name === "right");
+  let inner = "";
+  for (const id of (ids || [])) {
+    const p = ctx.panels[id];
+    if (!p) continue;
+    inner += _dmPanelHtml(id, p, ctx.heights);
+    // Transient compare card (item 16) — inserted right AFTER "My Roster"
+    // wherever roster lives, so it always sits next to my roster. Not draggable,
+    // not persisted (no data-dm-card).
+    if (id === "roster" && _dmState.compareTeamId != null) {
+      const cmp = _dmCompareCardHtml(ctx.heights);
+      if (cmp) inner += cmp;
+    }
+  }
+  const empty = inner === "" ? " dm-zone-empty" : "";
+  return '<div class="dm-zone dm-zone-' + name + (isCol ? " dm-zone-col" : " dm-zone-full") + empty + '" data-dm-zone="' + name + '">' + inner + '</div>';
+}
+
+// One draggable, height-resizable panel card. Body carries data-dm-cardbody for
+// the height-persistence observer; the card carries data-dm-card + draggable for
+// the reorder/move drag.
+function _dmPanelHtml(id, p, heights) {
+  const h = heights ? heights[id] : null;
+  const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
+  const cls = "card dm-rcard dm-panel" + (p.cls ? " " + p.cls : "");
+  return '<div class="' + cls + '" data-dm-card="' + id + '" draggable="true">' +
+    '<h3 class="dm-panel-title" style="margin:0 0 6px;" title="Drag to move / rearrange">⠿ ' + p.title + '</h3>' +
+    '<div class="dm-cardbody" data-dm-cardbody="' + id + '"' + hStyle + '>' + p.body + '</div></div>';
+}
+
+// The transient "compare roster" card (item 16). Not draggable / not persisted.
+function _dmCompareCardHtml(heights) {
+  const cmpTeam = (typeof getTeam === "function") ? getTeam(_dmState.compareTeamId) : null;
+  if (!cmpTeam) { _dmState.compareTeamId = null; return ""; }   // stale id (team gone)
+  const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
+    '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
+  const h = heights ? heights.compare : null;
+  const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
+  return '<div class="card dm-rcard dm-cmpcard"><h3 style="margin:0 0 6px;">' + title + '</h3>' +
+    '<div class="dm-cardbody"' + hStyle + '>' + _dmCompareRosterHtml(_dmState.compareTeamId) + '</div></div>';
 }
 
 function _dmTopBar(inflation) {
@@ -405,6 +477,7 @@ function _dmTopBar(inflation) {
   html += '<span style="flex:1;"></span>';
   if (typeof _mfTopbarHtml === "function") html += _mfTopbarHtml();   // mirrored practice-mock controls
   html += '<button class="btn ghost' + (egForced ? ' dm-endgame-on' : '') + '" id="dm-endgame" title="Force the endgame tools on (auto-detection stays as fallback)">' + (egForced ? '🔥 Endgame: ON' : 'Endgame: auto') + '</button>';
+  html += '<button class="btn ghost" id="dm-reset-layout" title="Reset every panel to its default position and size">↺ Layout</button>';
   html += '<button class="btn ghost" id="dm-debrief" title="Post-draft recap">📋 Debrief</button>';
   html += '<button class="btn ghost" id="dm-exit" title="Esc also exits">✕ Exit to setup</button>';
   html += '</div>';
@@ -808,7 +881,9 @@ const _DM_POS_MODES = _DM_MODES.filter(m => !_DM_PRESETS.includes(m));
 function _dmBoard(inflation) {
   const posSel = _dmState.boardPos;   // Set of selected position codes
   const multi = posSel && posSel.size > 0;
-  let html = '<div class="card">';
+  // No .card wrapper here — the panel shell (_dmPanelHtml) supplies the card +
+  // resizable body. This returns the board's inner content only.
+  let html = '';
   html += _dmTierCliffBanner();
   html += '<div class="dm-board-head">';
   html += '<div class="seg dm-seg">' + _DM_MODES.map(m => {
@@ -846,7 +921,6 @@ function _dmBoard(inflation) {
   } else {
     html += _dmTable(_dmPoolRows(inflation).slice(0, 60), inflation);
   }
-  html += '</div>';
   return html;
 }
 
@@ -916,43 +990,125 @@ function _dmTable(players, inflation) {
   return html;
 }
 
-// --- side panels ---
-// Each card has an id; order is user-arrangeable (drag the card title) and
-// per-card height is resizable. Layout is DEVICE-LOCAL (monitor-specific) — the
-// same rationale as DM_KEY, so it is deliberately NOT in the cloud-sync
-// whitelist. Stored under ud_dm_layout_v1 as an object:
-//   { order: [cardId,...], split: <number|null>, heights: { cardId: px },
-//     statView: "value"|"stats" }
-// split = board-column width as a % of the .dm-main track (10–90). heights map
-// a card id → its user-dragged pixel height. MIGRATION: the original schema was
-// a bare order array — a stored Array is transparently read as { order: array }.
+// --- panels (four-zone layout) ---
+// EVERYTHING in the main area is a panel now: the on-the-clock hero cluster, the
+// player board, the side cards, the category dashboard, the AI assistant and the
+// My Plan bar. Each panel has a stable id; the user drags panels within AND
+// between FOUR zones — top (full-width), left / right (the split columns) and
+// bottom (full-width) — and each panel body is height-resizable. Layout is
+// DEVICE-LOCAL (monitor-specific) — the same rationale as DM_KEY, so it is
+// deliberately NOT in the cloud-sync whitelist. Stored under ud_dm_layout_v1:
+//   { zones: { top:[id...], left:[id...], right:[id...], bottom:[id...] },
+//     split: <number|null>, heights: { id: px }, statView: "value"|"stats",
+//     standingsExpanded: bool, order: [id...] (legacy, kept in sync) }
+// split = LEFT column width as a % of the .dm-main track (20–85). heights map a
+// panel id → its user-dragged pixel height.
+// MIGRATION (nothing ever disappears):
+//   • bare Array (v1 order)  → right zone seeded from it, hero/board/plan default
+//   • { order:[...] }        → same (order was the right-rail order)
+//   • { cols:{left,right} }  → an interim two-column build; folded into zones
+//   • { zones:{...} }        → used as-is, then any missing known panel id is
+//                              appended to its DEFAULT zone.
 const _DM_CARD_ORDER_KEY = "ud_dm_layout_v1";
+const _DM_ZONE_IDS = ["top", "left", "right", "bottom"];
+// The canonical set of panels and the zone each defaults to. Order within a zone
+// here IS the default order — must reproduce today's layout exactly.
+const _DM_PANEL_IDS = ["hero", "board", "roster", "budgets", "standings", "noms", "history", "cats", "ai", "plan"];
+const _DM_DEFAULT_ZONES = {
+  top: ["hero"],
+  left: ["board"],
+  right: ["roster", "budgets", "standings", "noms", "history", "cats", "ai"],
+  bottom: ["plan"],
+};
+// The default zone for a given panel id (used when appending a missing panel).
+function _dmDefaultZoneFor(id) {
+  for (const z of _DM_ZONE_IDS) if (_DM_DEFAULT_ZONES[z].includes(id)) return z;
+  return "right";
+}
+// Merge a (possibly partial / stale) zones object with the defaults: keep the
+// user's placement + order for every id they have, then append any known panel
+// id they're missing to its default zone so a panel never vanishes.
+function _dmNormalizeZones(zones) {
+  const out = { top: [], left: [], right: [], bottom: [] };
+  const seen = new Set();
+  for (const z of _DM_ZONE_IDS) {
+    const arr = Array.isArray(zones && zones[z]) ? zones[z] : [];
+    for (const id of arr) {
+      if (_DM_PANEL_IDS.includes(id) && !seen.has(id)) { out[z].push(id); seen.add(id); }
+    }
+  }
+  for (const id of _DM_PANEL_IDS) {
+    if (seen.has(id)) continue;
+    out[_dmDefaultZoneFor(id)].push(id);
+    seen.add(id);
+  }
+  return out;
+}
+// Build four zones from a legacy right-rail order array. hero/board/plan keep
+// their default zones; the old rail order seeds the right zone; any newer panel
+// id falls into its default zone via normalization.
+function _dmZonesFromOrder(order) {
+  const right = Array.isArray(order) ? order.filter(id => _DM_PANEL_IDS.includes(id) && !["hero", "board", "plan"].includes(id)) : [];
+  return _dmNormalizeZones({ top: ["hero"], left: ["board"], right, bottom: ["plan"] });
+}
+// Fold an interim two-column { left, right } object into the four-zone shape.
+function _dmZonesFromCols(cols) {
+  return _dmNormalizeZones({
+    top: ["hero"],
+    left: Array.isArray(cols.left) ? cols.left : ["board"],
+    right: Array.isArray(cols.right) ? cols.right : [],
+    bottom: ["plan"],
+  });
+}
 function _dmLayout() {
   try {
     const v = JSON.parse(localStorage.getItem(_DM_CARD_ORDER_KEY) || "null");
-    if (Array.isArray(v)) return { order: v, split: null, heights: {}, statView: null };   // legacy array → object
-    if (v && typeof v === "object") return {
-      order: Array.isArray(v.order) ? v.order : null,
-      split: (typeof v.split === "number" ? v.split : null),
-      heights: (v.heights && typeof v.heights === "object") ? v.heights : {},
-      statView: (v.statView === "value" || v.statView === "stats") ? v.statView : null,
-      standingsExpanded: (typeof v.standingsExpanded === "boolean") ? v.standingsExpanded : null,
-    };
+    if (Array.isArray(v)) {   // legacy bare array = right-rail order
+      return { order: v, zones: _dmZonesFromOrder(v), split: null, heights: {}, statView: null, standingsExpanded: null };
+    }
+    if (v && typeof v === "object") {
+      const order = Array.isArray(v.order) ? v.order : null;
+      let zones;
+      if (v.zones && typeof v.zones === "object" && _DM_ZONE_IDS.some(z => Array.isArray(v.zones[z]))) {
+        zones = _dmNormalizeZones(v.zones);                 // already migrated
+      } else if (v.cols && typeof v.cols === "object" && (Array.isArray(v.cols.left) || Array.isArray(v.cols.right))) {
+        zones = _dmZonesFromCols(v.cols);                   // interim two-column build
+      } else {
+        zones = _dmZonesFromOrder(order);                   // old order array (or defaults if none)
+      }
+      return {
+        order,
+        zones,
+        split: (typeof v.split === "number" ? v.split : null),
+        heights: (v.heights && typeof v.heights === "object") ? v.heights : {},
+        statView: (v.statView === "value" || v.statView === "stats") ? v.statView : null,
+        standingsExpanded: (typeof v.standingsExpanded === "boolean") ? v.standingsExpanded : null,
+      };
+    }
   } catch (e) {}
-  return { order: null, split: null, heights: {}, statView: null, standingsExpanded: null };
+  return { order: null, zones: _dmNormalizeZones(null), split: null, heights: {}, statView: null, standingsExpanded: null };
 }
 function _dmSaveLayout(patch) {
   const cur = _dmLayout();
-  const next = { order: cur.order, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
+  const next = { order: cur.order, zones: cur.zones, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
   if (patch && "order" in patch) next.order = patch.order;
+  if (patch && "zones" in patch) next.zones = _dmNormalizeZones(patch.zones);
   if (patch && "split" in patch) next.split = patch.split;
   if (patch && "heights" in patch) next.heights = patch.heights;
   if (patch && "statView" in patch) next.statView = patch.statView;
   if (patch && "standingsExpanded" in patch) next.standingsExpanded = patch.standingsExpanded;
+  // Keep the legacy `order` (right-rail order) in sync so an OLDER build loading
+  // this same key still renders a sane rail.
+  if (patch && "zones" in patch && next.zones) next.order = next.zones.right.filter(id => id !== "board");
   try { localStorage.setItem(_DM_CARD_ORDER_KEY, JSON.stringify(next)); } catch (e) {}
 }
-function _dmCardOrder() { return _dmLayout().order; }
-function _dmSaveCardOrder(order) { _dmSaveLayout({ order }); }
+function _dmZones() { return _dmLayout().zones; }
+function _dmSaveZones(zones) { _dmSaveLayout({ zones }); }
+// Wipe every layout override (zones / split / heights) → back to the default
+// four-zone layout. statView + standingsExpanded are content prefs, kept.
+function _dmResetLayout() {
+  _dmSaveLayout({ zones: _dmNormalizeZones(null), split: null, heights: {} });
+}
 
 function _dmMyRosterHtml() {
   const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : null;
@@ -1013,61 +1169,13 @@ function _dmBudgetsHtml() {
   return html;
 }
 
-// My Plan card — moved OUT of the side rail (item 15) to a full-width bar under
-// the board. Keeps the strategyForAi brief or the "no strategy" hint.
+// My Plan panel body (item 15) — the strategyForAi brief or the "no strategy"
+// hint. The panel card + "My Plan" title are supplied by the panel wrapper.
 function _dmPlanBar() {
   const brief = (typeof strategyForAi === "function") ? strategyForAi() : null;
-  const body = brief
+  return brief
     ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
     : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>';
-  return '<div class="card dm-planbar"><h3 style="margin:0 0 6px;">My Plan</h3>' + body + '</div>';
-}
-
-function _dmSide() {
-  const cards = [
-    { id: "roster", title: "My Roster", body: _dmMyRosterHtml() },
-    { id: "budgets", title: "Budgets", body: _dmBudgetsHtml() },
-    { id: "standings", title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() },
-    { id: "noms", title: "Nominations", body: renderNominationsPanel() },
-    { id: "history", title: "Draft History", body: _dmHistoryHtml() },
-  ];
-  const order = _dmCardOrder();
-  if (order) cards.sort((a, b) => {
-    const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-  });
-  // Transient compare card (item 16) — inserted right AFTER "My Roster"
-  // regardless of the persisted order, so it always sits next to my roster.
-  if (_dmState.compareTeamId != null) {
-    const cmpTeam = (typeof getTeam === "function") ? getTeam(_dmState.compareTeamId) : null;
-    if (cmpTeam) {
-      const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
-        '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
-      const cmpCard = { id: "compare", title, body: _dmCompareRosterHtml(_dmState.compareTeamId), transient: true };
-      const ri = cards.findIndex(c => c.id === "roster");
-      cards.splice(ri < 0 ? 0 : ri + 1, 0, cmpCard);
-    } else {
-      _dmState.compareTeamId = null;   // stale id (team no longer exists)
-    }
-  }
-  const heights = _dmLayout().heights || {};
-  let html = '';
-  for (const c of cards) {
-    const h = heights[c.id];
-    const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
-    // Transient cards (the compare roster) are NOT draggable and carry no
-    // data-dm-card, so they never enter the persisted order (item 16).
-    if (c.transient) {
-      html += '<div class="card dm-rcard dm-cmpcard"><h3 style="margin:0 0 6px;">' + c.title + '</h3>' +
-        '<div class="dm-cardbody"' + hStyle + '>' + c.body + '</div></div>';
-      continue;
-    }
-    html += '<div class="card dm-rcard" data-dm-card="' + c.id + '" draggable="true"><h3 style="margin:0 0 6px;" title="Drag to rearrange">⠿ ' + c.title + '</h3>' +
-      '<div class="dm-cardbody" data-dm-cardbody="' + c.id + '"' + hStyle + '>' + c.body + '</div></div>';
-  }
-  html += renderCategoryDashboard();
-  html += renderAiAssistantPanel();
-  return html;
 }
 
 // Full pick-by-pick draft history (newest first), for the "history" side card.
@@ -1086,9 +1194,9 @@ function _dmHistoryHtml() {
   return html;
 }
 
-// Apply + wire the resizable split between the board and the side rail. The
-// stored split is the board column's width as a % of the .dm-main track; the
-// side rail takes the remainder. Reapplied on every render (renders rebuild
+// Apply + wire the resizable split between the LEFT and RIGHT columns. The
+// stored split is the LEFT column's width as a % of the .dm-main track; the
+// right column takes the remainder. Reapplied on every render (renders rebuild
 // innerHTML). Dragging the .dm-split handle updates it live and persists on
 // release. When no split is stored the CSS default (media-query grid) stands.
 // Module-level drag state so the document-level move/up listeners (bound ONCE,
@@ -1127,21 +1235,20 @@ function _dmWireSplit() {
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       const m = document.querySelector(".dm-main");
-      const boardCol = m ? m.querySelector(".dm-board-col") : null;
+      const leftCol = m ? m.querySelector(".dm-zone-left") : null;
       const rect = m ? m.getBoundingClientRect() : null;
-      if (boardCol && rect && rect.width > 0) {
-        const pct = (boardCol.getBoundingClientRect().width / rect.width) * 100;
+      if (leftCol && rect && rect.width > 0) {
+        const pct = (leftCol.getBoundingClientRect().width / rect.width) * 100;
         _dmSaveLayout({ split: Math.max(20, Math.min(85, +pct.toFixed(2))) });
       }
     });
   }
 }
 
-// Per-card resizable HEIGHT: the card body is CSS `resize: vertical`; capture
-// the chosen height on release and persist it, reapplied on render via _dmSide.
+// Per-panel resizable HEIGHT: the panel body is CSS `resize: vertical`; capture
+// the chosen height on release and persist it, reapplied on render via the
+// panel wrapper. Observes EVERY zone (a panel can live anywhere now).
 function _dmWireCardResize() {
-  const rail = document.querySelector(".dm-side");
-  if (!rail) return;
   const save = (id, px, body) => {
     // Persist only a REAL user resize (R16): the element must still be in the
     // document (a debounced read after an innerHTML rebuild sees a detached
@@ -1155,7 +1262,7 @@ function _dmWireCardResize() {
     _dmSaveLayout({ heights });
     body.dataset.dmAppliedH = String(Math.round(px));
   };
-  rail.querySelectorAll(".dm-cardbody[data-dm-cardbody]").forEach(body => {
+  document.querySelectorAll(".dm-zone .dm-cardbody[data-dm-cardbody]").forEach(body => {
     const id = body.dataset.dmCardbody;
     if (!body.dataset.dmAppliedH) body.dataset.dmAppliedH = String(body.offsetHeight || "");
     if (typeof ResizeObserver === "function" && !body._dmRO) {
@@ -1170,27 +1277,75 @@ function _dmWireCardResize() {
   });
 }
 
-// HTML5 drag-to-reorder for the side cards; order persists across sessions.
+// HTML5 drag to move a panel WITHIN and BETWEEN the four zones. Every zone is a
+// drop target (including empty ones — they keep a slim visible strip while a
+// drag is active). On drop we read back the DOM order of each zone and persist
+// the whole { top,left,right,bottom } map. The compare card is transient (no
+// data-dm-card) so it never participates and never persists.
 function _dmWireCardDrag() {
-  const rail = document.querySelector(".dm-side");
-  if (!rail) return;
+  const zones = [...document.querySelectorAll(".dm-zone[data-dm-zone]")];
+  if (!zones.length) return;
   let dragging = null;
-  rail.querySelectorAll(".card[data-dm-card]").forEach(card => {
-    card.addEventListener("dragstart", () => { dragging = card; card.classList.add("dm-dragging"); });
+  const clearOver = () => document.querySelectorAll(".dm-dragover, .dm-zone-dragover")
+    .forEach(c => c.classList.remove("dm-dragover", "dm-zone-dragover"));
+  // Read the current panel order out of each zone's DOM and persist it.
+  const persist = () => {
+    const next = { top: [], left: [], right: [], bottom: [] };
+    for (const z of zones) {
+      const name = z.dataset.dmZone;
+      if (!next[name]) continue;
+      next[name] = [...z.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard);
+    }
+    _dmSaveZones(next);
+  };
+  // Insert the dragged card relative to a sibling card (before/after by midpoint).
+  const insertRelative = (card, e) => {
+    const rect = card.getBoundingClientRect();
+    const parent = card.parentNode;
+    if (e.clientY < rect.top + rect.height / 2) parent.insertBefore(dragging, card);
+    else parent.insertBefore(dragging, card.nextSibling);
+  };
+  document.querySelectorAll(".dm-zone .card[data-dm-card]").forEach(card => {
+    card.addEventListener("dragstart", (e) => {
+      dragging = card; card.classList.add("dm-dragging");
+      try { e.dataTransfer.effectAllowed = "move"; } catch (_) {}
+      document.body.classList.add("dm-dragging-active");   // reveal empty-zone drop strips
+    });
     card.addEventListener("dragend", () => {
       card.classList.remove("dm-dragging");
-      rail.querySelectorAll(".dm-dragover").forEach(c => c.classList.remove("dm-dragover"));
-      _dmSaveCardOrder([...rail.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard));
+      document.body.classList.remove("dm-dragging-active");
+      clearOver();
+      dragging = null;
     });
     card.addEventListener("dragover", (e) => {
       e.preventDefault();
       if (!dragging || dragging === card) return;
-      card.classList.add("dm-dragover");
-      const rect = card.getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) rail.insertBefore(dragging, card);
-      else rail.insertBefore(dragging, card.nextSibling);
+      // Skip the transient compare card as a sibling anchor — insert before it.
+      const anchor = card.classList.contains("dm-cmpcard") ? null : card;
+      if (anchor) { anchor.classList.add("dm-dragover"); insertRelative(anchor, e); }
     });
     card.addEventListener("dragleave", () => card.classList.remove("dm-dragover"));
+  });
+  // Zone-level drop target: handles empty zones and the gap below the last card.
+  zones.forEach(z => {
+    z.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (!dragging) return;
+      z.classList.add("dm-zone-dragover");
+      // If the pointer is below every card in this zone, append to the end.
+      const cards = [...z.querySelectorAll(".card[data-dm-card]")];
+      const last = cards[cards.length - 1];
+      if (!cards.length) { z.appendChild(dragging); return; }
+      if (last && last !== dragging) {
+        const r = last.getBoundingClientRect();
+        if (e.clientY > r.bottom) z.appendChild(dragging);
+      }
+    });
+    z.addEventListener("dragleave", (e) => {
+      // Only clear when actually leaving the zone (not entering a child).
+      if (!z.contains(e.relatedTarget)) z.classList.remove("dm-zone-dragover");
+    });
+    z.addEventListener("drop", (e) => { e.preventDefault(); clearOver(); persist(); });
   });
 }
 
@@ -1375,6 +1530,13 @@ function wireDraftMode() {
   }
   document.getElementById("dm-debrief")?.addEventListener("click", () => { if (typeof openDebrief === "function") openDebrief(); });
   document.getElementById("dm-endgame")?.addEventListener("click", () => { if (typeof setEndgameForced === "function") { setEndgameForced(!isEndgameForced()); renderDraft(); } });
+  // Reset layout (Jeff WILL paint himself into a corner) — confirm, then clear
+  // zones/split/heights back to the default and re-render.
+  document.getElementById("dm-reset-layout")?.addEventListener("click", () => {
+    if (typeof confirm === "function" && !confirm("Reset all draft-mode panels to their default position and size?")) return;
+    _dmResetLayout();
+    renderDraft();
+  });
   // Kick the AI injury-return estimate for the player on the clock (if hurt).
   const otcName = document.getElementById("dm-otc")?.getAttribute("data-player");
   if (otcName && typeof wirePlayerNewsBlock === "function") wirePlayerNewsBlock(otcName);

@@ -446,7 +446,10 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-wrap { display: flex; flex-direction: column; gap: 12px; }
 .dm-topbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 12px; }
 
-.dm-hero { display: grid; grid-template-columns: minmax(360px, 1.5fr) minmax(220px, 0.9fr) minmax(260px, 1fr); gap: 12px; align-items: stretch; }
+/* The on-the-clock hero is now a PANEL body: its 3 sub-cards sit in an auto-fit
+   grid so they spread across a full-width zone (top/bottom) and stack when the
+   panel is dropped into a narrow left/right column. */
+.dm-hero { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; align-items: stretch; }
 .dm-player { font-size: 30px; font-weight: 700; line-height: 1.15; margin: 2px 0; }
 .dm-bignum { font-size: 26px; font-weight: 700; }
 .dm-bidline { margin: 4px 0 6px; }
@@ -454,20 +457,40 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-ticker div { padding: 1px 0; border-bottom: 1px dotted var(--border); }
 .dm-reco-nums { display: flex; gap: 18px; margin-top: 4px; }
 
-/* Board | drag-handle | side rail. The 8px middle track is the resize handle;
-   JS overrides grid-template-columns inline when a split % is stored. */
+/* Four-zone layout. TOP + BOTTOM zones are full-width vertical stacks; LEFT +
+   RIGHT are the two columns split by the drag handle. Every zone holds panels
+   (.card.dm-panel) with a resizable body. */
+.dm-zone-full { display: flex; flex-direction: column; gap: 12px; }
+.dm-zone-full > .card { margin: 0; }
+/* Left | drag-handle | right. The 8px middle track is the resize handle; JS
+   overrides grid-template-columns inline when a split % is stored. */
 .dm-main { display: grid; grid-template-columns: minmax(0, 1fr) 8px minmax(340px, 420px); gap: 0; column-gap: 12px; align-items: start; }
-.dm-board-col { min-width: 0; }
+.dm-zone-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.dm-zone-col > .card { margin: 0; }
 .dm-split {
   align-self: stretch; min-height: 60px; cursor: col-resize;
   border-radius: 4px; background: var(--border);
   opacity: .5; transition: opacity .12s;
 }
 .dm-split:hover { opacity: 1; background: var(--accent); }
-.dm-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.dm-side > .card { margin: 0; }
-/* Resizable card body — the height persists (JS reapplies it on render). */
+/* Empty zones collapse to nothing normally, but while a drag is active they show
+   a slim dashed drop strip so they stay targetable. */
+.dm-zone-empty { min-height: 0; }
+body.dm-dragging-active .dm-zone-empty {
+  min-height: 44px; border: 2px dashed var(--border); border-radius: 8px;
+  background: rgba(127,127,127,.05);
+}
+body.dm-dragging-active .dm-zone-empty::before {
+  content: "drop here"; display: block; text-align: center; padding: 12px 0;
+  font-size: 11px; color: var(--text-3);
+}
+/* Zone highlighted as the active drop target during a drag. */
+body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: 8px; }
+/* Resizable panel body — the height persists (JS reapplies it on render). */
 .dm-cardbody { overflow: auto; resize: vertical; min-height: 40px; }
+/* Board panel body: keep its head controls readable and let the tables scroll
+   inside the resizable body when the panel is dropped into a narrow column. */
+.dm-panel-board .dm-cardbody { overflow: auto; }
 
 .dm-board-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .dm-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
@@ -496,17 +519,15 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
   width: auto;
   padding: 3px 9px;
 }
-.dm-side .card[data-dm-card] h3 { cursor: grab; }
-.dm-side .card.dm-dragging { opacity: .5; }
-.dm-side .card.dm-dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.dm-zone .card[data-dm-card] .dm-panel-title { cursor: grab; }
+.dm-zone .card.dm-dragging { opacity: .5; }
+.dm-zone .card.dm-dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .dm-bpa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 /* Multi-position board: one column per selected position, auto-fitting to the
    board's current width (more columns as it's dragged wider, collapse when
    narrow). */
 .dm-poscols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; align-items: start; }
 .dm-poscol { min-width: 0; }
-/* My Plan — full-width bar under the board / above the bottom drawer. */
-.dm-planbar { margin: 0; }
 .dm-table { font-size: 12px; width: 100%; }
 .dm-table th { position: sticky; top: 0; }
 /* Clickable team rows (Budgets / Projected Standings) → compare rosters (item 16) */
@@ -520,7 +541,7 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-endgame-strip > .card { margin: 0 0 12px; }
 .dm-endgame-strip > .card:last-child { margin-bottom: 0; }
 /* Compare-roster card (item 16) — subtly distinguished from the persistent cards */
-.dm-side .card.dm-cmpcard { border-color: rgba(79,142,247,.45); }
+.dm-zone .card.dm-cmpcard { border-color: rgba(79,142,247,.45); }
 /* Expanded per-category standings (item 17) — compact, horizontally scrollable */
 .dm-standings-full { min-width: 520px; }
 .dm-standings-full th, .dm-standings-full td { padding: 2px 5px; white-space: nowrap; }
@@ -528,29 +549,33 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 
 .dm-bottom { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg-2); }
 
-/* Ultrawide: go HORIZONTAL — the side rail becomes a 2-col (then 3-col) grid
-   of cards so panels spread across the width instead of stacking into a long
-   scroll (Jeff: ESPN lives on the other monitor; use the whole width here). */
+/* Ultrawide: use the whole width — give the right column more room (Jeff: ESPN
+   lives on the other monitor). The right zone stays a single draggable stack;
+   panels the user parks in the TOP/BOTTOM full-width zones (or drags into the
+   left column) are how you now spread across the width. The hero body's
+   auto-fit grid already spreads its 3 sub-cards horizontally when full-width. */
 @media (min-width: 1900px) {
   .dm-main { grid-template-columns: minmax(0, 1fr) 8px minmax(760px, 920px); }
-  .dm-hero { grid-template-columns: minmax(420px, 1.4fr) minmax(280px, 1fr) minmax(320px, 1fr); }
   .dm-player { font-size: 36px; }
-  .dm-side { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
-  .dm-side > .card { height: fit-content; }
+  .dm-zone-col > .card { height: fit-content; }
   /* let the board's BPA tables actually use their zone */
   .dm-bpa { gap: 20px; }
 }
 @media (min-width: 2500px) {
   .dm-main { grid-template-columns: minmax(0, 1fr) 8px minmax(1150px, 1380px); }
-  .dm-side { grid-template-columns: 1fr 1fr 1fr; }
 }
 /* Bottom zone spreads horizontally too when open */
 @media (min-width: 1900px) {
   .dm-bottom-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: start; }
 }
-/* Narrow fallback (laptop) — stack, nothing hidden. Board over rail; the resize
-   handle is meaningless when stacked, so hide it. */
+/* Narrow fallback (laptop) — stack, nothing hidden. In stacked mode the two
+   columns render one after the other, full width; the resize handle is
+   meaningless when stacked, so hide it. Any inline split % set by JS is
+   overridden back to a single column. */
 @media (max-width: 1100px) {
-  .dm-hero, .dm-main, .dm-bpa { grid-template-columns: 1fr; }
+  .dm-bpa { grid-template-columns: 1fr; }
+  .dm-main { display: block; grid-template-columns: 1fr !important; }
+  .dm-main > .dm-zone-col { width: 100%; }
+  .dm-zone-left { margin-bottom: 12px; }
   .dm-split { display: none; }
 }
