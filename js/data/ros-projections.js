@@ -469,6 +469,30 @@ function rosHasData(sourceId) {
   const d = _ros.data[sourceId];
   return !!(d && (d.hitters.length || d.pitchers.length));
 }
+
+// Every ROS source id that actually carries STAT rows (not just $ values),
+// active source first. Used by getProjection to compose a $-only active source
+// with a separate stats source (R17: Jeff's active source was $-only, so
+// categories/standings read blank while a stats source sat right there).
+function rosStatSourceIds() {
+  const ids = [];
+  const active = (typeof activeProjSource === "function") ? activeProjSource() : null;
+  if (active && active !== "preseason" && rosHasData(active)) ids.push(active);
+  for (const s of ROS_SOURCES) {
+    if (s.id !== active && rosHasData(s.id)) ids.push(s.id);
+  }
+  return ids;
+}
+
+// The best available stat line for a player across ALL stats-bearing sources
+// (active first). Returns a projection object (with type) or null.
+function getRosLineAnySource(name, type) {
+  for (const id of rosStatSourceIds()) {
+    const line = getRosLine(id, name, type);
+    if (line) return line;
+  }
+  return null;
+}
 function getRosCounts(sourceId) {
   const d = _ros.data[sourceId];
   return { hitters: d?.hitters.length || 0, pitchers: d?.pitchers.length || 0, importedAt: d?.importedAt || null };

@@ -722,13 +722,13 @@ function _dmInteractiveBidControls(lot) {
   let html = '<div class="dm-icbid" style="margin:0 0 10px; padding:8px; border:1px solid var(--accent); border-radius:8px; background:rgba(79,142,247,.06);">';
   html += '<div class="small" style="margin-bottom:6px; display:flex; justify-content:space-between; gap:8px;"><span>';
   if (icPaused) html += '<span class="muted">⏸ Paused — resume from the top bar to keep bidding.</span>';
-  else if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bots responding…</span>';
-  else if (iHavePassed) html += '<span class="muted">You passed on this lot.</span>';
+  else if (isMyBid) html += '<span class="good">✓ You\'re the high bidder at $' + cur + ' — bid again to hold them off.</span>';
+  else if (iHavePassed) html += '<span class="muted">You\'re out of this lot — bid to jump back in.</span>';
   else if (pricedOut) html += '<span class="bad">Priced out — your max is $' + myMax + '.</span>';
-  else html += '<span>Your turn — bid or pass. Max <b>$' + myMax + '</b>.</span>';
-  // Countdown while the clock is on you (engine ticks it; _icCockpitRefresh
-  // patches the text per second — expiry auto-passes, like a real draft room).
-  const clk = (s.useTimer && !isMyBid && !iHavePassed && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
+  else html += '<span>Bid any time — lot closes when the clock hits 0. Max <b>$' + myMax + '</b>.</span>';
+  // Shared lot clock (continuous model): everyone sees the same countdown; the
+  // hammer falls to the current high bidder at 0. _icCockpitRefresh patches it.
+  const clk = (s.useTimer && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
   html += '</span><b id="dm-icclock" style="color:' + (s.secondsLeft <= 4 ? 'var(--bad)' : 'var(--warn)') + '; font-size:15px; min-width:44px; text-align:right;">' + clk + '</b>';
   html += '</div>';
   html += '<div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">';

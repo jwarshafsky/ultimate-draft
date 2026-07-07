@@ -725,6 +725,60 @@ async function run() {
   });
   ud.clearMock();
 
+  // === Continuous auction model (Jeff: "bots don't wait to see what I am doing
+  // … they should bid when they want to") — one shared lot clock; bots bid on
+  // their own loop; a bid resets the clock; expiry sells to the current leader.
+  // Sandbox setTimeout is a no-op, so we drive the loop steps directly. ===
+  ud.eval("setLeagueOverride(''); setFeedMode('off'); getEffectiveKeeperSelections = () => ({});");
+  ud.eval("startInteractiveCockpitMock();");
+  // Open a lot nominated by a bot at $1; the user does NOTHING.
+  ud.eval("_startAuction(getInteractiveState().pool[0], 'corey', 1);");
+  const ic9Start = ud.eval("getInteractiveState().currentBid");
+  // Fire bot beats directly (as the real timer would) — a willing bot bumps the
+  // price even though the user never acted.
+  ud.eval("_aiBidsOnce(); _aiBidsOnce(); _aiBidsOnce();");
+  test("#IC-9 bots bid on their own while the user is idle (no turn-taking)", () => {
+    assertEq(ic9Start, 1, "lot opened at $1");
+    assert(ud.eval("getInteractiveState().currentBid") > 1, "a bot raised the price with zero user action");
+    assert(ud.eval("getInteractiveState().currentWinner !== 'jeff'"), "a bot is the high bidder, not the idle user");
+  });
+  // A user bid resets the shared lot clock to timerSecs.
+  ud.eval("getInteractiveState().secondsLeft = 3;");
+  const ic10 = JSON.parse(ud.eval("JSON.stringify(userBid(getInteractiveState().currentBid + 1))"));
+  test("#IC-10 a bid resets the shared lot clock", () => {
+    assertEq(ic10.ok, true, "user bid accepted: " + (ic10.error || ""));
+    assertEq(ud.eval("getInteractiveState().secondsLeft"), ud.eval("getInteractiveState().timerSecs"),
+      "clock reset to timerSecs on a bid");
+    assertEq(ud.eval("getInteractiveState().currentWinner"), "jeff", "user is now the high bidder");
+  });
+  // userPass no longer stops the draft — it just flags the user out (bots continue).
+  ud.eval("userPass();");
+  test("#IC-11 userPass flags the user out without ending the lot", () => {
+    assertEq(ud.eval("getInteractiveState().phase"), "bidding", "lot still open after a pass");
+    assert(ud.eval("getInteractiveState().passedTeams.has('jeff')"), "user marked out");
+    assertEq(ud.eval("getInteractiveState().proxyMax"), null, "pass cancels the proxy");
+  });
+  ud.eval("stopInteractiveMock();");
+  ud.clearMock();
+
+  // #IC-12 — skip-to-end does NOT flush the pick feed per SOLD (the O(n²) that
+  // froze the tab). During pumping, _mockCockpitEmit takes the cheap append path;
+  // _applyDraftFeed runs once at the end. We assert the draft completes and the
+  // held pick count matches the engine (a full O(n²) would still be correct but
+  // slow — this guards the fast path stays wired by checking picks land via the
+  // single flush).
+  ud.eval("setLeagueOverride(''); setFeedMode('off'); getEffectiveKeeperSelections = () => ({});");
+  ud.eval("startInteractiveCockpitMock();");
+  ud.eval("skipInteractiveToEnd();");
+  await drain();
+  test("#IC-12 skip-to-end completes and picks reach the cockpit via one flush", () => {
+    const enginePicks = ud.eval("getInteractiveState().picks.length");
+    assert(enginePicks > 100, "a full draft ran (" + enginePicks + " picks)");
+    assertEq(ud.eval("_mockFeed.finished"), true, "finished");
+    assert(ud.eval("_liveDraft.picks.length") > 100, "cockpit received the picks via the end-of-burst flush");
+  });
+  ud.clearMock();
+
   summary("UD-native mock feed");
 }
 

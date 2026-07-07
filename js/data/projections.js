@@ -305,14 +305,20 @@ function getProjection(name) {
     if (hit && _projHasStats(hit.rec, hit.type)) return { ...hit.rec, type: hit.type };
   }
   // In-season the preseason store is empty — the Data tab's ROS sources are
-  // the live projections (same fallback the Keepers/Values tabs use). Without
-  // this, projected standings / category pace / scorecards claimed "no
-  // projections" while the Data tab was fully loaded (Jeff's Jul 4 mock).
-  if (typeof activeProjSource === "function" && typeof getRosLine === "function") {
+  // the live projections. Look for STATS across ALL stats-bearing sources, not
+  // just the active one: the active source is often $-ONLY (auction values with
+  // no stat rows), so reading only it returned null and every category/standings
+  // stat came up blank while a stats source sat right there (R17).
+  if (typeof getRosLineAnySource === "function") {
+    const rh = getRosLineAnySource(name, "H");
+    if (rh) return rh;                                     // carries type:"H"
+    const rp = getRosLineAnySource(name, "P");
+    if (rp) return { ...rp, SV_HLD: (rp.SV || 0) + (rp.HLD || 0) };
+  } else if (typeof activeProjSource === "function" && typeof getRosLine === "function") {
     const src = activeProjSource();
     if (src && src !== "preseason") {
       const rh = getRosLine(src, name, "H");
-      if (rh) return rh;                                   // carries type:"H"
+      if (rh) return rh;
       const rp = getRosLine(src, name, "P");
       if (rp) return { ...rp, SV_HLD: (rp.SV || 0) + (rp.HLD || 0) };
     }

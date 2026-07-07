@@ -481,6 +481,22 @@ function _mockCockpitEmit(cmd, realTeamId, playerName, amount) {
   const seq = ++_mockFeed.ctx.seq;
   const amt = (amount == null) ? null : amount;
   const ev = { seq, at, cmd, teamId, playerId, amount: amt, text: "" };
+
+  // FAST PATH during a skip burst (Jeff's "skip to end froze the app"). Per
+  // frame, _onDraftEvents does an O(n) seq-scan and each SOLD's _applyDraftFeed
+  // reprocesses the WHOLE cumulative pick array — both O(n²) across a ~250-lot
+  // draft, which locked the tab. While pumping we append cheaply (O(1)) and
+  // flush ONCE at the end via _mfFlushInteractiveFeed. Requires the event
+  // stream to already be established (it is — the first lot ran live).
+  if (_mockFeed.pumping && typeof _dlog !== "undefined" &&
+      String(_dlog.leagueId) === String(_mockFeed.ctx.leagueId)) {
+    _dlog.events.push(ev);
+    if (_dlog.events.length > 15000) _dlog.events.splice(0, _dlog.events.length - 15000);
+    _dlog.lastEventAt = at;
+    if (cmd === "SOLD") { _mockFeed.ctx.picks.push({ playerId, teamId, price: amt, seq, ts: at }); _mockFeed.soldLots++; }
+    return;
+  }
+
   if (typeof _onDraftEvents === "function") {
     _onDraftEvents({ log: { leagueId: _mockFeed.ctx.leagueId, sport: _mockFeed.ctx.sport, startedAt: _mockFeed.ctx.startedAt }, events: [ev], full: false });
   }
@@ -491,6 +507,20 @@ function _mockCockpitEmit(cmd, realTeamId, playerName, amount) {
       _applyDraftFeed({ leagueId: _mockFeed.ctx.leagueId, sport: _mockFeed.ctx.sport, startedAt: _mockFeed.ctx.startedAt, updatedAt: at, picks: _mockFeed.ctx.picks.slice() });
     }
   }
+  _mfUpdateStatus();
+}
+
+// Flush the accumulated pick feed to the cockpit ONCE after a skip burst — the
+// engine (mock-interactive.js skip helpers) calls this after clearing the
+// pumping flag. Applies the full cumulative picks in a single pass, then
+// refreshes the feed-activity DOM + status.
+function _mfFlushInteractiveFeed() {
+  if (!_mockFeed.active || !_mockFeed.interactive || !_mockFeed.ctx) return;
+  const at = (typeof Date !== "undefined" && Date.now) ? Date.now() : 0;
+  if (typeof _applyDraftFeed === "function") {
+    _applyDraftFeed({ leagueId: _mockFeed.ctx.leagueId, sport: _mockFeed.ctx.sport, startedAt: _mockFeed.ctx.startedAt, updatedAt: at, picks: _mockFeed.ctx.picks.slice() });
+  }
+  if (typeof _updateFeedActivityDom === "function") _updateFeedActivityDom();
   _mfUpdateStatus();
 }
 
@@ -511,14 +541,19 @@ function endInteractiveCockpitMock() {
 // — never on a plain bot bid, so a half-typed bid can't be interrupted.
 let _icLastKey = "";
 function _icCockpitRefresh(s) {
+  // During a skip burst every lot changes the render key, so this fired a FULL
+  // renderDraft() per lot — 300+ cockpit rebuilds = the multi-second hang on
+  // skip-to-end. Suppress here; the skip helpers render once when they finish.
+  if (typeof mockFeedPumping === "function" && mockFeedPumping()) return;
   const me = (typeof getMyTeam === "function") ? getMyTeam() : null;
   const iPassed = !!(me && s.passedTeams && s.passedTeams.has(me.id));
   // Per-second countdown: timer ticks fire a change but must NOT full-render
   // (that would steal a half-typed bid) — patch the clock text in place.
   const clk = (typeof document !== "undefined") ? document.getElementById("dm-icclock") : null;
   if (clk) {
-    const winner = me && s.currentWinner === me.id;
-    clk.textContent = (s.phase === "bidding" && s.useTimer && !winner && !iPassed && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
+    // Shared lot clock (continuous model): everyone sees the same countdown, not
+    // just "your turn". Expiry sells to the current high bidder.
+    clk.textContent = (s.phase === "bidding" && s.useTimer && s.secondsLeft > 0) ? ("⏱ " + s.secondsLeft + "s") : "";
     clk.style.color = s.secondsLeft <= 4 ? "var(--bad)" : "var(--warn)";
   }
   const key = [s.phase, s.currentNominator, s.current ? s.current.name : "", iPassed ? "P" : "", s.picks.length, _mockFeed.finished ? "F" : ""].join("|");

@@ -108,8 +108,9 @@ function renderCategoryDashboard() {
   // empty). Gate on the same sources getProjection actually reads, else this
   // showed "Import projections" while the Data tab was fully loaded.
   const hasPreseason = getHitterProjections().length > 0;
-  const rosSrc = (typeof activeProjSource === "function") ? activeProjSource() : null;
-  const hasRos = !!(rosSrc && rosSrc !== "preseason" && typeof rosHasData === "function" && rosHasData(rosSrc));
+  // Any stats-bearing source counts — not just the active one (which is often
+  // $-only). Mirrors getProjection's cross-source stats lookup (R17).
+  const hasRos = (typeof rosStatSourceIds === "function") && rosStatSourceIds().length > 0;
   if (!hasPreseason && !hasRos) {
     return '<div class="empty"><p>Import projections to see category projections — Data tab ▸ Stat Projections (a $-only source has no stats to project).</p></div>';
   }
@@ -119,8 +120,19 @@ function renderCategoryDashboard() {
   }
   const result = projectTeamCategories(roster);
 
+  // Coverage check — how many rostered players actually resolve to a stat line.
+  // A blank-heavy dashboard must SAY it's a data gap, never look like a bug (R17).
+  const missing = (typeof getProjection === "function")
+    ? roster.filter(n => !getProjection(n)) : [];
+
   let html = '<div class="card"><h2>Your Category Projection</h2>';
   html += '<p class="muted small">Based on ' + roster.length + ' player' + (roster.length === 1 ? "" : "s") + ' currently on your roster (keepers + drafted). Estimated rank assumes you finish drafting near the league average; refine as you add picks.</p>';
+  if (missing.length && missing.length > roster.length * 0.2) {
+    html += '<p class="small" style="color:var(--warn); margin:0 0 8px;">⚠ ' + missing.length + ' of ' + roster.length +
+      ' of your players have no stat projection — totals below undercount. ' +
+      'Missing: ' + missing.slice(0, 3).map(esc).join(", ") + (missing.length > 3 ? ", …" : "") +
+      '. <span class="muted">Check Data ▸ Data health.</span></p>';
+  }
   html += '<div class="grid cols-2" style="gap: 16px;">';
 
   for (const group of [

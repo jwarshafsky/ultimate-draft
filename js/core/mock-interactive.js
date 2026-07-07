@@ -24,7 +24,9 @@ const _interactive = {
   lastSale: null,    // {player, price, owner, mine} — for the SOLD banner
   useTimer: true,    // draft-day countdown pressure when it's your turn to act
   timerSecs: 12,
-  secondsLeft: 0,    // live countdown while waiting on the user
+  secondsLeft: 0,    // shared lot-clock countdown (continuous model)
+  _timerId: null,    // lot-clock setTimeout handle
+  _beatId: null,     // bot-bid-loop setTimeout handle
   bidSpeed: "realistic", // "realistic" (staggered) | "fast" | "instant" — pacing of AI bids/nominations
   proxyMax: null,    // auto-bid cap for the CURRENT lot (engine bids for you up to this)
   nomSlot: "random", // where you sit in the nomination order: "random" | "first" | "last" | 0-based seat #
@@ -56,12 +58,12 @@ function setMockHeat(label) {
   _fireChange();
 }
 // Auto-bid cap for the current lot. Cleared at the start of each new auction.
+// In the continuous model the bot-beat loop enacts the proxy on its own beat, so
+// setting it mid-lot just records the cap (a beat fires within ~1s).
 function setProxyMax(v) {
   const n = parseInt(v, 10);
   _interactive.proxyMax = (isFinite(n) && n > _interactive.currentBid) ? n : null;
   _fireChange();
-  // If it's already our turn (an AI is leading), let the proxy engage immediately.
-  if (_interactive.proxyMax) { const me = getMyTeam(); if (me && _interactive.phase === "bidding" && _interactive.currentWinner !== me.id && !_interactive.passedTeams.has(me.id)) _giveUserTheClock(); }
 }
 
 // Pacing factor applied to every AI-churn / between-lot delay (NOT the draft
@@ -259,36 +261,82 @@ function _startAuction(player, nominatorId, opening) {
   _icEmit("NOMINATION", nominatorId, player.name, null);
   _icEmit("BID", nominatorId, player.name, opening);
   _fireChange();
-  // AI gets first crack at responding (one step at a time, so the price climbs visibly).
-  _later(() => _runAiBidsUntilUserTurn(), _d(450));
+  // Start the shared lot clock + independent bot-bid loop. A synchronous skip
+  // (pumping) drives the lot itself, so don't arm real-time loops then.
+  if (!(typeof _mockFeed !== "undefined" && _mockFeed.pumping)) _startLotLoops();
 }
 
-// ----- draft-day countdown -----
-// While it's the user's turn to act (an AI is winning), a soft timer adds
-// real auction pressure. On expiry the user auto-passes.
+// ----- Continuous auction model (Jeff: "bots don't wait to see what I am doing
+// … they should bid when they want to") -----
+// ONE shared lot clock counts down from timerSecs; EVERY bid (bot or user)
+// resets it; expiry SELLS to the current high bidder — whoever that is. Bots
+// bid on their own staggered loop the whole time the lot is open; nobody waits
+// for a "turn". This replaces the old turn-based give-the-user-the-clock model.
 function _clearMockTimer() {
   if (_interactive._timerId) { clearTimeout(_interactive._timerId); _interactive._timerId = null; }
+  if (_interactive._beatId) { clearTimeout(_interactive._beatId); _interactive._beatId = null; }
   _interactive.secondsLeft = 0;
 }
-function _startMockTimer() {
-  _clearMockTimer();
+
+function _startLotLoops() {
+  if (_interactive._timerId || _interactive._beatId) _clearMockTimer();
+  if (_interactive.useTimer && !_interactive.secondsLeft) _interactive.secondsLeft = _interactive.timerSecs;
+  _startLotClock();
+  _startBotBeats();
+}
+
+// The lot clock — ticks in REAL seconds (never scaled by bid speed). Reaching 0
+// closes the lot: SOLD to the current high bidder (bot or user, no auto-pass).
+function _startLotClock() {
+  if (_interactive._timerId) { clearTimeout(_interactive._timerId); _interactive._timerId = null; }
   if (!_interactive.useTimer) return;
-  _interactive.secondsLeft = _interactive.timerSecs;
   const myGen = _interactive.gen;
   const tick = () => {
-    if (_interactive.gen !== myGen || _interactive.phase !== "bidding") return;
+    _interactive._timerId = null;
+    if (_interactive.gen !== myGen || _interactive.phase !== "bidding" || _icPaused()) return;
     _interactive.secondsLeft -= 1;
     if (_interactive.secondsLeft <= 0) {
       _interactive.secondsLeft = 0;
-      _interactive._timerId = null;
       _fireChange();
-      userPass();           // time's up — auto-pass
+      _completeSale();     // hammer falls — current high bidder wins
       return;
     }
     _fireChange();
     _interactive._timerId = setTimeout(tick, 1000);
   };
   _interactive._timerId = setTimeout(tick, 1000);
+}
+
+// The bot-bid loop — independent of the user. Each beat: enact the user's proxy
+// (if set + outbid), then let ONE willing bot bump. Any bid resets the lot
+// clock. Beats keep firing (jittered by bid speed) the whole lot; when no bot is
+// willing they idle harmlessly until the clock runs out.
+function _startBotBeats() {
+  if (_interactive._beatId) { clearTimeout(_interactive._beatId); _interactive._beatId = null; }
+  const myGen = _interactive.gen;
+  const beat = () => {
+    _interactive._beatId = null;
+    if (_interactive.gen !== myGen || _interactive.phase !== "bidding" || _icPaused()) return;
+    _maybeProxyBid();
+    const bumpedBy = _aiBidsOnce();
+    if (bumpedBy) { _interactive.secondsLeft = _interactive.timerSecs; _fireChange(); }   // a bid resets the clock
+    _interactive._beatId = setTimeout(beat, Math.max(40, _d(600 + Math.floor(Math.random() * 1200))));
+  };
+  _interactive._beatId = setTimeout(beat, Math.max(40, _d(400 + Math.floor(Math.random() * 500))));
+}
+
+// If the user set an auto-bid cap and is currently outbid, step one increment
+// toward the cap (same pacing as a bot beat, so it feels like a rival bidding).
+function _maybeProxyBid() {
+  const me = getMyTeam();
+  if (!me || _interactive.proxyMax == null) return;
+  if (_interactive.currentWinner === me.id || _interactive.passedTeams.has(me.id)) return;
+  const st = _interactive.states[me.id];
+  if (!st || st.slotsRemaining <= 0) return;
+  const myMax = Math.min(_interactive.proxyMax, st.budget - Math.max(0, st.slotsRemaining - 1));
+  if (myMax <= _interactive.currentBid) return;   // priced past your cap — proxy bows out
+  const inc = _interactive.currentBid < 12 ? 1 : _interactive.currentBid < 25 ? 2 : 3;
+  userBid(Math.min(myMax, _interactive.currentBid + inc));
 }
 
 // One AI bump: the first willing team (random order) raises the price by one
@@ -327,67 +375,9 @@ function _aiBidsOnce() {
   return null;
 }
 
-// Step-wise bidding: ONE AI bump per tick (the price climbs visibly with a
-// live "X bid $Y" feel), pausing whenever it becomes the user's turn to act.
-//   (a) user is winning + no AI bumps  -> SOLD to user
-//   (b) user passed   + no AI bumps    -> SOLD to current (AI) winner
-//   (c) AI is winning + user can still act -> stop, start the user's timer
-//   (d) AI bumped but user is winner/passed -> keep stepping after a beat
-function _runAiBidsUntilUserTurn() {
-  if (_interactive.phase !== "bidding") return;
-  const me = getMyTeam();
-  const bumpedBy = _aiBidsOnce();
-  _fireChange();
-  if (!bumpedBy) {
-    // No AI wanted the lot at this price.
-    if (_interactive.currentWinner === me?.id || _interactive.passedTeams.has(me?.id)) {
-      _completeSale();
-      return;
-    }
-    // AI is winning and the user hasn't acted -> their turn (or auto-pass if priced out).
-    _giveUserTheClock();
-    return;
-  }
-  // An AI just bumped.
-  if (_interactive.currentWinner !== me?.id && !_interactive.passedTeams.has(me?.id)) {
-    // The user is now outbid and still live -> their turn (or auto-pass if priced out).
-    _giveUserTheClock();
-    return;
-  }
-  // User is winning or has passed -> let the AI keep fighting, one beat at a time.
-  // Snappier once the user has bowed out (they're just watching price discovery);
-  // a touch slower while the user is still the high bidder and could be re-engaged.
-  const delay = _interactive.passedTeams.has(me?.id) ? 150 : 550;
-  _later(() => _runAiBidsUntilUserTurn(), _d(delay));
-}
-
-// Hand the user the decision — but if they literally can't outbid the current
-// price (max affordable <= current bid, or roster full), auto-pass so they
-// aren't prompted on lots they can't win. Keeps a fast draft moving.
-function _giveUserTheClock() {
-  const me = getMyTeam();
-  const st = me ? _interactive.states[me.id] : null;
-  const myMax = st ? (st.budget - Math.max(0, st.slotsRemaining - 1)) : 0;
-  if (!st || st.slotsRemaining <= 0 || myMax <= _interactive.currentBid) {
-    _later(() => userPass(), _d(180));   // priced out / roster full -> auto-pass
-    return;
-  }
-  // Proxy / max-bid: if you've set an auto-bid cap, the engine bids for you.
-  if (_interactive.proxyMax != null) {
-    if (_interactive.proxyMax > _interactive.currentBid) {
-      const inc = _interactive.currentBid < 12 ? 1 : _interactive.currentBid < 25 ? 2 : 3;
-      const next = Math.min(_interactive.proxyMax, _interactive.currentBid + inc);
-      _later(() => userBid(next), _d(200));   // step up toward your cap
-      return;
-    }
-    // An AI passed your cap — you're out.
-    _later(() => userPass(), _d(180));
-    return;
-  }
-  _startMockTimer();
-}
-
-// User clicks "Bid +$X" or enters a specific amount.
+// User clicks "Bid +$X" or enters a specific amount. In the continuous model
+// this just records the bid and RESETS the lot clock — it does NOT take a turn
+// or stop the bots; the bot-beat loop keeps running and may counter within ~1s.
 function userBid(amount) {
   if (_icPaused()) return { ok: false, error: "Paused." };
   const me = getMyTeam();
@@ -399,28 +389,29 @@ function userBid(amount) {
   const bid = Math.min(amount, maxAffordable);
   if (bid <= _interactive.currentBid) return { ok: false, error: "Bid must exceed $" + _interactive.currentBid };
   if (bid > maxAffordable) return { ok: false, error: "Max affordable: $" + maxAffordable };
-  _clearMockTimer();
   _interactive.currentBid = bid;
   _interactive.currentWinner = me.id;
-  _interactive.passedTeams.delete(me.id);   // re-enter if they'd passed earlier
+  _interactive.passedTeams.delete(me.id);   // bidding re-enters you if you'd bowed out
   _interactive.bidLog.push({ owner: "You", bid, mine: true });
   if (_interactive.bidLog.length > 40) _interactive.bidLog.shift();
   _icEmit("BID", me.id, _interactive.current.name, bid);   // cockpit mirror
+  if (_interactive.useTimer) _interactive.secondsLeft = _interactive.timerSecs;   // any bid resets the shared lot clock
   _fireChange();
-  _later(() => _runAiBidsUntilUserTurn(), _d(450));
   return { ok: true };
 }
 
-// User passes on current auction.
+// User opts OUT of the current lot ("I'm out"). Cosmetic to the bots — they
+// keep bidding on their own loop and the lot clock keeps running; this just
+// greys the user's controls and cancels their proxy for this lot. Bidding again
+// re-enters them (userBid clears the flag).
 function userPass() {
   if (_icPaused()) return { ok: false, error: "Paused." };
   const me = getMyTeam();
   if (!me) return;
   if (_interactive.phase !== "bidding") return;
-  _clearMockTimer();
   _interactive.passedTeams.add(me.id);
+  _interactive.proxyMax = null;
   _fireChange();
-  _later(() => _runAiBidsUntilUserTurn(), _d(350));
 }
 
 function _completeSale() {
@@ -505,26 +496,27 @@ function _completeSale() {
 // timer. mock-live-feed.js's pauseMockFeed / resumeMockFeed route here for an
 // interactive mock; the skip helpers are called from the skip-control delegation.
 
-// Freeze everything: no scheduled bot step or timer tick can fire, and no
-// user action (bid/pass/nominate) is accepted, until we resume.
+// Freeze everything: the lot clock + bot-bid loop stop, and no user action
+// (bid/pass/nominate) is accepted, until we resume. secondsLeft is PRESERVED so
+// the lot clock continues from where it froze.
 function pauseInteractiveMock() {
   if (!_interactive.active) return;
   if (typeof _mockFeed !== "undefined") _mockFeed.paused = true;
-  _interactive.gen++;    // invalidate every queued bot step + timer tick
-  _clearMockTimer();
+  _interactive.gen++;    // in-flight clock/beat closures see the new gen and no-op
+  if (_interactive._timerId) { clearTimeout(_interactive._timerId); _interactive._timerId = null; }
+  if (_interactive._beatId) { clearTimeout(_interactive._beatId); _interactive._beatId = null; }
   _fireChange();
 }
 
-// Un-pause and restart the flow WHERE IT LEFT OFF. A beat later (real setTimeout
-// in the browser; instant in tests) the appropriate driver runs: mid-lot →
-// resume the bid ladder (which re-gives the user the clock if it's their turn);
-// between lots → advance the nominator (auto-nominates for a bot, waits for you).
+// Un-pause and restart the flow WHERE IT LEFT OFF: mid-lot → restart the lot
+// clock (from the preserved secondsLeft) + bot beats; between lots → advance the
+// nominator (auto-nominates for a bot, waits for you to nominate on your turn).
 function resumeInteractiveMock() {
   if (!_interactive.active) return;
   if (typeof _mockFeed !== "undefined") _mockFeed.paused = false;
   _fireChange();
   if (_interactive.phase === "bidding") {
-    _later(() => _runAiBidsUntilUserTurn(), _d(300));
+    _startLotLoops();
   } else if (_interactive.phase === "nominating") {
     _later(() => _advanceToNominatingTeam(), _d(300));
   }
@@ -574,14 +566,40 @@ function _icFinishCurrentPick(userAutoPass) {
     _interactive.passedTeams.add(me.id);
   }
 
-  // Bot bid ladder, resolved synchronously: keep bumping until no bot tops.
-  let guard = 0;
-  while (guard++ < 500) {
-    const bumped = _aiBidsOnce();
-    if (!bumped) break;
-  }
+  // One-shot clearing price (not the step-by-step ladder). The ladder re-ran
+  // computeMaxBid ~200×/lot; across a ~300-lot draft that was ~5s of synchronous
+  // hang on skip-to-end. Resolving each lot in a single O(teams) pass keeps the
+  // skip well under a second. (Live play still uses the visible ladder.)
+  _icResolveBiddingFast();
   _completeSale();   // schedules _advanceToNominatingTeam via _later (real setTimeout in the browser)
   return true;
+}
+
+// Fast lot resolution for a skip: highest willing team wins at ~second price + 1
+// (standard auction clearing). One computeMaxBid per eligible team, no ladder.
+function _icResolveBiddingFast() {
+  const cur = _interactive.current;
+  if (!cur) return;
+  const me = getMyTeam();
+  let bestId = null, bestMax = 0, second = 0;
+  for (const id of Object.keys(_interactive.states)) {
+    const st = _interactive.states[id];
+    if (st.slotsRemaining <= 0) continue;
+    // A skipped user auto-passes unless they currently lead the lot.
+    if (me && id === me.id && _interactive.passedTeams.has(me.id) && _interactive.currentWinner !== me.id) continue;
+    let max = computeMaxBid(st, cur, _interactive.inflation);
+    if (id === _interactive.currentWinner) max = Math.max(max, _interactive.currentBid);   // the leader can hold
+    if (max > bestMax) { second = bestMax; bestId = id; bestMax = max; }
+    else if (max > second) { second = max; }
+  }
+  if (bestId == null) return;   // nobody wants it above the opening — current winner holds
+  const price = Math.max(_interactive.currentBid, Math.min(bestMax, Math.max(second + 1, _interactive.currentBid)));
+  if (bestId !== _interactive.currentWinner || price !== _interactive.currentBid) {
+    _interactive.currentWinner = bestId;
+    _interactive.currentBid = price;
+    _interactive.bidLog.push({ owner: _interactive.states[bestId].ownerName, bid: price, mine: !!_interactive.states[bestId].isMe });
+    _icEmit("BID", bestId, cur.name, price);
+  }
 }
 
 // Skip N completed picks — loop "finish current pick" N times synchronously
@@ -599,6 +617,18 @@ function _icSkipPicks(n) {
     made++;
   }
   if (typeof _mockFeed !== "undefined") _mockFeed.pumping = wasPumping;
+  // Each _completeSale in the burst scheduled a stale _advanceToNominatingTeam
+  // via _later; bump gen to kill them all, flush the pick feed to the cockpit
+  // ONCE (per-SOLD flushing was the O(n²) that froze the tab), then resume live
+  // play from wherever we landed.
+  _interactive.gen++;
+  if (typeof _mfFlushInteractiveFeed === "function") _mfFlushInteractiveFeed();
+  if (_interactive.active && !_icDraftDone()) {
+    _interactive.inflation = inflationForMockState(_interactive.states);
+    if (_interactive.phase === "bidding" && _interactive.current) _startLotLoops();
+    else _advanceToNominatingTeam();
+  }
+  _fireChange();
   return made;
 }
 
@@ -616,6 +646,10 @@ function _icSkipToEnd() {
   }
   if (guard >= 1000) console.warn("_icSkipToEnd: hit the 1000-lot hard cap — stopping to avoid an infinite loop.");
   if (typeof _mockFeed !== "undefined") _mockFeed.pumping = wasPumping;
+  // Flush the full pick feed to the cockpit ONCE (per-SOLD flushing was the
+  // O(n²) that froze the tab). stopInteractiveMock() bumps gen, neutralizing
+  // every stale _later scheduled during the burst.
+  if (typeof _mfFlushInteractiveFeed === "function") _mfFlushInteractiveFeed();
   // Freeze the finished draft: stop the engine and mark the feed finished so the
   // cockpit shows Save & clear / Debrief (same as endInteractiveCockpitMock).
   stopInteractiveMock();
