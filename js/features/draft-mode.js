@@ -406,7 +406,7 @@ function _dmBuildPanels(inflation) {
   p.budgets = { title: "Budgets", body: _dmBudgetsHtml() };
   p.standings = { title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() };
   p.noms = { title: "Nominations", body: (typeof renderNominationsPanel === "function") ? renderNominationsPanel() : "" };
-  p.history = { title: "Draft History", body: _dmHistoryHtml() };
+  p.history = { title: "Draft History", body: _dmHistoryHtml(), cls: "dm-panel-history" };
   p.cats = { title: "Category Dashboard", body: (typeof renderCategoryDashboard === "function") ? renderCategoryDashboard() : "" };
   p.ai = { title: "AI Assistant", body: (typeof renderAiAssistantPanel === "function") ? renderAiAssistantPanel() : "" };
   p.plan = { title: "My Plan", body: _dmPlanBar() };
@@ -441,7 +441,12 @@ function _dmRenderZone(name, ids, ctx) {
 // the reorder/move drag.
 function _dmPanelHtml(id, p, heights) {
   const h = heights ? heights[id] : null;
-  const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
+  // Floor at 120px: an early ResizeObserver bug persisted garbage tiny heights
+  // (41-80px) that pinned panels to ~one visible row (Jeff: draft history
+  // "only shows one unless you scroll"). Anything below the floor renders as
+  // auto — a deliberate small panel is still possible down to the CSS
+  // min-height, but stored junk can't strangle a card (R17).
+  const hStyle = (typeof h === "number" && h >= 120) ? ' style="height:' + h + 'px;"' : '';
   const cls = "card dm-rcard dm-panel" + (p.cls ? " " + p.cls : "");
   return '<div class="' + cls + '" data-dm-card="' + id + '" draggable="true">' +
     '<h3 class="dm-panel-title" style="margin:0 0 6px;" title="Drag to move / rearrange">⠿ ' + p.title + '</h3>' +
@@ -455,7 +460,7 @@ function _dmCompareCardHtml(heights) {
   const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
     '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
   const h = heights ? heights.compare : null;
-  const hStyle = (typeof h === "number" && h > 40) ? ' style="height:' + h + 'px;"' : '';
+  const hStyle = (typeof h === "number" && h >= 120) ? ' style="height:' + h + 'px;"' : '';
   return '<div class="card dm-rcard dm-cmpcard"><h3 style="margin:0 0 6px;">' + title + '</h3>' +
     '<div class="dm-cardbody"' + hStyle + '>' + _dmCompareRosterHtml(_dmState.compareTeamId) + '</div></div>';
 }
@@ -1278,7 +1283,7 @@ function _dmWireCardResize() {
     // document (a debounced read after an innerHTML rebuild sees a detached
     // node → 0/garbage), and must have MOVED from the height we applied at
     // render (the observer fires once per observe(), i.e. on every render).
-    if (!body.isConnected || !(px && px > 40)) return;
+    if (!body.isConnected || !(px && px >= 120)) return;   // match the render floor
     const applied = parseInt(body.dataset.dmAppliedH || "", 10);
     if (isFinite(applied) && Math.abs(px - applied) <= 8) return;
     const heights = Object.assign({}, _dmLayout().heights);

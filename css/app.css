@@ -487,10 +487,16 @@ body.dm-dragging-active .dm-zone-empty::before {
 /* Zone highlighted as the active drop target during a drag. */
 body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: 8px; }
 /* Resizable panel body — the height persists (JS reapplies it on render). */
-.dm-cardbody { overflow: auto; resize: vertical; min-height: 40px; }
+.dm-cardbody { overflow: auto; resize: vertical; min-height: 120px; }   /* floor matches the persist/render floor — a panel can't be strangled to one row (R17) */
 /* Board panel body: keep its head controls readable and let the tables scroll
    inside the resizable body when the panel is dropped into a narrow column. */
 .dm-panel-board .dm-cardbody { overflow: auto; }
+/* Draft History default height: unbounded auto-height grows without limit as
+   picks pile up (200 picks = a several-thousand-px panel). Cap it at a useful
+   scrollable default; an explicit user drag adds an inline `height` (style attr)
+   which overrides this cap, so manual resize still wins (Jeff: history was
+   "only one row" before the floor fix — now it must not swing to enormous). */
+.dm-panel-history .dm-cardbody:not([style]) { max-height: 360px; }
 
 .dm-board-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .dm-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
