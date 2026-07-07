@@ -236,11 +236,20 @@ function _buildProjNameIndex() {
 }
 function _invalidateProjIndex() { _projNameIdx = null; }
 
+// A matched record with NO real stats must not shadow the ROS fallback below.
+// Jeff's preseason slot held an upload that parsed with all-zero stat columns
+// (names fine, every number 0) — those records won every lookup and made the
+// whole app project 0 R / 0 QS while his ROS sources were fully loaded (R17).
+function _projHasStats(rec, type) {
+  const ks = type === "H" ? ["R", "HR", "RBI", "SB", "PA", "OBP"] : ["QS", "K", "IP", "SV", "HLD", "ERA"];
+  return ks.some(k => { const v = rec[k]; return v != null && isFinite(v) && Number(v) !== 0; });
+}
+
 function getProjection(name) {
   const h = _projections.hitters.find(p => p.name === name);
-  if (h) return { ...h, type: "H" };
+  if (h && _projHasStats(h, "H")) return { ...h, type: "H" };
   const p = _projections.pitchers.find(p => p.name === name);
-  if (p) return { ...p, type: "P" };
+  if (p && _projHasStats(p, "P")) return { ...p, type: "P" };
   // Fuzzy (normalized) match against the preseason store — rescues accent /
   // suffix / middle-initial mismatches that the exact lookup above misses. This
   // is the common cause of a kept SP projecting 0 QS/K when preseason is the
@@ -250,7 +259,7 @@ function getProjection(name) {
     const key = normalizePlayerName(name);
     let hit = _projNameIdx.exact.get(key);
     if (!hit && typeof coreNameKey === "function") hit = _projNameIdx.core.get(coreNameKey(name));
-    if (hit) return { ...hit.rec, type: hit.type };
+    if (hit && _projHasStats(hit.rec, hit.type)) return { ...hit.rec, type: hit.type };
   }
   // In-season the preseason store is empty — the Data tab's ROS sources are
   // the live projections (same fallback the Keepers/Values tabs use). Without

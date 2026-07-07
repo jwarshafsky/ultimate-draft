@@ -878,6 +878,17 @@ function _dmTierCliffBanner() {
 const _DM_PRESETS = ["BPA", "HIT", "PIT"];
 const _DM_POS_MODES = _DM_MODES.filter(m => !_DM_PRESETS.includes(m));
 
+// How many position columns fit in the board panel at the current view's
+// per-column minimum (stats tables are much wider than value tables). Measured
+// from the live DOM; a headless/first render falls back to 2.
+const _DM_COL_MIN = { value: 300, stats: 500 };
+function _dmBoardColCapacity() {
+  const el = (typeof document !== "undefined") ? document.querySelector('[data-dm-card="board"] .dm-cardbody') : null;
+  const w = el ? el.clientWidth : 0;
+  if (!w) return 2;
+  return Math.max(1, Math.floor(w / (_DM_COL_MIN[_dmState.statView] || 300)));
+}
+
 function _dmBoard(inflation) {
   const posSel = _dmState.boardPos;   // Set of selected position codes
   const multi = posSel && posSel.size > 0;
@@ -891,6 +902,14 @@ function _dmBoard(inflation) {
     const active = isPreset ? (!multi && _dmState.boardMode === m) : posSel.has(m);
     return '<button class="btn' + (active ? ' primary' : ' ghost') + '" data-dm-mode="' + m + '">' + (m === "HIT" ? "Hitters" : m === "PIT" ? "Pitchers" : m) + '</button>';
   }).join("") + '</div>';
+  // ＋ add-a-column: only in a position view; options exclude already-shown
+  // positions. Capacity is re-checked on selection (board width can change).
+  if (multi) {
+    html += '<select id="dm-addcol" title="Show another position side-by-side (needs board width)" style="width:auto;">';
+    html += '<option value="">＋ column</option>';
+    for (const m of _DM_POS_MODES.filter(x => !posSel.has(x))) html += '<option value="' + m + '">' + esc(m) + '</option>';
+    html += '</select>';
+  }
   html += '<input id="dm-search" placeholder="Search…" value="' + esc(_dmState.search) + '" style="width:180px;">';
   // Value / Stats column toggle (item 12).
   html += '<div class="seg dm-seg dm-statview">' +
@@ -900,14 +919,19 @@ function _dmBoard(inflation) {
   html += '</div>';
 
   if (multi) {
-    // One column PER selected position, side by side, auto-fitting to width.
+    // One column PER selected position, side by side. Column count is capped
+    // by the ＋ selector (capacity-gated); each column min-width matches the
+    // view so tables can never overlap — overflow scrolls instead.
     const base = _dmBasePool();
     // Preserve the segmented-control order for readable, stable columns.
     const cols = _DM_POS_MODES.filter(m => posSel.has(m));
-    html += '<div class="dm-poscols">';
+    const minW = _DM_COL_MIN[_dmState.statView] || 300;
+    html += '<div class="dm-poscols" style="grid-template-columns: repeat(' + cols.length + ', minmax(' + minW + 'px, 1fr));">';
     for (const m of cols) {
       const rows = base.filter(p => _dmModeMatch(p, m)).slice(0, 40);
-      html += '<div class="dm-poscol"><h3 style="margin:6px 0;">' + esc(m) + '</h3>' + _dmTable(rows, inflation) + '</div>';
+      html += '<div class="dm-poscol"><h3 style="margin:6px 0; display:flex; align-items:center; gap:6px;">' + esc(m) +
+        (cols.length > 1 ? '<button class="btn ghost" data-dm-colremove="' + esc(m) + '" title="Remove this column" style="width:auto; padding:0 6px; font-size:11px; line-height:1.4;">✕</button>' : '') +
+        '</h3>' + _dmTable(rows, inflation) + '</div>';
     }
     html += '</div>';
   } else if (_dmState.boardMode === "BPA") {
@@ -1547,10 +1571,29 @@ function wireDraftMode() {
       _dmState.boardPos.clear();
       _dmState.boardMode = m;
     } else {
-      // Position — toggle it in/out of the multi-select set.
-      if (_dmState.boardPos.has(m)) _dmState.boardPos.delete(m);
-      else _dmState.boardPos.add(m);
+      // Clicking a position SWAPS to it (Jeff: "should swap, not add").
+      // Extra side-by-side columns are added via the ＋ selector instead.
+      _dmState.boardPos = new Set([m]);
+      _dmState.boardMode = "";
     }
+    renderDraft();
+  }));
+  // ＋ add-a-column selector (multi-position view) — gated on the board panel
+  // actually having room for another column at the current view's width.
+  document.getElementById("dm-addcol")?.addEventListener("change", (e) => {
+    const m = e.target.value;
+    if (!m) return;
+    if (_dmState.boardPos.size >= _dmBoardColCapacity()) {
+      alert("No room for another column — widen the board (drag the divider between the columns, or move the board to the full-width top zone), or switch Stats → Value.");
+      e.target.value = "";
+      return;
+    }
+    _dmState.boardPos.add(m);
+    renderDraft();
+  });
+  document.querySelectorAll("[data-dm-colremove]").forEach(x => x.addEventListener("click", () => {
+    _dmState.boardPos.delete(x.dataset.dmColremove);
+    if (!_dmState.boardPos.size) _dmState.boardMode = "BPA";
     renderDraft();
   }));
   document.querySelectorAll("[data-dm-statview]").forEach(b => b.addEventListener("click", () => {
