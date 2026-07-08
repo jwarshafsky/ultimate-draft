@@ -28,6 +28,8 @@ const SYNC_EXACT_KEYS = new Set([
   "ud_manual_values_v1", "ud_use_manual_values_v1",
   "ud_my_keepers_v1", "ud_my_keepers_src_v1",
   "ud_draft_strategy_v1",
+  "ud_dm_slot_budgets_v1",   // per-slot $Budget plan on the Live Draft roster
+  "ud_dm_roster_slots_v1",   // manual slot pins (drag overrides) on the roster
   "ud_draft_configs_v1", "ud_budget_adj_v1", "ud_league_url_v1",
   // ud_dm_layout_v1 deliberately NOT synced (Jul 2026): it now carries panel
   // sizes + the board/side split %, which are monitor-specific — syncing a

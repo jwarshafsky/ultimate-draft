@@ -393,7 +393,21 @@ function renderDraftMode(root, inflation) {
   html += '</div>';
   html += _dmBottom();
   html += '</div>';
+  // Preserve a half-typed $Budget input (+focus/caret) across the innerHTML
+  // rebuild — live-feed events re-render mid-keystroke otherwise (same pattern
+  // as the bid inputs in the hero patch path).
+  const ae = document.activeElement;
+  const keepBud = (ae && ae.classList && ae.classList.contains("dm-slot-budget"))
+    ? { id: ae.id, v: ae.value, s: ae.selectionStart, e: ae.selectionEnd } : null;
   root.innerHTML = html;
+  if (keepBud) {
+    const el = document.getElementById(keepBud.id);
+    if (el) {
+      el.value = keepBud.v;
+      el.focus();
+      try { if (keepBud.s != null) el.setSelectionRange(keepBud.s, keepBud.e); } catch (_) {}
+    }
+  }
   wireDraftMode();
   _dmCanvasLayout();   // place unpositioned cards + size the canvas (needs the DOM)
 }
@@ -1087,7 +1101,7 @@ const _DM_PANEL_IDS = ["hero", "board", "roster", "budgets", "standings", "noms"
 // Panels that default to a full-width row; everything else defaults to a fixed
 // side-panel width and wraps. (Inline width from a user resize always overrides.)
 const _DM_WIDE_PANELS = ["hero", "board", "plan"];
-const _DM_DEFAULT_W = { roster: 380, budgets: 340, standings: 480, noms: 380, history: 440, cats: 480, ai: 440 };
+const _DM_DEFAULT_W = { roster: 470, budgets: 340, standings: 480, noms: 380, history: 440, cats: 480, ai: 440 };
 const _DM_DEFAULT_H = { board: 560, roster: 520, budgets: 300, standings: 360, noms: 320, history: 360, cats: 360, ai: 380 };
 const _DM_DEFAULT_ZONES = {
   top: ["hero"],
@@ -1320,10 +1334,39 @@ function _dmClearRosterPin(teamKey, playerName) {
   if (all[teamKey] && all[teamKey][playerName] != null) { delete all[teamKey][playerName]; _dmSaveRosterOverrides(); }
 }
 
-// A roster entry: { name, how, val, value }. `how` is the display badge.
-function _dmRosterEntry(name, how) {
+// A roster entry: { name, how, cost, val, value }. `how` is the display badge;
+// `cost` is the real dollars committed (keeper salary or auction price);
+// `value` is the projected auction $ from the valuation engine.
+function _dmRosterEntry(name, how, cost) {
   const val = (typeof getPlayerValue === "function") ? getPlayerValue(name) : null;
-  return { name, how, val, value: (val && val.value) || 0 };
+  return { name, how, cost: (typeof cost === "number" && isFinite(cost)) ? cost : null, val, value: (val && val.value) || 0 };
+}
+
+// Per-slot planned budget (Jeff's spending plan for each of the 26 slots) —
+// user-authored, so it's in the cloud-sync whitelist and follows him across
+// devices. { [slotIndex]: dollars }.
+const _DM_SLOT_BUDGET_KEY = "ud_dm_slot_budgets_v1";
+let _dmSlotBudgetCache = null;
+function _dmSlotBudgets() {
+  if (_dmSlotBudgetCache) return _dmSlotBudgetCache;
+  try { _dmSlotBudgetCache = JSON.parse(localStorage.getItem(_DM_SLOT_BUDGET_KEY) || "{}") || {}; }
+  catch (e) { _dmSlotBudgetCache = {}; }
+  return _dmSlotBudgetCache;
+}
+function setDmSlotBudget(slotIndex, dollars) {
+  const b = _dmSlotBudgets();
+  if (dollars == null || dollars === "" || !isFinite(dollars)) delete b[slotIndex];
+  else b[slotIndex] = Math.max(0, Math.round(Number(dollars)));
+  try { localStorage.setItem(_DM_SLOT_BUDGET_KEY, JSON.stringify(b)); } catch (e) {}
+}
+
+// Over/under coloring: cost above budget → red, below → green, equal/unknown →
+// neutral. Returns an inline style (or ""). Pure — testable.
+function _dmBudgetTint(cost, budget) {
+  if (cost == null || budget == null) return "";
+  if (cost > budget) return ' style="color:var(--bad);font-weight:600;"';
+  if (cost < budget) return ' style="color:var(--good);font-weight:600;"';
+  return "";
 }
 
 // Assign entries to the fixed slot template. Manual pins win; the rest autofill
@@ -1356,25 +1399,55 @@ function _dmAssignRoster(entries, overrides) {
 }
 
 // Render the fixed-slot roster table. teamKey scopes the drag pins.
-function _dmRosterSlotsHtml(entries, teamKey) {
+// withBudget (My Roster only): adds the editable per-slot $Budget column,
+// over/under tinting on $Cost, and the totals row.
+function _dmRosterSlotsHtml(entries, teamKey, withBudget) {
   const overrides = _dmRosterOverrides()[teamKey] || {};
   const { slots, overflow } = _dmAssignRoster(entries, overrides);
   const tk = esc(String(teamKey));
-  let html = '<table class="dm-table dm-roster-slots"><tbody>';
+  const budgets = withBudget ? _dmSlotBudgets() : {};
+  let totProj = 0, totCost = 0, totBudget = 0;
+  let html = '<table class="dm-table dm-roster-slots"><thead><tr><th></th><th>Player</th>' +
+    '<th class="num" title="Projected auction value">$Proj</th>' +
+    '<th class="num" title="Keeper salary or auction price paid">$Cost</th>' +
+    (withBudget ? '<th class="num" title="Your planned spend for this slot — editable">$Budget</th>' : '') +
+    '</tr></thead><tbody>';
   for (const s of slots) {
     const p = s.player;
+    const b = withBudget && budgets[s.i] != null ? budgets[s.i] : null;
+    if (b != null) totBudget += b;
     html += '<tr class="dm-slotrow" data-dm-slot="' + s.i + '" data-dm-team="' + tk + '">';
     html += '<td class="dm-slotlabel">' + esc(s.type) + '</td>';
     if (p) {
+      const proj = p.val ? Math.round(p.value) : null;
+      if (proj != null) totProj += proj;
+      if (p.cost != null) totCost += p.cost;
       html += '<td><span class="dm-slotplayer" draggable="true" data-dm-player="' + esc(p.name) + '" data-dm-team="' + tk +
-        '" title="Drag to another slot · double-click to auto-fill">' + esc(p.name) + '</span></td>';
-      html += '<td class="num muted">' + esc(p.how) + '</td>';
+        '" title="' + esc(p.how) + ' · drag to another slot · double-click to auto-fill">' + esc(p.name) + '</span></td>';
+      html += '<td class="num">' + (proj != null ? '$' + proj : '<span class="dim">—</span>') + '</td>';
+      html += '<td class="num"' + _dmBudgetTint(p.cost, b) + '>' + (p.cost != null ? '$' + p.cost : '<span class="dim">—</span>') + '</td>';
     } else {
-      html += '<td class="dm-slotempty">--</td><td></td>';
+      html += '<td class="dm-slotempty">--</td><td class="num dim">—</td><td class="num dim">—</td>';
+    }
+    if (withBudget) {
+      html += '<td class="num"><input type="number" min="0" step="1" class="dm-slot-budget" id="dm-sbud-' + s.i +
+        '" data-dm-sbud="' + s.i + '" value="' + (b != null ? b : "") + '" placeholder="—"' +
+        ' style="width:52px;padding:1px 4px;font-size:11px;text-align:right;"></td>';
     }
     html += '</tr>';
   }
-  html += '</tbody></table>';
+  html += '</tbody>';
+  // Totals: red when committed cost exceeds the planned budget, green when under.
+  if (withBudget) {
+    const tint = _dmBudgetTint(totCost, totBudget || null);
+    html += '<tfoot><tr class="dm-slot-total" style="border-top:1px solid var(--border);">' +
+      '<td></td><td><b>Total</b></td>' +
+      '<td class="num"><b>$' + totProj + '</b></td>' +
+      '<td class="num"' + tint + '><b>$' + totCost + '</b></td>' +
+      '<td class="num"' + tint + '><b>$' + totBudget + '</b></td>' +
+      '</tr></tfoot>';
+  }
+  html += '</table>';
   if (overflow.length) {
     html += '<p class="small" style="margin:4px 0 0; color:var(--warn);">Over roster limit: ' +
       overflow.map(e => esc(e.name)).join(", ") + '</p>';
@@ -1388,13 +1461,15 @@ function _dmMyRosterHtml() {
   const st = computeLiveTeamStates()[me.id];
   const entries = [];
   if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
-    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[me.id] || {})) if (f.keeper) entries.push(_dmRosterEntry(n, "keeper"));
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[me.id] || {})) {
+      if (f.keeper) entries.push(_dmRosterEntry(n, "keeper", (typeof keeperCostFor === "function") ? keeperCostFor(n) : null));
+    }
   }
   for (const p of _liveDraft.picks.filter(p => p.team === me.id || (me.espnTeamId != null && p.espnTeamId === me.espnTeamId))) {
-    entries.push(_dmRosterEntry(p.player, "$" + p.price));
+    entries.push(_dmRosterEntry(p.player, "$" + p.price, p.price));
   }
   let html = '<p class="small" style="margin:0 0 4px;">' + entries.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
-  html += _dmRosterSlotsHtml(entries, me.id);
+  html += _dmRosterSlotsHtml(entries, me.id, true);
   return html;
 }
 
@@ -1404,9 +1479,11 @@ function _dmCompareRosterHtml(teamId) {
   const st = computeLiveTeamStates()[teamId];
   const entries = [];
   if (typeof getEffectiveKeeperSelections === "function" && !draftTestMode()) {
-    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[teamId] || {})) if (f.keeper) entries.push(_dmRosterEntry(n, "keeper"));
+    for (const [n, f] of Object.entries(getEffectiveKeeperSelections()[teamId] || {})) {
+      if (f.keeper) entries.push(_dmRosterEntry(n, "keeper", (typeof keeperCostFor === "function") ? keeperCostFor(n) : null));
+    }
   }
-  for (const p of _liveDraft.picks.filter(p => p.team === teamId)) entries.push(_dmRosterEntry(p.player, "$" + p.price));
+  for (const p of _liveDraft.picks.filter(p => p.team === teamId)) entries.push(_dmRosterEntry(p.player, "$" + p.price, p.price));
   let html = '<p class="small" style="margin:0 0 4px;">' + entries.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
   html += _dmRosterSlotsHtml(entries, teamId);
   return html;
@@ -1860,6 +1937,12 @@ function wireDraftMode() {
   // Roster slot drag-to-reposition. Autofill is the default; dragging a player
   // onto an eligible slot pins them there (double-click a player = back to auto).
   // Pins are scoped per team, so you can't drag a player between two rosters.
+  // Per-slot $Budget inputs (My Roster): commit on change (Enter/blur/steppers).
+  document.querySelectorAll(".dm-slot-budget").forEach(inp => inp.addEventListener("change", () => {
+    const v = inp.value === "" ? null : Number(inp.value);
+    setDmSlotBudget(Number(inp.dataset.dmSbud), v);
+    renderDraft();
+  }));
   document.querySelectorAll(".dm-slotplayer").forEach(el => {
     el.addEventListener("dragstart", (e) => {
       e.dataTransfer.setData("text/plain", JSON.stringify({ team: el.dataset.dmTeam, player: el.dataset.dmPlayer }));

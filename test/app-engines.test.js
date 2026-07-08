@@ -623,6 +623,45 @@ test("stats header: sortable columns, ERA/WHIP default ascending, arrow on activ
   assert(global._dmStatHead("P", { col: 3, dir: "asc" }).includes("ERA ▲"), "asc arrow on active");
 });
 
+test("_dmBudgetTint: over budget red, under green, equal/unknown neutral", () => {
+  assert(global._dmBudgetTint(30, 25).includes("--bad"), "cost over budget → red");
+  assert(global._dmBudgetTint(20, 25).includes("--good"), "cost under budget → green");
+  assertEq(global._dmBudgetTint(25, 25), "", "equal → neutral");
+  assertEq(global._dmBudgetTint(null, 25), "", "no cost → neutral");
+  assertEq(global._dmBudgetTint(25, null), "", "no budget → neutral");
+});
+
+test("roster slots: $Proj/$Cost columns, editable $Budget, totals + tinting", () => {
+  // slot budgets: SS slot (idx 3) $25, C slot (idx 0) $10
+  global.setDmSlotBudget(3, 25);
+  global.setDmSlotBudget(0, 10);
+  const entries = [
+    { name: "Witt", how: "$30", cost: 30, val: { elig: ["SS", "MI", "UTIL"], type: "H", posKey: "SS" }, value: 41.6 },
+    { name: "Cheap C", how: "keeper", cost: 4, val: { elig: ["C", "UTIL"], type: "H", posKey: "C" }, value: 8.2 },
+  ];
+  const html = global._dmRosterSlotsHtml(entries, "jeff", true);
+  assert(html.includes("$Proj") && html.includes("$Cost") && html.includes("$Budget"), "three headers present");
+  assert(html.includes('data-dm-sbud="3"') && html.includes('value="25"'), "SS budget input carries its value");
+  assert(html.includes(">$42<") || html.includes(">$42</"), "proj rounded ($41.6 → $42)");
+  // Witt cost $30 vs SS budget $25 → red; keeper $4 vs C budget $10 → green
+  assert(/style="color:var\(--bad\);[^"]*"><\/td>|--bad[^>]*>\$30/.test(html.replace(/\n/g, "")), "over-budget slot cost is red");
+  assert(html.includes('--good') && html.includes('$4'), "under-budget slot cost is green");
+  // totals: proj 42+8=50; cost 34; budget 35 → cost < budget → green totals
+  assert(html.includes(">$50<") || html.includes("$50</b>"), "proj total sums");
+  const foot = html.split("<tfoot>")[1] || "";
+  assert(foot.includes("$34") && foot.includes("$35"), "cost + budget totals sum");
+  assert(foot.includes("--good"), "totals green when cost under budget");
+  // flip: raise a cost over the total budget → red totals
+  entries[0].cost = 40;
+  const html2 = global._dmRosterSlotsHtml(entries, "jeff", true);
+  const foot2 = html2.split("<tfoot>")[1] || "";
+  assert(foot2.includes("--bad"), "totals red when cost exceeds budget");
+  // compare view (withBudget=false): no budget column, no totals
+  const cmp = global._dmRosterSlotsHtml(entries, "opp", false);
+  assert(!cmp.includes("$Budget") && !cmp.includes("<tfoot>"), "no budget column on other teams");
+  global.setDmSlotBudget(3, null); global.setDmSlotBudget(0, null);
+});
+
 test("_dmPoolCut: keeps players down to the -$5 floor, drops below", () => {
   const pool = [{ name: "a", value: 30 }, { name: "b", value: 0 }, { name: "c", value: -5 }, { name: "d", value: -6 }, { name: "e" }];
   const cut = global._dmPoolCut(pool).map(p => p.name).join(",");
