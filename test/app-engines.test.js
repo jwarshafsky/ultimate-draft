@@ -589,6 +589,40 @@ test("stats cells round counting stats; rates keep decimals", () => {
   global.getProjection = origProj;
 });
 
+test("_dmSortByStat: sorts by the column's stat per player type; no projection sinks", () => {
+  const origProj = global.getProjection;
+  const PROJ = {
+    "Hi R": { type: "H", R: 100, HR: 10 }, "Lo R": { type: "H", R: 50, HR: 30 },
+    "Ace": { type: "P", QS: 25, ERA: 2.5 }, "Mid": { type: "P", QS: 12, ERA: 4.0 },
+  };
+  global.getProjection = (n) => PROJ[n] || null;
+  const H = [{ name: "Lo R", value: 40, posKey: "OF" }, { name: "Hi R", value: 20, posKey: "OF" }, { name: "NoProj", value: 99, posKey: "OF" }];
+  // col 0 = R for hitters: desc → Hi R first despite lower $; NoProj last despite top $
+  let s = global._dmSortByStat(H, 0, "desc");
+  assertEq(s.map(p => p.name).join(","), "Hi R,Lo R,NoProj", "R desc, missing last");
+  s = global._dmSortByStat(H, 0, "asc");
+  assertEq(s.map(p => p.name).join(","), "Lo R,Hi R,NoProj", "asc flips, missing still last");
+  // col 1 = HR: Lo R (30) beats Hi R (10)
+  s = global._dmSortByStat(H, 1, "desc");
+  assertEq(s[0].name, "Lo R", "HR column uses the HR stat");
+  // pitchers use the pitching key for the same column index (col 0 = QS)
+  const P = [{ name: "Mid", value: 30, posKey: "SP" }, { name: "Ace", value: 10, posKey: "SP" }];
+  s = global._dmSortByStat(P, 0, "desc");
+  assertEq(s[0].name, "Ace", "QS column sorts pitchers by QS");
+  global.getProjection = origProj;
+});
+
+test("stats header: sortable columns, ERA/WHIP default ascending, arrow on active", () => {
+  let h = global._dmStatHead("P", null);
+  assert(h.includes('data-dm-statsort="0"') && h.includes('data-dm-statsort="4"'), "all 5 columns sortable");
+  assert(/data-dm-statsort="3" data-dm-sdef="asc"/.test(h), "ERA defaults ascending (lower is better)");
+  assert(/data-dm-statsort="1" data-dm-sdef="desc"/.test(h), "K defaults descending");
+  const hH = global._dmStatHead("H", null);
+  assert(/data-dm-statsort="4" data-dm-sdef="desc"/.test(hH), "OBP (hitter col 4) defaults descending");
+  assert(global._dmStatHead("H", { col: 2, dir: "desc" }).includes("RBI ▼"), "active column shows the arrow");
+  assert(global._dmStatHead("P", { col: 3, dir: "asc" }).includes("ERA ▲"), "asc arrow on active");
+});
+
 test("stats header names the kind's stats; slash form only for mixed", () => {
   assert(global._dmStatHead("H").includes(">R<") && global._dmStatHead("H").includes(">OBP<"), "hitter header uses hitting names");
   assert(!global._dmStatHead("H").includes("R/QS"), "hitter header has no combined slash labels");

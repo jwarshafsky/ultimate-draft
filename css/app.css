@@ -557,6 +557,8 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-standings-full { min-width: 520px; }
 .dm-standings-full th, .dm-standings-full td { padding: 2px 5px; white-space: nowrap; }
 .dm-standings-full th.dm-sortcat:hover { color: var(--accent); }
+/* Stats-view sortable column headers (players board) — same affordance. */
+.dm-table th.dm-statsort:hover { color: var(--accent); }
 
 .dm-bottom { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg-2); }
 

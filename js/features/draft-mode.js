@@ -20,7 +20,8 @@ const DM_KEY = "ud_draft_mode_v1";   // device-local view state (deliberately no
 const _dmState = { boardMode: "BPA", boardPos: new Set(), search: "", needsOnly: false, statView: "value",
   compareTeamId: null,        // item 16: another team's roster shown next to mine
   standingsExpanded: false,   // item 17: full per-category standings table
-  standingsSort: null };      // item 17: { cat: <key|"roto">, dir: "desc"|"asc" }
+  standingsSort: null,        // item 17: { cat: <key|"roto">, dir: "desc"|"asc" }
+  statSort: null };           // stats-view column sort: { col: 0..4, dir: "desc"|"asc" }; null = by value
 
 function _draftModeOn() {
   try { return localStorage.getItem(DM_KEY) === "1"; } catch (e) { return false; }
@@ -912,7 +913,7 @@ function _dmBoard(inflation) {
     const cols = _DM_POS_MODES.filter(m => posSel.has(m));
     html += '<div class="dm-poscols">';
     for (const m of cols) {
-      const rows = base.filter(p => _dmModeMatch(p, m)).slice(0, 40);
+      const rows = _dmMaybeStatSort(base.filter(p => _dmModeMatch(p, m))).slice(0, 40);
       html += '<div class="dm-poscol"><h3 style="margin:6px 0; display:flex; align-items:center; gap:6px;">' + esc(m) +
         (cols.length > 1 ? '<button class="btn ghost" data-dm-colremove="' + esc(m) + '" title="Remove this column" style="width:auto; padding:0 6px; font-size:11px; line-height:1.4;">✕</button>' : '') +
         '</h3>' + _dmTable(rows, inflation, _dmKindForMode(m)) + '</div>';
@@ -920,14 +921,14 @@ function _dmBoard(inflation) {
     html += '</div>';
   } else if (_dmState.boardMode === "BPA") {
     const pool = _dmPoolRows(inflation);
-    const hit = pool.filter(p => _DM_HIT_POS.includes(p.posKey)).slice(0, 18);
-    const pit = pool.filter(p => p.posKey === "SP" || p.posKey === "RP").slice(0, 18);
+    const hit = _dmMaybeStatSort(pool.filter(p => _DM_HIT_POS.includes(p.posKey))).slice(0, 18);
+    const pit = _dmMaybeStatSort(pool.filter(p => p.posKey === "SP" || p.posKey === "RP")).slice(0, 18);
     html += '<div class="dm-bpa">';
     html += '<div><h3 style="margin:6px 0;">Best Hitters</h3>' + _dmTable(hit, inflation, "H") + '</div>';
     html += '<div><h3 style="margin:6px 0;">Best Pitchers</h3>' + _dmTable(pit, inflation, "P") + '</div>';
     html += '</div>';
   } else {
-    html += _dmTable(_dmPoolRows(inflation).slice(0, 60), inflation, _dmKindForMode(_dmState.boardMode));
+    html += _dmTable(_dmMaybeStatSort(_dmPoolRows(inflation)).slice(0, 60), inflation, _dmKindForMode(_dmState.boardMode));
   }
   return html;
 }
@@ -955,12 +956,51 @@ function _dmStatCells(name) {
 }
 
 // Stats-view header for a table kind: "H" → hitting stat names, "P" → pitching,
-// anything else → the combined slash form (mixed table).
-function _dmStatHead(kind) {
+// anything else → the combined slash form (mixed table). Every column is a
+// sort toggle: first click sorts best-first (ERA/WHIP ascending, everything
+// else descending), second click flips. The active column shows an arrow.
+function _dmStatHead(kind, sortOverride) {
   const cols = kind === "H" ? _DM_HIT_STATS.map(s => s[0])
     : kind === "P" ? _DM_PIT_STATS.map(s => s[0])
     : ["R/QS", "HR/K", "RBI/SV+H", "SB/ERA", "OBP/WHIP"];
-  return cols.map(c => '<th class="num">' + c + '</th>').join("");
+  const sort = sortOverride !== undefined ? sortOverride : _dmState.statSort;
+  return cols.map((c, i) => {
+    const lowerBetter = kind === "P" && (c === "ERA" || c === "WHIP");
+    const arrow = (sort && sort.col === i) ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
+    return '<th class="num dm-statsort" data-dm-statsort="' + i + '" data-dm-sdef="' + (lowerBetter ? "asc" : "desc") +
+      '" style="cursor:pointer;" title="Sort by ' + esc(c) + '">' + c + arrow + '</th>';
+  }).join("");
+}
+
+// Sort a player list by stats-view column `col` (0-4). Each player contributes
+// their OWN stat for that column (hitters the hitting stat, pitchers the
+// pitching one), so per-kind tables sort exactly and a mixed table still does
+// something sane. Players with no projection always sink to the bottom (kept in
+// value order there), whichever direction is active.
+function _dmSortByStat(players, col, dir) {
+  const statOf = (p) => {
+    const proj = (typeof getProjection === "function") ? getProjection(p.name) : null;
+    if (!proj) return null;
+    const key = (proj.type === "P" ? _DM_PIT_STATS : _DM_HIT_STATS)[col][1];
+    const v = proj[key];
+    return (v == null || (typeof v === "number" && !isFinite(v))) ? null : Number(v);
+  };
+  return players.slice().sort((a, b) => {
+    const va = statOf(a), vb = statOf(b);
+    if (va == null && vb == null) return b.value - a.value;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return dir === "asc" ? va - vb : vb - va;
+  });
+}
+
+// Apply the active stats-view column sort (if any) — used by the board BEFORE
+// its top-N slices, so "sort by SB" surfaces the actual SB leaders rather than
+// reshuffling the top-N-by-value subset.
+function _dmMaybeStatSort(players) {
+  const s = _dmState.statSort;
+  if (!s || _dmState.statView !== "stats") return players;
+  return _dmSortByStat(players, s.col, s.dir);
 }
 
 // The table kind for a board mode code: pitcher modes → "P", BPA (mixed) → null,
@@ -1777,6 +1817,15 @@ function wireDraftMode() {
   document.querySelectorAll("[data-dm-statview]").forEach(b => b.addEventListener("click", () => {
     _dmState.statView = b.dataset.dmStatview;
     _dmSaveLayout({ statView: _dmState.statView });   // persisted alongside the layout
+    renderDraft();
+  }));
+  // Stats-view column sort: first click best-first (per the header's default
+  // direction), same column again flips, a different column re-sorts fresh.
+  document.querySelectorAll("[data-dm-statsort]").forEach(th => th.addEventListener("click", () => {
+    const col = Number(th.dataset.dmStatsort);
+    const cur = _dmState.statSort;
+    if (cur && cur.col === col) cur.dir = cur.dir === "desc" ? "asc" : "desc";
+    else _dmState.statSort = { col, dir: th.dataset.dmSdef || "desc" };
     renderDraft();
   }));
   document.getElementById("dm-search")?.addEventListener("input", (e) => {
