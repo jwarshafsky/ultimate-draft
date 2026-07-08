@@ -1407,11 +1407,23 @@ function _dmHistoryHtml() {
 // (The old left/right column split handle is gone — panels are a single
 // free-flow layout now; each panel resizes its own width + height.)
 
+// Content-fit floor: the smallest width a card may take without horizontally
+// clipping its text, given the shrink attempt. If the body's content overflows
+// its box by `overflowX` px, the card must grow back by that much (capped at
+// the canvas width). Vertical scrolling is normal (history has hundreds of
+// rows), so height only keeps the hard 120px floor. Pure — testable.
+function _dmFitWidth(w, overflowX, maxW) {
+  return Math.min(Math.max(w, w + (overflowX > 0 ? overflowX : 0)), maxW);
+}
+
 // Per-panel resizable WIDTH + HEIGHT: each panel card is CSS `resize: both`.
 // We persist a size ONLY when it changed during an actual pointer gesture on
 // the card (mousedown → mouseup with a size delta) — a ResizeObserver alone
 // can't tell a user drag from a window/layout reflow, which would wrongly
 // freeze a full-width panel's width. Gesture detection avoids that.
+// CONTENT-FIT FLOOR (Jeff): you can't shrink a panel below what its text needs —
+// if the release leaves the body horizontally clipped, the card bounces back to
+// the minimum width that fits before the size persists.
 function _dmWireCardResize() {
   const canvas = document.querySelector("[data-dm-flow]");
   if (!canvas) return;
@@ -1427,30 +1439,72 @@ function _dmWireCardResize() {
     window._dmCardResizeWired = true;
     document.addEventListener("mouseup", () => {
       let changed = false;
+      const cv = document.querySelector("[data-dm-flow]");
       document.querySelectorAll(".dm-canvas > .card[data-dm-card]").forEach(card => {
         if (!card._dmMaybeResize) return;
         card._dmMaybeResize = false;
-        const w = Math.round(card.offsetWidth), h = Math.round(card.offsetHeight);
+        let w = Math.round(card.offsetWidth);
+        const h = Math.round(card.offsetHeight);
         if (!card.isConnected || !(w >= 240 && h >= 120)) return;
         if (Math.abs(w - (card._dmStartW || 0)) <= 4 && Math.abs(h - (card._dmStartH || 0)) <= 4) return;   // no real resize
+        // Content-fit: grow back over any horizontal clipping (body OR title)
+        // before persisting.
+        const body = card.querySelector(".dm-cardbody");
+        const title = card.querySelector(".dm-panel-title");
+        const over = Math.max(
+          body ? body.scrollWidth - body.clientWidth : 0,
+          title ? title.scrollWidth - title.clientWidth : 0
+        );
+        const fit = _dmFitWidth(w, over, (cv && cv.clientWidth) || w);
+        if (fit !== w) { w = fit; card.style.width = w + "px"; }
         const sizes = Object.assign({}, _dmLayout().sizes || {});
         sizes[card.dataset.dmCard] = { w, h };
         _dmSaveLayout({ sizes });
         changed = true;
       });
       // A grown card may now poke past the canvas bottom — refit the canvas.
-      const cv = document.querySelector("[data-dm-flow]");
       if (changed && cv) _dmCanvasHeight(cv);
     });
   }
 }
 
+// Magnetic snap for one axis: the nearest candidate within the snap radius wins;
+// outside the radius the raw value passes through untouched. Pure — testable.
+const _DM_SNAP = 8, _DM_SNAP_GAP = 12;
+function _dmSnapAxis(v, targets, radius) {
+  const r = radius == null ? _DM_SNAP : radius;
+  let best = v, bestD = r + 1;
+  for (const t of targets) {
+    const d = Math.abs(v - t);
+    if (d < bestD) { bestD = d; best = t; }
+  }
+  return best;
+}
+
+// All snap candidates for a card of size w×h against sibling rects + the canvas:
+// edge-align (left↔left, right↔right, top↔top, bottom↔bottom) and adjacency
+// (butt up against a neighbor with the standard 12px gutter), plus the canvas
+// edges. Returns { x: [...], y: [...] }. Pure — testable.
+function _dmSnapTargets(w, h, others, W) {
+  const x = [0, Math.max(0, W - w)];
+  const y = [0];
+  for (const o of others) {
+    const R = o.x + o.w, B = o.y + o.h;
+    x.push(o.x, R - w, R + _DM_SNAP_GAP, o.x - _DM_SNAP_GAP - w);
+    y.push(o.y, B - h, B + _DM_SNAP_GAP, o.y - _DM_SNAP_GAP - h);
+  }
+  return { x, y };
+}
+
 // Freeform pointer drag: press a panel's title bar and move it to ANY x/y on the
 // canvas. Plain mousemove positioning (no HTML5 DnD — no ghost image, no drop
-// targets, pixel-exact). The pressed card jumps to the top of the stack; on
-// release its position persists and the canvas refits. The body of the card
-// stays fully interactive (buttons, inputs, the roster player-drag) because the
-// handle is the only place a move can start.
+// targets, pixel-exact), with MAGNETIC SNAPPING: within 8px the card clicks onto
+// a neighbor's edge line or butts against it with the standard 12px gutter (and
+// onto the canvas edges) — past 8px it goes exactly where you put it, overlap
+// included. The pressed card jumps to the top of the stack; on release its
+// position persists and the canvas refits. The body of the card stays fully
+// interactive (buttons, inputs, the roster player-drag) because the handle is
+// the only place a move can start.
 function _dmWireCardDrag() {
   const canvas = document.querySelector("[data-dm-flow]");
   if (!canvas) return;
@@ -1462,6 +1516,10 @@ function _dmWireCardDrag() {
       if (e.target.closest("button, input, select, a")) return;   // controls in the title stay clickable
       e.preventDefault();
       const start = { x: e.clientX, y: e.clientY, left: card.offsetLeft, top: card.offsetTop };
+      // Snapshot the siblings once — they can't move during this drag.
+      const others = [...canvas.querySelectorAll(":scope > .card")].filter(c => c !== card)
+        .map(c => ({ x: c.offsetLeft, y: c.offsetTop, w: c.offsetWidth, h: c.offsetHeight }));
+      const targets = _dmSnapTargets(card.offsetWidth, card.offsetHeight, others, canvas.clientWidth);
       let moved = false;
       card.classList.add("dm-dragging");
       card.style.zIndex = "900";                            // ride above everything while moving
@@ -1469,8 +1527,10 @@ function _dmWireCardDrag() {
       document.body.style.cursor = "grabbing";
       const move = (ev) => {
         const W = canvas.clientWidth;
-        const nx = Math.max(0, Math.min(start.left + (ev.clientX - start.x), Math.max(0, W - 120)));
-        const ny = Math.max(0, start.top + (ev.clientY - start.y));
+        let nx = Math.max(0, Math.min(start.left + (ev.clientX - start.x), Math.max(0, W - 120)));
+        let ny = Math.max(0, start.top + (ev.clientY - start.y));
+        nx = Math.max(0, _dmSnapAxis(nx, targets.x));
+        ny = Math.max(0, _dmSnapAxis(ny, targets.y));
         if (!moved && (Math.abs(ev.clientX - start.x) > 3 || Math.abs(ev.clientY - start.y) > 3)) moved = true;
         card.style.left = nx + "px";
         card.style.top = ny + "px";

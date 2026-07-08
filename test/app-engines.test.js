@@ -548,6 +548,32 @@ test("_dmShelfPack: tiles left→right, wraps at the width, rows clear the talle
   assertEq(global._dmShelfPack([{ id: "z", w: 300, h: 100 }], 1000, 500).z.y, 500, "startY respected");
 });
 
+test("_dmSnapAxis: magnetic within radius, untouched outside", () => {
+  assertEq(global._dmSnapAxis(103, [100, 200]), 100, "3px off → snaps to 100");
+  assertEq(global._dmSnapAxis(115, [100, 200]), 115, "15px off → no snap");
+  assertEq(global._dmSnapAxis(196, [100, 200]), 200, "nearest target wins");
+  assertEq(global._dmSnapAxis(50, []), 50, "no targets → passthrough");
+});
+
+test("_dmSnapTargets: edge-align + 12px-gutter adjacency + canvas edges", () => {
+  // one neighbor at (100,50) sized 300×200; dragged card 200×100; canvas 1000
+  const t = global._dmSnapTargets(200, 100, [{ x: 100, y: 50, w: 300, h: 200 }], 1000);
+  assert(t.x.includes(0) && t.x.includes(800), "canvas left + right edges");
+  assert(t.x.includes(100), "left-align with neighbor");
+  assert(t.x.includes(200), "right-align (400 − 200)");
+  assert(t.x.includes(412), "butt against right side (400 + 12)");
+  assert(t.x.includes(-112), "butt against left side (100 − 12 − 200)");
+  assert(t.y.includes(50) && t.y.includes(150), "top-align + bottom-align");
+  assert(t.y.includes(262) && t.y.includes(-62), "below + above with gutter");
+});
+
+test("_dmFitWidth: bounces back over clipped text, capped at canvas width", () => {
+  assertEq(global._dmFitWidth(300, 0, 1000), 300, "no overflow → keep the chosen width");
+  assertEq(global._dmFitWidth(300, 80, 1000), 380, "80px clipped → grow back 80");
+  assertEq(global._dmFitWidth(300, -20, 1000), 300, "slack is not shrinkage");
+  assertEq(global._dmFitWidth(950, 200, 1000), 1000, "growth capped at the canvas");
+});
+
 test("stats cells round counting stats; rates keep decimals", () => {
   const origProj = global.getProjection;
   global.getProjection = () => ({ type: "H", R: 62.1184, HR: 21.4417, RBI: 49.8923, SB: 9.4288, OBP: 0.387282 });
