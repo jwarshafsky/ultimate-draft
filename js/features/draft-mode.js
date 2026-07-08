@@ -377,15 +377,16 @@ function renderDraftMode(root, inflation) {
   if (typeof isEndgame === "function" && isEndgame()) {
     html += '<div class="dm-endgame-strip">' + renderEndgamePanel() + '</div>';
   }
-  // FREE-FLOW panels — one wrapping row of cards. Each panel is independently
-  // width/height-resizable (CSS resize:both) and drag-reorderable to anywhere in
-  // the flow. No fixed columns. Order + per-panel size persist device-local.
-  html += '<div class="dm-flow" data-dm-flow>';
+  // FREEFORM canvas — every panel is an absolutely-positioned card you drag to
+  // any x/y (title-bar handle) and resize in both dimensions (⌟ corner). First
+  // visit auto-tiles a sensible default; after that each card keeps exactly
+  // where you put it. Position + size persist device-local.
+  html += '<div class="dm-canvas" data-dm-flow>';
   for (const id of order) {
     const p = ctx.panels[id];
     if (!p) continue;
     html += _dmPanelHtml(id, p, sizes);
-    // Transient compare-roster card sits right after My Roster.
+    // Transient compare-roster card pops up over/near My Roster.
     if (id === "roster" && _dmState.compareTeamId != null) html += _dmCompareCardHtml(sizes);
   }
   html += '</div>';
@@ -393,6 +394,7 @@ function renderDraftMode(root, inflation) {
   html += '</div>';
   root.innerHTML = html;
   wireDraftMode();
+  _dmCanvasLayout();   // place unpositioned cards + size the canvas (needs the DOM)
 }
 
 // Build the content (title + inner HTML) for every panel, once per render. The
@@ -413,38 +415,42 @@ function _dmBuildPanels(inflation) {
   return p;
 }
 
-// One free-flow panel card. Width + height come from the persisted size (or a
-// per-panel default; "wide" panels default to a full-width row). The card is NOT
-// draggable by default — pressing the title bar arms the move (see
-// _dmWireCardDrag), so only the handle moves a panel and the body (buttons,
-// inputs, the roster player-drag, text selection) stays live. CSS `resize: both`
-// on the card gives the ⌟ corner grabber for width+height.
-function _dmPanelStyle(id, sizes, fallbackW, fallbackH) {
+// One freeform panel card. Width + height come from the persisted size (or a
+// per-panel default; "wide" panels default to the full canvas width); left/top
+// come from the persisted position — a card with no position yet is auto-tiled
+// by _dmCanvasLayout after render. Dragging is pointer-based on the title bar
+// only (see _dmWireCardDrag), so the body (buttons, inputs, the roster
+// player-drag, text selection) stays live. CSS `resize: both` on the card gives
+// the ⌟ corner grabber for width+height.
+function _dmPanelStyle(id, sizes, pos, fallbackW, fallbackH) {
   const sz = sizes ? sizes[id] : null;
   const w = (sz && typeof sz.w === "number" && sz.w >= 240) ? sz.w : null;
   const h = (sz && typeof sz.h === "number" && sz.h >= 120) ? sz.h : null;
   let s = "width:" + (w != null ? w + "px" : fallbackW) + ";";
   if (h != null) s += "height:" + h + "px;";
   else if (typeof fallbackH === "number") s += "height:" + fallbackH + "px;";
+  const p = pos ? pos[id] : null;
+  if (p && typeof p.x === "number" && typeof p.y === "number") s += "left:" + p.x + "px;top:" + p.y + "px;";
   return s;
 }
 function _dmPanelHtml(id, p, sizes) {
+  const pos = _dmLayout().pos || {};
   const wide = _DM_WIDE_PANELS.includes(id);
-  const style = _dmPanelStyle(id, sizes, wide ? "100%" : ((_DM_DEFAULT_W[id] || 380) + "px"), _DM_DEFAULT_H[id]);
+  const style = _dmPanelStyle(id, sizes, pos, wide ? "100%" : ((_DM_DEFAULT_W[id] || 380) + "px"), _DM_DEFAULT_H[id]);
   const cls = "card dm-rcard dm-panel" + (wide ? " dm-panel-wide" : " dm-panel-side") + (p.cls ? " " + p.cls : "");
   return '<div class="' + cls + '" data-dm-card="' + id + '" style="' + style + '">' +
-    '<h3 class="dm-panel-title" title="Drag this bar to move · drag the ⌟ corner to resize"><span class="dm-grip" aria-hidden="true">⠿</span> ' + p.title + '</h3>' +
+    '<h3 class="dm-panel-title" title="Drag this bar to move the panel anywhere · drag the ⌟ corner to resize"><span class="dm-grip" aria-hidden="true">⠿</span> ' + p.title + '</h3>' +
     '<div class="dm-cardbody" data-dm-cardbody="' + id + '">' + p.body + '</div></div>';
 }
 
-// The transient "compare roster" card (item 16). Sits after My Roster; resizable
-// but NOT draggable and NOT persisted (no data-dm-card).
+// The transient "compare roster" card (item 16). Pops up offset from My Roster
+// (positioned by _dmCanvasLayout); resizable but NOT persisted (no data-dm-card).
 function _dmCompareCardHtml(sizes) {
   const cmpTeam = (typeof getTeam === "function") ? getTeam(_dmState.compareTeamId) : null;
   if (!cmpTeam) { _dmState.compareTeamId = null; return ""; }   // stale id (team gone)
   const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
     '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
-  const style = _dmPanelStyle("compare", sizes, (_DM_DEFAULT_W.roster || 380) + "px", _DM_DEFAULT_H.roster);
+  const style = _dmPanelStyle("compare", sizes, null, (_DM_DEFAULT_W.roster || 380) + "px", _DM_DEFAULT_H.roster);
   return '<div class="card dm-rcard dm-panel dm-panel-side dm-cmpcard" style="' + style + '"><h3 style="margin:0 0 6px;">' + title + '</h3>' +
     '<div class="dm-cardbody">' + _dmCompareRosterHtml(_dmState.compareTeamId) + '</div></div>';
 }
@@ -583,11 +589,12 @@ function _dmTeamLabel(espnOrOwnerId) {
 function _dmProjLine(name) {
   const proj = (typeof getProjection === "function") ? getProjection(name) : null;
   if (!proj) return '<span class="dim">no stat projection loaded</span>';
+  const n = v => (v != null && isFinite(v)) ? Math.round(v) : null;   // counting stats → whole numbers
   if (proj.type === "H") {
-    return [["R", proj.R], ["HR", proj.HR], ["RBI", proj.RBI], ["SB", proj.SB], ["OBP", proj.OBP != null ? Number(proj.OBP).toFixed(3) : null]]
+    return [["R", n(proj.R)], ["HR", n(proj.HR)], ["RBI", n(proj.RBI)], ["SB", n(proj.SB)], ["OBP", proj.OBP != null ? Number(proj.OBP).toFixed(3) : null]]
       .filter(x => x[1] != null).map(x => '<b>' + x[1] + '</b> <span class="muted">' + x[0] + '</span>').join(" · ");
   }
-  return [["QS", proj.QS], ["K", proj.K], ["SV+H", proj.SV_HLD], ["ERA", proj.ERA != null ? Number(proj.ERA).toFixed(2) : null], ["WHIP", proj.WHIP != null ? Number(proj.WHIP).toFixed(2) : null]]
+  return [["QS", n(proj.QS)], ["K", n(proj.K)], ["SV+H", n(proj.SV_HLD)], ["ERA", proj.ERA != null ? Number(proj.ERA).toFixed(2) : null], ["WHIP", proj.WHIP != null ? Number(proj.WHIP).toFixed(2) : null]]
     .filter(x => x[1] != null).map(x => '<b>' + x[1] + '</b> <span class="muted">' + x[0] + '</span>').join(" · ");
 }
 
@@ -908,7 +915,7 @@ function _dmBoard(inflation) {
       const rows = base.filter(p => _dmModeMatch(p, m)).slice(0, 40);
       html += '<div class="dm-poscol"><h3 style="margin:6px 0; display:flex; align-items:center; gap:6px;">' + esc(m) +
         (cols.length > 1 ? '<button class="btn ghost" data-dm-colremove="' + esc(m) + '" title="Remove this column" style="width:auto; padding:0 6px; font-size:11px; line-height:1.4;">✕</button>' : '') +
-        '</h3>' + _dmTable(rows, inflation) + '</div>';
+        '</h3>' + _dmTable(rows, inflation, _dmKindForMode(m)) + '</div>';
     }
     html += '</div>';
   } else if (_dmState.boardMode === "BPA") {
@@ -916,28 +923,29 @@ function _dmBoard(inflation) {
     const hit = pool.filter(p => _DM_HIT_POS.includes(p.posKey)).slice(0, 18);
     const pit = pool.filter(p => p.posKey === "SP" || p.posKey === "RP").slice(0, 18);
     html += '<div class="dm-bpa">';
-    html += '<div><h3 style="margin:6px 0;">Best Hitters</h3>' + _dmTable(hit, inflation) + '</div>';
-    html += '<div><h3 style="margin:6px 0;">Best Pitchers</h3>' + _dmTable(pit, inflation) + '</div>';
+    html += '<div><h3 style="margin:6px 0;">Best Hitters</h3>' + _dmTable(hit, inflation, "H") + '</div>';
+    html += '<div><h3 style="margin:6px 0;">Best Pitchers</h3>' + _dmTable(pit, inflation, "P") + '</div>';
     html += '</div>';
   } else {
-    html += _dmTable(_dmPoolRows(inflation).slice(0, 60), inflation);
+    html += _dmTable(_dmPoolRows(inflation).slice(0, 60), inflation, _dmKindForMode(_dmState.boardMode));
   }
   return html;
 }
 
 // Stats-view columns: per-row we show the right set (hitter vs pitcher). The
-// header is a compact combined set so a mixed table still lines up.
+// header defaults to the table's kind (hitting or pitching stat names); the
+// combined slash form is only a fallback for a genuinely mixed table.
 const _DM_HIT_STATS = [["R", "R"], ["HR", "HR"], ["RBI", "RBI"], ["SB", "SB"], ["OBP", "OBP"]];
 const _DM_PIT_STATS = [["QS", "QS"], ["K", "K"], ["SV+H", "SV_HLD"], ["ERA", "ERA"], ["WHIP", "WHIP"]];
 
 // The projected-stat <td> cells for one player (5 numeric cells). Missing
-// projection → dim dashes. Rates: OBP 3dp; ERA/WHIP 2dp.
+// projection → dim dashes. Counting stats round to whole numbers (Jeff: no
+// 62.1184); rates keep their meaningful precision (OBP 3dp; ERA/WHIP 2dp).
 function _dmStatCells(name) {
   const proj = (typeof getProjection === "function") ? getProjection(name) : null;
   const cell = (v, dec) => {
     if (v == null || v === "" || (typeof v === "number" && !isFinite(v))) return '<td class="num dim">—</td>';
-    const out = (dec != null) ? Number(v).toFixed(dec) : v;
-    return '<td class="num">' + out + '</td>';
+    return '<td class="num">' + Number(v).toFixed(dec || 0) + '</td>';
   };
   if (!proj) return '<td class="num dim">—</td>'.repeat(5);
   if (proj.type === "H") {
@@ -946,13 +954,34 @@ function _dmStatCells(name) {
   return cell(proj.QS) + cell(proj.K) + cell(proj.SV_HLD) + cell(proj.ERA, 2) + cell(proj.WHIP, 2);
 }
 
-function _dmTable(players, inflation) {
+// Stats-view header for a table kind: "H" → hitting stat names, "P" → pitching,
+// anything else → the combined slash form (mixed table).
+function _dmStatHead(kind) {
+  const cols = kind === "H" ? _DM_HIT_STATS.map(s => s[0])
+    : kind === "P" ? _DM_PIT_STATS.map(s => s[0])
+    : ["R/QS", "HR/K", "RBI/SV+H", "SB/ERA", "OBP/WHIP"];
+  return cols.map(c => '<th class="num">' + c + '</th>').join("");
+}
+
+// The table kind for a board mode code: pitcher modes → "P", BPA (mixed) → null,
+// everything else (HIT, the position codes, MI/CI/UTIL flex) → "H".
+function _dmKindForMode(m) {
+  if (m === "PIT" || m === "SP" || m === "RP") return "P";
+  if (m === "BPA") return null;
+  return "H";
+}
+
+function _dmTable(players, inflation, kind) {
   if (!players.length) return '<p class="muted small">nobody left here.</p>';
   const stats = _dmState.statView === "stats";
-  // Combined header for the stats view (hitter cats then pitcher cats collapse
-  // onto the same 5 columns; per-row cells pick the matching set).
+  // No explicit kind → infer from the rows so a homogeneous table still gets
+  // real stat names instead of the slash fallback.
+  if (stats && kind === undefined) {
+    const isP = p => p.posKey === "SP" || p.posKey === "RP";
+    kind = players.every(isP) ? "P" : players.every(p => !isP(p)) ? "H" : null;
+  }
   const statHead = stats
-    ? '<th class="num">R/QS</th><th class="num">HR/K</th><th class="num">RBI/SV+H</th><th class="num">SB/ERA</th><th class="num">OBP/WHIP</th>'
+    ? _dmStatHead(kind)
     : '<th class="num">$</th><th class="num">Infl</th><th class="num">NFBC</th><th class="num">Δmkt</th>';
   let html = '<table class="dm-table"><thead><tr><th>Player</th><th>Fit</th><th>Pos</th>' + statHead + '<th></th></tr></thead><tbody>';
   for (const p of players) {
@@ -1083,8 +1112,9 @@ function _dmLayout() {
         zones = _dmZonesFromOrder(order);                   // old order array (or defaults if none)
       }
       return {
-        flow: Array.isArray(v.flow) ? v.flow : null,        // new free-flow order
+        flow: Array.isArray(v.flow) ? v.flow : null,        // stacking order (last = on top)
         sizes: (v.sizes && typeof v.sizes === "object") ? v.sizes : _dmSizesFromHeights(v.heights),
+        pos: (v.pos && typeof v.pos === "object") ? v.pos : {},   // freeform {id:{x,y}}
         order,
         zones,
         split: (typeof v.split === "number" ? v.split : null),
@@ -1094,13 +1124,14 @@ function _dmLayout() {
       };
     }
   } catch (e) {}
-  return { flow: null, sizes: {}, order: null, zones: _dmNormalizeZones(null), split: null, heights: {}, statView: null, standingsExpanded: null };
+  return { flow: null, sizes: {}, pos: {}, order: null, zones: _dmNormalizeZones(null), split: null, heights: {}, statView: null, standingsExpanded: null };
 }
 function _dmSaveLayout(patch) {
   const cur = _dmLayout();
-  const next = { flow: cur.flow, sizes: cur.sizes, order: cur.order, zones: cur.zones, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
+  const next = { flow: cur.flow, sizes: cur.sizes, pos: cur.pos, order: cur.order, zones: cur.zones, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
   if (patch && "flow" in patch) next.flow = patch.flow;
   if (patch && "sizes" in patch) next.sizes = patch.sizes;
+  if (patch && "pos" in patch) next.pos = patch.pos;
   if (patch && "order" in patch) next.order = patch.order;
   if (patch && "zones" in patch) next.zones = _dmNormalizeZones(patch.zones);
   if (patch && "split" in patch) next.split = patch.split;
@@ -1111,10 +1142,10 @@ function _dmSaveLayout(patch) {
 }
 function _dmZones() { return _dmLayout().zones; }
 function _dmSaveZones(zones) { _dmSaveLayout({ zones }); }
-function _dmSaveFlow(order) { _dmSaveLayout({ flow: order }); }
-// The flat, free-flow panel order. Migrates from the old four-zone layout by
-// concatenating top→left→right→bottom. Always normalized to the full panel set:
-// missing ids appended in canonical order, unknown ids dropped, dupes removed.
+// The flat panel STACKING order (render order = z-order, last on top). Migrates
+// from the old four-zone layout by concatenating top→left→right→bottom. Always
+// normalized to the full panel set: missing ids appended in canonical order,
+// unknown ids dropped, dupes removed.
 function _dmPanelOrder() {
   const lay = _dmLayout();
   let order = Array.isArray(lay.flow) ? lay.flow.slice() : null;
@@ -1127,10 +1158,72 @@ function _dmPanelOrder() {
   for (const id of _DM_PANEL_IDS) if (!seen.has(id)) { out.push(id); seen.add(id); }
   return out;
 }
-// Wipe every layout override → back to the default free-flow layout + sizes.
+// Wipe every layout override → back to the default auto-tiled layout + sizes.
 // statView + standingsExpanded are content prefs, kept.
 function _dmResetLayout() {
-  _dmSaveLayout({ flow: null, sizes: {}, zones: _dmNormalizeZones(null), split: null, heights: {} });
+  _dmSaveLayout({ flow: null, sizes: {}, pos: {}, zones: _dmNormalizeZones(null), split: null, heights: {} });
+}
+
+// Shelf-pack tiler for cards with no stored position (first visit / new panel):
+// left→right rows that wrap at the canvas width, row height = tallest card in
+// the row. Pure — takes [{id,w,h}] + width, returns {id:{x,y}} — so it's
+// testable headlessly.
+function _dmShelfPack(items, W, startY) {
+  const gap = 12;
+  let x = 0, y = startY || 0, rowH = 0;
+  const out = {};
+  for (const it of items) {
+    const w = Math.min(it.w || 300, W);
+    if (x > 0 && x + w > W) { x = 0; y += rowH + gap; rowH = 0; }
+    out[it.id] = { x: Math.round(x), y: Math.round(y) };
+    x += w + gap;
+    rowH = Math.max(rowH, it.h || 200);
+  }
+  return out;
+}
+
+// Position every canvas card. Cards WITH a stored pos go exactly there; cards
+// without one (first visit, a newly shipped panel) are shelf-packed below the
+// lowest pinned card and their computed spots are PERSISTED immediately — from
+// then on every card is pinned, so dragging one never shuffles the others.
+// Also stacks z-order by flow order and sizes the canvas to contain everything
+// (absolute children don't grow their parent).
+function _dmCanvasLayout() {
+  const canvas = document.querySelector("[data-dm-flow]");
+  if (!canvas) return;
+  const W = canvas.clientWidth || 1200;
+  const pos = Object.assign({}, _dmLayout().pos);
+  const cards = [...canvas.querySelectorAll(":scope > .card[data-dm-card]")];
+  const missing = cards.filter(c => !pos[c.dataset.dmCard]);
+  if (missing.length) {
+    let startY = 0;
+    for (const c of cards) {
+      const p = pos[c.dataset.dmCard];
+      if (p) startY = Math.max(startY, p.y + c.offsetHeight + 12);
+    }
+    const packed = _dmShelfPack(missing.map(c => ({ id: c.dataset.dmCard, w: c.offsetWidth || 300, h: c.offsetHeight || 200 })), W, startY);
+    Object.assign(pos, packed);
+    _dmSaveLayout({ pos });
+  }
+  cards.forEach((c, i) => {
+    const p = pos[c.dataset.dmCard];
+    if (p) { c.style.left = p.x + "px"; c.style.top = p.y + "px"; }
+    c.style.zIndex = String(10 + i);
+  });
+  // Compare card pops up offset from My Roster, always on top.
+  const cmp = canvas.querySelector(".dm-cmpcard");
+  if (cmp) {
+    const rp = pos.roster;
+    cmp.style.left = ((rp ? rp.x : 0) + 28) + "px";
+    cmp.style.top = ((rp ? rp.y : 0) + 28) + "px";
+    cmp.style.zIndex = "500";
+  }
+  _dmCanvasHeight(canvas);
+}
+function _dmCanvasHeight(canvas) {
+  let max = 0;
+  canvas.querySelectorAll(":scope > .card").forEach(c => { max = Math.max(max, c.offsetTop + c.offsetHeight); });
+  canvas.style.height = (max + 16) + "px";
 }
 
 // --- roster slots (fixed template) ---------------------------------------
@@ -1320,11 +1413,11 @@ function _dmHistoryHtml() {
 // can't tell a user drag from a window/layout reflow, which would wrongly
 // freeze a full-width panel's width. Gesture detection avoids that.
 function _dmWireCardResize() {
-  const flow = document.querySelector("[data-dm-flow]");
-  if (!flow) return;
+  const canvas = document.querySelector("[data-dm-flow]");
+  if (!canvas) return;
   // Record the card's size when a press starts on it (could be a resize grab).
-  flow.addEventListener("mousedown", (e) => {
-    const card = e.target.closest(".dm-flow > .card[data-dm-card]");
+  canvas.addEventListener("mousedown", (e) => {
+    const card = e.target.closest(".dm-canvas > .card[data-dm-card]");
     if (!card) return;
     card._dmStartW = card.offsetWidth; card._dmStartH = card.offsetHeight; card._dmMaybeResize = true;
   });
@@ -1333,7 +1426,8 @@ function _dmWireCardResize() {
   if (!window._dmCardResizeWired) {
     window._dmCardResizeWired = true;
     document.addEventListener("mouseup", () => {
-      document.querySelectorAll(".dm-flow > .card[data-dm-card]").forEach(card => {
+      let changed = false;
+      document.querySelectorAll(".dm-canvas > .card[data-dm-card]").forEach(card => {
         if (!card._dmMaybeResize) return;
         card._dmMaybeResize = false;
         const w = Math.round(card.offsetWidth), h = Math.round(card.offsetHeight);
@@ -1342,84 +1436,64 @@ function _dmWireCardResize() {
         const sizes = Object.assign({}, _dmLayout().sizes || {});
         sizes[card.dataset.dmCard] = { w, h };
         _dmSaveLayout({ sizes });
+        changed = true;
       });
+      // A grown card may now poke past the canvas bottom — refit the canvas.
+      const cv = document.querySelector("[data-dm-flow]");
+      if (changed && cv) _dmCanvasHeight(cv);
     });
   }
 }
 
-// The sibling in the free-flow container to insert the dragged card BEFORE for a
-// given pointer position. Wrap-aware: among cards whose center is to the right of
-// (same row) or below (later row) the pointer, pick the nearest by 2D distance.
-// null → append at the end.
-function _dmFlowRefBefore(flow, x, y, dragging) {
-  let best = null, bestDist = Infinity;
-  for (const c of flow.querySelectorAll(".card[data-dm-card]")) {
-    if (c === dragging) continue;
-    const r = c.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    const beforeThis = (y < r.top) || (y <= r.bottom && x < cx);   // pointer sits ahead of this card
-    if (!beforeThis) continue;
-    const d = Math.hypot(x - cx, y - cy);
-    if (d < bestDist) { bestDist = d; best = c; }
-  }
-  return best;
-}
-
-// HTML5 drag to move a panel anywhere in the single free-flow container. Only the
-// title bar arms a drag (handle-only). On dragover we live-reorder the DOM; on
-// release we read the DOM order back and persist it. The compare card is
-// transient (no data-dm-card) so it never participates and never persists.
+// Freeform pointer drag: press a panel's title bar and move it to ANY x/y on the
+// canvas. Plain mousemove positioning (no HTML5 DnD — no ghost image, no drop
+// targets, pixel-exact). The pressed card jumps to the top of the stack; on
+// release its position persists and the canvas refits. The body of the card
+// stays fully interactive (buttons, inputs, the roster player-drag) because the
+// handle is the only place a move can start.
 function _dmWireCardDrag() {
-  const flow = document.querySelector("[data-dm-flow]");
-  if (!flow) return;
-  let dragging = null;
-  const persist = () => {
-    const order = [...flow.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard);
-    _dmSaveFlow(order);
-  };
-  flow.querySelectorAll(".card[data-dm-card]").forEach(card => {
-    // Handle-only dragging: the card stays inert until you press its title bar,
-    // so a click/scroll/text-selection or a nested drag (roster players) in the
-    // body never starts a panel move. mousedown on the handle arms it.
+  const canvas = document.querySelector("[data-dm-flow]");
+  if (!canvas) return;
+  canvas.querySelectorAll(":scope > .card[data-dm-card]").forEach(card => {
     const handle = card.querySelector(".dm-panel-title");
-    if (handle) {
-      handle.addEventListener("mousedown", () => card.setAttribute("draggable", "true"));
-      handle.addEventListener("mouseup", () => card.setAttribute("draggable", "false"));
-    }
-    card.addEventListener("dragstart", (e) => {
-      if (card.getAttribute("draggable") !== "true") { e.preventDefault(); return; }   // not armed → not from the handle
-      dragging = card; card.classList.add("dm-dragging");
-      try { e.dataTransfer.effectAllowed = "move"; } catch (_) {}
-      document.body.classList.add("dm-dragging-active");
-    });
-    card.addEventListener("dragend", () => {
-      card.classList.remove("dm-dragging");
-      card.setAttribute("draggable", "false");
-      document.body.classList.remove("dm-dragging-active");
-      dragging = null;
-      persist();
+    if (!handle) return;
+    handle.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;                          // left button only
+      if (e.target.closest("button, input, select, a")) return;   // controls in the title stay clickable
+      e.preventDefault();
+      const start = { x: e.clientX, y: e.clientY, left: card.offsetLeft, top: card.offsetTop };
+      let moved = false;
+      card.classList.add("dm-dragging");
+      card.style.zIndex = "900";                            // ride above everything while moving
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "grabbing";
+      const move = (ev) => {
+        const W = canvas.clientWidth;
+        const nx = Math.max(0, Math.min(start.left + (ev.clientX - start.x), Math.max(0, W - 120)));
+        const ny = Math.max(0, start.top + (ev.clientY - start.y));
+        if (!moved && (Math.abs(ev.clientX - start.x) > 3 || Math.abs(ev.clientY - start.y) > 3)) moved = true;
+        card.style.left = nx + "px";
+        card.style.top = ny + "px";
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        card.classList.remove("dm-dragging");
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        if (!moved) { card.style.zIndex = ""; return; }     // a plain click, not a drag
+        const id = card.dataset.dmCard;
+        const pos = Object.assign({}, _dmLayout().pos);
+        pos[id] = { x: card.offsetLeft, y: card.offsetTop };
+        // Moving a card also raises it: it goes to the end of the stacking order.
+        const flow = _dmPanelOrder().filter(x => x !== id); flow.push(id);
+        _dmSaveLayout({ pos, flow });
+        _dmCanvasHeight(canvas);
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
     });
   });
-  // Container-level: live-reorder as the pointer moves; persist on drop.
-  flow.addEventListener("dragover", (e) => {
-    if (!dragging) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
-    const ref = _dmFlowRefBefore(flow, e.clientX, e.clientY, dragging);
-    if (ref) { if (ref !== dragging.nextSibling) flow.insertBefore(dragging, ref); }
-    else if (flow.lastElementChild !== dragging) flow.appendChild(dragging);
-  });
-  flow.addEventListener("drop", (e) => { e.preventDefault(); persist(); });
-  // Safety net: a handle press released WITHOUT a drag (mouseup off the handle)
-  // must disarm every card. One-time document listeners — wireDraftMode re-runs
-  // on every render, so guard against stacking duplicates.
-  if (!window._dmCardDragDisarmWired) {
-    window._dmCardDragDisarmWired = true;
-    const disarm = () => document.querySelectorAll('.dm-flow .card[data-dm-card][draggable="true"]')
-      .forEach(c => { if (!c.classList.contains("dm-dragging")) c.setAttribute("draggable", "false"); });
-    document.addEventListener("mouseup", disarm);
-    document.addEventListener("dragend", disarm);
-  }
 }
 
 // Compact category-total label for the expanded standings (item 17): OBP 3dp,

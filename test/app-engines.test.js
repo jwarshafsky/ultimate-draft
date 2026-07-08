@@ -514,7 +514,7 @@ test("manual pin wins over autofill and reroutes the rest", () => {
 });
 
 // =====================================================================
-section("App engines — free-flow panel layout (draft-mode.js)");
+section("App engines — freeform panel canvas (draft-mode.js)");
 // =====================================================================
 
 test("_dmPanelOrder: all panels once, canonical order by default", () => {
@@ -533,16 +533,44 @@ test("_dmSizesFromHeights: legacy heights fold into {h}, non-numbers dropped", (
   assertEq("junk" in s, false, "non-numeric dropped");
 });
 
-test("_dmFlowRefBefore: picks the card the pointer sits ahead of", () => {
-  // Fake three cards in a row; pointer over the middle card's left half → insert
-  // before the middle card. (getBoundingClientRect is stubbed per card.)
-  const mk = (l, r) => ({ getBoundingClientRect: () => ({ left: l, right: r, top: 0, bottom: 100, width: r - l, height: 100 }) });
-  const a = mk(0, 100), b = mk(120, 220), c = mk(240, 340);
-  const flow = { querySelectorAll: () => [a, b, c] };
-  // pointer at x=140 (left half of b, center 170) → before b
-  assertEq(global._dmFlowRefBefore(flow, 140, 50, null), b, "pointer in b's left half → before b");
-  // pointer past everything → null (append)
-  assertEq(global._dmFlowRefBefore(flow, 400, 50, null), null, "past all → append");
+test("_dmShelfPack: tiles left→right, wraps at the width, rows clear the tallest card", () => {
+  // width 1000: a(400) b(400) fit one row (400+12+400=812); c(400) wraps under
+  // the taller of a/b (h 300) + 12 gap → y=312. A full-width card takes its own row.
+  const p = global._dmShelfPack([
+    { id: "a", w: 400, h: 300 }, { id: "b", w: 400, h: 200 },
+    { id: "c", w: 400, h: 200 }, { id: "wide", w: 1000, h: 150 },
+  ], 1000);
+  assertEq(p.a.x, 0, "a at x0"); assertEq(p.a.y, 0, "a at y0");
+  assertEq(p.b.x, 412, "b beside a");
+  assertEq(p.c.x, 0, "c wraps to x0"); assertEq(p.c.y, 312, "c under the tallest of row 1");
+  assertEq(p.wide.y, 524, "wide card on its own next row");
+  // startY offsets the whole packing (new cards go below pinned ones)
+  assertEq(global._dmShelfPack([{ id: "z", w: 300, h: 100 }], 1000, 500).z.y, 500, "startY respected");
+});
+
+test("stats cells round counting stats; rates keep decimals", () => {
+  const origProj = global.getProjection;
+  global.getProjection = () => ({ type: "H", R: 62.1184, HR: 21.4417, RBI: 49.8923, SB: 9.4288, OBP: 0.387282 });
+  let cells = global._dmStatCells("x");
+  assert(cells.includes(">62<"), "R rounded to 62 (was 62.1184)");
+  assert(cells.includes(">21<"), "HR rounded");
+  assert(cells.includes(">0.387<"), "OBP keeps 3 decimals");
+  global.getProjection = () => ({ type: "P", QS: 9.9994, K: 106.449, SV_HLD: 0, ERA: 2.81233, WHIP: 1.02246 });
+  cells = global._dmStatCells("x");
+  assert(cells.includes(">10<"), "QS rounded to 10");
+  assert(cells.includes(">106<"), "K rounded");
+  assert(cells.includes(">2.81<"), "ERA keeps 2 decimals");
+  global.getProjection = origProj;
+});
+
+test("stats header names the kind's stats; slash form only for mixed", () => {
+  assert(global._dmStatHead("H").includes(">R<") && global._dmStatHead("H").includes(">OBP<"), "hitter header uses hitting names");
+  assert(!global._dmStatHead("H").includes("R/QS"), "hitter header has no combined slash labels");
+  assert(global._dmStatHead("P").includes(">QS<") && global._dmStatHead("P").includes(">WHIP<"), "pitcher header uses pitching names");
+  assert(global._dmStatHead(null).includes("R/QS"), "mixed falls back to the slash form");
+  assertEq(global._dmKindForMode("SS"), "H", "position mode → hitter header");
+  assertEq(global._dmKindForMode("PIT"), "P", "PIT mode → pitcher header");
+  assertEq(global._dmKindForMode("BPA"), null, "BPA → mixed (its two tables pass kind explicitly)");
 });
 
 // =====================================================================
