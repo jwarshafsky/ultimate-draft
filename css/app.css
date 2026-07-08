@@ -457,46 +457,23 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-ticker div { padding: 1px 0; border-bottom: 1px dotted var(--border); }
 .dm-reco-nums { display: flex; gap: 18px; margin-top: 4px; }
 
-/* Four-zone layout. TOP + BOTTOM zones are full-width vertical stacks; LEFT +
-   RIGHT are the two columns split by the drag handle. Every zone holds panels
-   (.card.dm-panel) with a resizable body. */
-.dm-zone-full { display: flex; flex-direction: column; gap: 12px; }
-.dm-zone-full > .card { margin: 0; }
-/* Left | drag-handle | right. The 8px middle track is the resize handle; JS
-   overrides grid-template-columns inline when a split % is stored. */
-.dm-main { display: grid; grid-template-columns: minmax(0, 1fr) 8px minmax(340px, 420px); gap: 0; column-gap: 12px; align-items: start; }
-.dm-zone-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.dm-zone-col > .card { margin: 0; }
-.dm-split {
-  align-self: stretch; min-height: 60px; cursor: col-resize;
-  border-radius: 4px; background: var(--border);
-  opacity: .5; transition: opacity .12s;
+/* FREE-FLOW panel layout (Jeff): a single wrapping row of cards. Each panel is
+   an independently sized, resizable card — no fixed columns, no forced-equal
+   widths. Drag any panel's title bar to reorder it anywhere; drag its ⌟ corner
+   to resize width AND height. Width/height + order persist device-local. */
+.dm-flow { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.dm-panel {
+  margin: 0; box-sizing: border-box;
+  flex: 0 0 auto;                 /* size by the card's own width; inline width wins */
+  display: flex; flex-direction: column;
+  resize: both; overflow: hidden; /* the ⌟ corner grabber resizes both dims */
+  min-width: 260px; min-height: 140px;
 }
-.dm-split:hover { opacity: 1; background: var(--accent); }
-/* Empty zones collapse to nothing normally, but while a drag is active they show
-   a slim dashed drop strip so they stay targetable. */
-.dm-zone-empty { min-height: 0; }
-body.dm-dragging-active .dm-zone-empty {
-  min-height: 44px; border: 2px dashed var(--border); border-radius: 8px;
-  background: rgba(127,127,127,.05);
-}
-body.dm-dragging-active .dm-zone-empty::before {
-  content: "drop here"; display: block; text-align: center; padding: 12px 0;
-  font-size: 11px; color: var(--text-3);
-}
-/* Zone highlighted as the active drop target during a drag. */
-body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: 8px; }
-/* Resizable panel body — the height persists (JS reapplies it on render). */
-.dm-cardbody { overflow: auto; resize: vertical; min-height: 120px; }   /* floor matches the persist/render floor — a panel can't be strangled to one row (R17) */
-/* Board panel body: keep its head controls readable and let the tables scroll
-   inside the resizable body when the panel is dropped into a narrow column. */
+.dm-panel.dm-panel-wide { width: 100%; }   /* default full-row; inline width overrides */
+/* The body fills the card and scrolls; the card (not the body) is the resize
+   target now, and the title bar stays put above a scrolling body. */
+.dm-panel > .dm-cardbody { flex: 1 1 auto; min-height: 0; overflow: auto; resize: none; }
 .dm-panel-board .dm-cardbody { overflow: auto; }
-/* Draft History default height: unbounded auto-height grows without limit as
-   picks pile up (200 picks = a several-thousand-px panel). Cap it at a useful
-   scrollable default; an explicit user drag adds an inline `height` (style attr)
-   which overrides this cap, so manual resize still wins (Jeff: history was
-   "only one row" before the floor fix — now it must not swing to enormous). */
-.dm-panel-history .dm-cardbody:not([style]) { max-height: 360px; }
 
 .dm-board-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .dm-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
@@ -535,12 +512,11 @@ body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--ac
   transition: background .12s;
 }
 .dm-panel-title:hover { background: rgba(127,127,127,.10); }
-.dm-zone .card[data-dm-card][draggable="true"] .dm-panel-title,
+.dm-flow .card[data-dm-card][draggable="true"] .dm-panel-title,
 .dm-panel-title:active { cursor: grabbing; }
 .dm-grip { color: var(--text-3); font-size: 13px; line-height: 1; letter-spacing: -2px; flex: none; }
 .dm-panel-title:hover .dm-grip { color: var(--accent); }
-.dm-zone .card.dm-dragging { opacity: .5; }
-.dm-zone .card.dm-dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.dm-flow .card.dm-dragging { opacity: .45; outline: 2px solid var(--accent); }
 .dm-bpa { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 /* Multi-position board: FREE-FLOW (Jeff) — each selected position is a card
    sized to its own content and the cards flow left-to-right, wrapping to the
@@ -576,7 +552,7 @@ body.dm-dragging-active .dm-zone.dm-zone-dragover { outline: 2px dashed var(--ac
 .dm-endgame-strip > .card { margin: 0 0 12px; }
 .dm-endgame-strip > .card:last-child { margin-bottom: 0; }
 /* Compare-roster card (item 16) — subtly distinguished from the persistent cards */
-.dm-zone .card.dm-cmpcard { border-color: rgba(79,142,247,.45); }
+.dm-flow .card.dm-cmpcard { border-color: rgba(79,142,247,.45); }
 /* Expanded per-category standings (item 17) — compact, horizontally scrollable */
 .dm-standings-full { min-width: 520px; }
 .dm-standings-full th, .dm-standings-full td { padding: 2px 5px; white-space: nowrap; }

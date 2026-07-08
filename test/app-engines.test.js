@@ -514,6 +514,38 @@ test("manual pin wins over autofill and reroutes the rest", () => {
 });
 
 // =====================================================================
+section("App engines — free-flow panel layout (draft-mode.js)");
+// =====================================================================
+
+test("_dmPanelOrder: all panels once, canonical order by default", () => {
+  const order = global._dmPanelOrder();
+  assertEq(order.length, 10, "10 panels");
+  assertEq(order[0], "hero", "hero first");
+  assertEq(new Set(order).size, order.length, "no duplicates");
+  ["hero", "board", "roster", "budgets", "standings", "noms", "history", "cats", "ai", "plan"]
+    .forEach(id => assert(order.includes(id), id + " present"));
+});
+
+test("_dmSizesFromHeights: legacy heights fold into {h}, non-numbers dropped", () => {
+  const s = global._dmSizesFromHeights({ board: 400, roster: 300, junk: "x" });
+  assertEq(s.board.h, 400, "board height carried");
+  assertEq(s.roster.h, 300, "roster height carried");
+  assertEq("junk" in s, false, "non-numeric dropped");
+});
+
+test("_dmFlowRefBefore: picks the card the pointer sits ahead of", () => {
+  // Fake three cards in a row; pointer over the middle card's left half → insert
+  // before the middle card. (getBoundingClientRect is stubbed per card.)
+  const mk = (l, r) => ({ getBoundingClientRect: () => ({ left: l, right: r, top: 0, bottom: 100, width: r - l, height: 100 }) });
+  const a = mk(0, 100), b = mk(120, 220), c = mk(240, 340);
+  const flow = { querySelectorAll: () => [a, b, c] };
+  // pointer at x=140 (left half of b, center 170) → before b
+  assertEq(global._dmFlowRefBefore(flow, 140, 50, null), b, "pointer in b's left half → before b");
+  // pointer past everything → null (append)
+  assertEq(global._dmFlowRefBefore(flow, 400, 50, null), null, "past all → append");
+});
+
+// =====================================================================
 section("App engines — draftTeams discovery (draft.js)");
 // =====================================================================
 

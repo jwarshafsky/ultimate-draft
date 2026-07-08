@@ -367,28 +367,28 @@ function renderDraftMode(root, inflation) {
     if (typeof se === "boolean") _dmState.standingsExpanded = se;
     _dmState._statViewLoaded = true;
   }
-  const zones = _dmZones();
-  const heights = _dmLayout().heights || {};
-  const ctx = { inflation, heights, panels: _dmBuildPanels(inflation) };
+  const order = _dmPanelOrder();
+  const sizes = _dmLayout().sizes || {};
+  const ctx = { inflation, sizes, panels: _dmBuildPanels(inflation) };
   let html = '<div class="dm-wrap">';
   html += _dmTopBar(inflation);
-  // TOP zone (default: the on-the-clock hero) — full-width, above the columns.
-  html += _dmRenderZone("top", zones.top, ctx);
-  // Endgame panel — full-width, directly BELOW the top zone and ABOVE the
-  // columns, so turning endgame on (or its auto-detecting) is unmistakable
-  // rather than buried in the collapsed bottom drawer (item 10). NOT a panel
-  // (conditional, fixed position).
+  // Endgame panel — full-width, above the free-flow panels, so turning endgame
+  // on (or its auto-detecting) is unmistakable. NOT a panel (conditional).
   if (typeof isEndgame === "function" && isEndgame()) {
     html += '<div class="dm-endgame-strip">' + renderEndgamePanel() + '</div>';
   }
-  // LEFT | split | RIGHT — the two resizable columns.
-  html += '<div class="dm-main">';
-  html += _dmRenderZone("left", zones.left, ctx);
-  html += '<div class="dm-split" title="Drag to resize"></div>';
-  html += _dmRenderZone("right", zones.right, ctx);
+  // FREE-FLOW panels — one wrapping row of cards. Each panel is independently
+  // width/height-resizable (CSS resize:both) and drag-reorderable to anywhere in
+  // the flow. No fixed columns. Order + per-panel size persist device-local.
+  html += '<div class="dm-flow" data-dm-flow>';
+  for (const id of order) {
+    const p = ctx.panels[id];
+    if (!p) continue;
+    html += _dmPanelHtml(id, p, sizes);
+    // Transient compare-roster card sits right after My Roster.
+    if (id === "roster" && _dmState.compareTeamId != null) html += _dmCompareCardHtml(sizes);
+  }
   html += '</div>';
-  // BOTTOM zone (default: My Plan) — full-width, under the columns.
-  html += _dmRenderZone("bottom", zones.bottom, ctx);
   html += _dmBottom();
   html += '</div>';
   root.innerHTML = html;
@@ -413,59 +413,40 @@ function _dmBuildPanels(inflation) {
   return p;
 }
 
-// Render one zone: a <div class="dm-zone dm-zone-{name}"> holding each panel in
-// its persisted order, plus the transient compare card pinned right after the
-// roster panel (wherever roster lives). Empty zones still render (with a slim
-// drop strip) so they remain drag targets.
-function _dmRenderZone(name, ids, ctx) {
-  const isCol = (name === "left" || name === "right");
-  let inner = "";
-  for (const id of (ids || [])) {
-    const p = ctx.panels[id];
-    if (!p) continue;
-    inner += _dmPanelHtml(id, p, ctx.heights);
-    // Transient compare card (item 16) — inserted right AFTER "My Roster"
-    // wherever roster lives, so it always sits next to my roster. Not draggable,
-    // not persisted (no data-dm-card).
-    if (id === "roster" && _dmState.compareTeamId != null) {
-      const cmp = _dmCompareCardHtml(ctx.heights);
-      if (cmp) inner += cmp;
-    }
-  }
-  const empty = inner === "" ? " dm-zone-empty" : "";
-  return '<div class="dm-zone dm-zone-' + name + (isCol ? " dm-zone-col" : " dm-zone-full") + empty + '" data-dm-zone="' + name + '">' + inner + '</div>';
+// One free-flow panel card. Width + height come from the persisted size (or a
+// per-panel default; "wide" panels default to a full-width row). The card is NOT
+// draggable by default — pressing the title bar arms the move (see
+// _dmWireCardDrag), so only the handle moves a panel and the body (buttons,
+// inputs, the roster player-drag, text selection) stays live. CSS `resize: both`
+// on the card gives the ⌟ corner grabber for width+height.
+function _dmPanelStyle(id, sizes, fallbackW, fallbackH) {
+  const sz = sizes ? sizes[id] : null;
+  const w = (sz && typeof sz.w === "number" && sz.w >= 240) ? sz.w : null;
+  const h = (sz && typeof sz.h === "number" && sz.h >= 120) ? sz.h : null;
+  let s = "width:" + (w != null ? w + "px" : fallbackW) + ";";
+  if (h != null) s += "height:" + h + "px;";
+  else if (typeof fallbackH === "number") s += "height:" + fallbackH + "px;";
+  return s;
+}
+function _dmPanelHtml(id, p, sizes) {
+  const wide = _DM_WIDE_PANELS.includes(id);
+  const style = _dmPanelStyle(id, sizes, wide ? "100%" : ((_DM_DEFAULT_W[id] || 380) + "px"), _DM_DEFAULT_H[id]);
+  const cls = "card dm-rcard dm-panel" + (wide ? " dm-panel-wide" : " dm-panel-side") + (p.cls ? " " + p.cls : "");
+  return '<div class="' + cls + '" data-dm-card="' + id + '" style="' + style + '">' +
+    '<h3 class="dm-panel-title" title="Drag this bar to move · drag the ⌟ corner to resize"><span class="dm-grip" aria-hidden="true">⠿</span> ' + p.title + '</h3>' +
+    '<div class="dm-cardbody" data-dm-cardbody="' + id + '">' + p.body + '</div></div>';
 }
 
-// One draggable, height-resizable panel card. Body carries data-dm-cardbody for
-// the height-persistence observer; the card carries data-dm-card + draggable for
-// the reorder/move drag.
-function _dmPanelHtml(id, p, heights) {
-  const h = heights ? heights[id] : null;
-  // Floor at 120px: an early ResizeObserver bug persisted garbage tiny heights
-  // (41-80px) that pinned panels to ~one visible row (Jeff: draft history
-  // "only shows one unless you scroll"). Anything below the floor renders as
-  // auto — a deliberate small panel is still possible down to the CSS
-  // min-height, but stored junk can't strangle a card (R17).
-  const hStyle = (typeof h === "number" && h >= 120) ? ' style="height:' + h + 'px;"' : '';
-  const cls = "card dm-rcard dm-panel" + (p.cls ? " " + p.cls : "");
-  // The card is NOT draggable by default — pressing the title bar arms it (see
-  // _dmWireCardDrag), so only the handle moves a panel. Everything in the body
-  // (buttons, inputs, the roster player-drag, text selection) stays live.
-  return '<div class="' + cls + '" data-dm-card="' + id + '">' +
-    '<h3 class="dm-panel-title" title="Drag this bar to move or rearrange the panel"><span class="dm-grip" aria-hidden="true">⠿</span> ' + p.title + '</h3>' +
-    '<div class="dm-cardbody" data-dm-cardbody="' + id + '"' + hStyle + '>' + p.body + '</div></div>';
-}
-
-// The transient "compare roster" card (item 16). Not draggable / not persisted.
-function _dmCompareCardHtml(heights) {
+// The transient "compare roster" card (item 16). Sits after My Roster; resizable
+// but NOT draggable and NOT persisted (no data-dm-card).
+function _dmCompareCardHtml(sizes) {
   const cmpTeam = (typeof getTeam === "function") ? getTeam(_dmState.compareTeamId) : null;
   if (!cmpTeam) { _dmState.compareTeamId = null; return ""; }   // stale id (team gone)
   const title = '🔍 ' + esc(cmpTeam.owner) + '’s Roster ' +
     '<button class="btn ghost dm-cmp-close" title="Close comparison" style="float:right; padding:0 8px; font-size:12px;">✕</button>';
-  const h = heights ? heights.compare : null;
-  const hStyle = (typeof h === "number" && h >= 120) ? ' style="height:' + h + 'px;"' : '';
-  return '<div class="card dm-rcard dm-cmpcard"><h3 style="margin:0 0 6px;">' + title + '</h3>' +
-    '<div class="dm-cardbody"' + hStyle + '>' + _dmCompareRosterHtml(_dmState.compareTeamId) + '</div></div>';
+  const style = _dmPanelStyle("compare", sizes, (_DM_DEFAULT_W.roster || 380) + "px", _DM_DEFAULT_H.roster);
+  return '<div class="card dm-rcard dm-panel dm-panel-side dm-cmpcard" style="' + style + '"><h3 style="margin:0 0 6px;">' + title + '</h3>' +
+    '<div class="dm-cardbody">' + _dmCompareRosterHtml(_dmState.compareTeamId) + '</div></div>';
 }
 
 function _dmTopBar(inflation) {
@@ -1010,30 +991,28 @@ function _dmTable(players, inflation) {
   return html;
 }
 
-// --- panels (four-zone layout) ---
-// EVERYTHING in the main area is a panel now: the on-the-clock hero cluster, the
+// --- panels (free-flow layout) ---
+// EVERYTHING in the main area is a panel: the on-the-clock hero cluster, the
 // player board, the side cards, the category dashboard, the AI assistant and the
-// My Plan bar. Each panel has a stable id; the user drags panels within AND
-// between FOUR zones — top (full-width), left / right (the split columns) and
-// bottom (full-width) — and each panel body is height-resizable. Layout is
+// My Plan bar. Panels live in ONE free-flow container: they flow left-to-right
+// and wrap, each independently width/height-resizable (CSS resize:both) and
+// drag-reorderable to anywhere in the flow — no fixed columns. Layout is
 // DEVICE-LOCAL (monitor-specific) — the same rationale as DM_KEY, so it is
 // deliberately NOT in the cloud-sync whitelist. Stored under ud_dm_layout_v1:
-//   { zones: { top:[id...], left:[id...], right:[id...], bottom:[id...] },
-//     split: <number|null>, heights: { id: px }, statView: "value"|"stats",
-//     standingsExpanded: bool, order: [id...] (legacy, kept in sync) }
-// split = LEFT column width as a % of the .dm-main track (20–85). heights map a
-// panel id → its user-dragged pixel height.
-// MIGRATION (nothing ever disappears):
-//   • bare Array (v1 order)  → right zone seeded from it, hero/board/plan default
-//   • { order:[...] }        → same (order was the right-rail order)
-//   • { cols:{left,right} }  → an interim two-column build; folded into zones
-//   • { zones:{...} }        → used as-is, then any missing known panel id is
-//                              appended to its DEFAULT zone.
+//   { flow: [id...], sizes: { id: {w,h} }, statView, standingsExpanded, ... }
+// MIGRATION (nothing ever disappears): the legacy four-zone shape (zones/split/
+// heights) still parses — _dmPanelOrder concatenates top→left→right→bottom into
+// the flow order, and _dmSizesFromHeights folds old per-panel heights into sizes.
+// The zone helpers below are kept only to read those legacy layouts.
 const _DM_CARD_ORDER_KEY = "ud_dm_layout_v1";
 const _DM_ZONE_IDS = ["top", "left", "right", "bottom"];
-// The canonical set of panels and the zone each defaults to. Order within a zone
-// here IS the default order — must reproduce today's layout exactly.
+// The canonical set of panels. The array order IS the default flow order.
 const _DM_PANEL_IDS = ["hero", "board", "roster", "budgets", "standings", "noms", "history", "cats", "ai", "plan"];
+// Panels that default to a full-width row; everything else defaults to a fixed
+// side-panel width and wraps. (Inline width from a user resize always overrides.)
+const _DM_WIDE_PANELS = ["hero", "board", "plan"];
+const _DM_DEFAULT_W = { roster: 380, budgets: 340, standings: 480, noms: 380, history: 440, cats: 480, ai: 440 };
+const _DM_DEFAULT_H = { board: 560, roster: 520, budgets: 300, standings: 360, noms: 320, history: 360, cats: 360, ai: 380 };
 const _DM_DEFAULT_ZONES = {
   top: ["hero"],
   left: ["board"],
@@ -1080,11 +1059,18 @@ function _dmZonesFromCols(cols) {
     bottom: ["plan"],
   });
 }
+// Legacy heights map { id: px } → new sizes map { id: {h: px} } (widths were not
+// stored in the old zone model, so only height carries over).
+function _dmSizesFromHeights(heights) {
+  const out = {};
+  if (heights && typeof heights === "object") for (const k in heights) if (typeof heights[k] === "number") out[k] = { h: heights[k] };
+  return out;
+}
 function _dmLayout() {
   try {
     const v = JSON.parse(localStorage.getItem(_DM_CARD_ORDER_KEY) || "null");
-    if (Array.isArray(v)) {   // legacy bare array = right-rail order
-      return { order: v, zones: _dmZonesFromOrder(v), split: null, heights: {}, statView: null, standingsExpanded: null };
+    if (Array.isArray(v)) {   // legacy bare array = right-rail order → seed flow
+      return { flow: v, sizes: {}, order: v, zones: _dmZonesFromOrder(v), split: null, heights: {}, statView: null, standingsExpanded: null };
     }
     if (v && typeof v === "object") {
       const order = Array.isArray(v.order) ? v.order : null;
@@ -1097,6 +1083,8 @@ function _dmLayout() {
         zones = _dmZonesFromOrder(order);                   // old order array (or defaults if none)
       }
       return {
+        flow: Array.isArray(v.flow) ? v.flow : null,        // new free-flow order
+        sizes: (v.sizes && typeof v.sizes === "object") ? v.sizes : _dmSizesFromHeights(v.heights),
         order,
         zones,
         split: (typeof v.split === "number" ? v.split : null),
@@ -1106,28 +1094,43 @@ function _dmLayout() {
       };
     }
   } catch (e) {}
-  return { order: null, zones: _dmNormalizeZones(null), split: null, heights: {}, statView: null, standingsExpanded: null };
+  return { flow: null, sizes: {}, order: null, zones: _dmNormalizeZones(null), split: null, heights: {}, statView: null, standingsExpanded: null };
 }
 function _dmSaveLayout(patch) {
   const cur = _dmLayout();
-  const next = { order: cur.order, zones: cur.zones, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
+  const next = { flow: cur.flow, sizes: cur.sizes, order: cur.order, zones: cur.zones, split: cur.split, heights: cur.heights, statView: cur.statView, standingsExpanded: cur.standingsExpanded };
+  if (patch && "flow" in patch) next.flow = patch.flow;
+  if (patch && "sizes" in patch) next.sizes = patch.sizes;
   if (patch && "order" in patch) next.order = patch.order;
   if (patch && "zones" in patch) next.zones = _dmNormalizeZones(patch.zones);
   if (patch && "split" in patch) next.split = patch.split;
   if (patch && "heights" in patch) next.heights = patch.heights;
   if (patch && "statView" in patch) next.statView = patch.statView;
   if (patch && "standingsExpanded" in patch) next.standingsExpanded = patch.standingsExpanded;
-  // Keep the legacy `order` (right-rail order) in sync so an OLDER build loading
-  // this same key still renders a sane rail.
-  if (patch && "zones" in patch && next.zones) next.order = next.zones.right.filter(id => id !== "board");
   try { localStorage.setItem(_DM_CARD_ORDER_KEY, JSON.stringify(next)); } catch (e) {}
 }
 function _dmZones() { return _dmLayout().zones; }
 function _dmSaveZones(zones) { _dmSaveLayout({ zones }); }
-// Wipe every layout override (zones / split / heights) → back to the default
-// four-zone layout. statView + standingsExpanded are content prefs, kept.
+function _dmSaveFlow(order) { _dmSaveLayout({ flow: order }); }
+// The flat, free-flow panel order. Migrates from the old four-zone layout by
+// concatenating top→left→right→bottom. Always normalized to the full panel set:
+// missing ids appended in canonical order, unknown ids dropped, dupes removed.
+function _dmPanelOrder() {
+  const lay = _dmLayout();
+  let order = Array.isArray(lay.flow) ? lay.flow.slice() : null;
+  if (!order) {
+    const z = lay.zones || {};
+    order = [].concat(z.top || [], z.left || [], z.right || [], z.bottom || []);
+  }
+  const seen = new Set(); const out = [];
+  for (const id of order) if (_DM_PANEL_IDS.includes(id) && !seen.has(id)) { out.push(id); seen.add(id); }
+  for (const id of _DM_PANEL_IDS) if (!seen.has(id)) { out.push(id); seen.add(id); }
+  return out;
+}
+// Wipe every layout override → back to the default free-flow layout + sizes.
+// statView + standingsExpanded are content prefs, kept.
 function _dmResetLayout() {
-  _dmSaveLayout({ zones: _dmNormalizeZones(null), split: null, heights: {} });
+  _dmSaveLayout({ flow: null, sizes: {}, zones: _dmNormalizeZones(null), split: null, heights: {} });
 }
 
 // --- roster slots (fixed template) ---------------------------------------
@@ -1308,118 +1311,73 @@ function _dmHistoryHtml() {
   return html;
 }
 
-// Apply + wire the resizable split between the LEFT and RIGHT columns. The
-// stored split is the LEFT column's width as a % of the .dm-main track; the
-// right column takes the remainder. Reapplied on every render (renders rebuild
-// innerHTML). Dragging the .dm-split handle updates it live and persists on
-// release. When no split is stored the CSS default (media-query grid) stands.
-// Module-level drag state so the document-level move/up listeners (bound ONCE,
-// see below) always act on the current .dm-main, never accumulate per render.
-let _dmSplitDrag = false;
-function _dmApplySplitTemplate(main, pct) {
-  const p = Math.max(20, Math.min(85, pct));
-  main.style.gridTemplateColumns = p.toFixed(2) + "% 8px minmax(0, 1fr)";
-}
-function _dmWireSplit() {
-  const main = document.querySelector(".dm-main");
-  const handle = main ? main.querySelector(".dm-split") : null;
-  if (!main || !handle) return;
-  const stored = _dmLayout().split;
-  if (typeof stored === "number") _dmApplySplitTemplate(main, stored);
-  handle.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    _dmSplitDrag = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+// (The old left/right column split handle is gone — panels are a single
+// free-flow layout now; each panel resizes its own width + height.)
+
+// Per-panel resizable WIDTH + HEIGHT: each panel card is CSS `resize: both`.
+// We persist a size ONLY when it changed during an actual pointer gesture on
+// the card (mousedown → mouseup with a size delta) — a ResizeObserver alone
+// can't tell a user drag from a window/layout reflow, which would wrongly
+// freeze a full-width panel's width. Gesture detection avoids that.
+function _dmWireCardResize() {
+  const flow = document.querySelector("[data-dm-flow]");
+  if (!flow) return;
+  // Record the card's size when a press starts on it (could be a resize grab).
+  flow.addEventListener("mousedown", (e) => {
+    const card = e.target.closest(".dm-flow > .card[data-dm-card]");
+    if (!card) return;
+    card._dmStartW = card.offsetWidth; card._dmStartH = card.offsetHeight; card._dmMaybeResize = true;
   });
-  // Bind the global move/up handlers exactly once for the whole session.
-  if (!document._dmSplitBound) {
-    document._dmSplitBound = true;
-    document.addEventListener("mousemove", (e) => {
-      if (!_dmSplitDrag) return;
-      const m = document.querySelector(".dm-main");
-      if (!m) return;
-      const rect = m.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      _dmApplySplitTemplate(m, ((e.clientX - rect.left) / rect.width) * 100);
-    });
+  // On release, if a tracked card actually changed size, persist it. One-time
+  // document listener (wireDraftMode re-runs each render — don't stack).
+  if (!window._dmCardResizeWired) {
+    window._dmCardResizeWired = true;
     document.addEventListener("mouseup", () => {
-      if (!_dmSplitDrag) return;
-      _dmSplitDrag = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      const m = document.querySelector(".dm-main");
-      const leftCol = m ? m.querySelector(".dm-zone-left") : null;
-      const rect = m ? m.getBoundingClientRect() : null;
-      if (leftCol && rect && rect.width > 0) {
-        const pct = (leftCol.getBoundingClientRect().width / rect.width) * 100;
-        _dmSaveLayout({ split: Math.max(20, Math.min(85, +pct.toFixed(2))) });
-      }
+      document.querySelectorAll(".dm-flow > .card[data-dm-card]").forEach(card => {
+        if (!card._dmMaybeResize) return;
+        card._dmMaybeResize = false;
+        const w = Math.round(card.offsetWidth), h = Math.round(card.offsetHeight);
+        if (!card.isConnected || !(w >= 240 && h >= 120)) return;
+        if (Math.abs(w - (card._dmStartW || 0)) <= 4 && Math.abs(h - (card._dmStartH || 0)) <= 4) return;   // no real resize
+        const sizes = Object.assign({}, _dmLayout().sizes || {});
+        sizes[card.dataset.dmCard] = { w, h };
+        _dmSaveLayout({ sizes });
+      });
     });
   }
 }
 
-// Per-panel resizable HEIGHT: the panel body is CSS `resize: vertical`; capture
-// the chosen height on release and persist it, reapplied on render via the
-// panel wrapper. Observes EVERY zone (a panel can live anywhere now).
-function _dmWireCardResize() {
-  const save = (id, px, body) => {
-    // Persist only a REAL user resize (R16): the element must still be in the
-    // document (a debounced read after an innerHTML rebuild sees a detached
-    // node → 0/garbage), and must have MOVED from the height we applied at
-    // render (the observer fires once per observe(), i.e. on every render).
-    if (!body.isConnected || !(px && px >= 120)) return;   // match the render floor
-    const applied = parseInt(body.dataset.dmAppliedH || "", 10);
-    if (isFinite(applied) && Math.abs(px - applied) <= 8) return;
-    const heights = Object.assign({}, _dmLayout().heights);
-    heights[id] = Math.round(px);
-    _dmSaveLayout({ heights });
-    body.dataset.dmAppliedH = String(Math.round(px));
-  };
-  document.querySelectorAll(".dm-zone .dm-cardbody[data-dm-cardbody]").forEach(body => {
-    const id = body.dataset.dmCardbody;
-    if (!body.dataset.dmAppliedH) body.dataset.dmAppliedH = String(body.offsetHeight || "");
-    if (typeof ResizeObserver === "function" && !body._dmRO) {
-      // Debounce the observer so we persist the settled height, not every frame.
-      let t = null;
-      body._dmRO = new ResizeObserver(() => {
-        clearTimeout(t);
-        t = setTimeout(() => save(id, body.offsetHeight, body), 250);
-      });
-      body._dmRO.observe(body);
-    }
-  });
+// The sibling in the free-flow container to insert the dragged card BEFORE for a
+// given pointer position. Wrap-aware: among cards whose center is to the right of
+// (same row) or below (later row) the pointer, pick the nearest by 2D distance.
+// null → append at the end.
+function _dmFlowRefBefore(flow, x, y, dragging) {
+  let best = null, bestDist = Infinity;
+  for (const c of flow.querySelectorAll(".card[data-dm-card]")) {
+    if (c === dragging) continue;
+    const r = c.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const beforeThis = (y < r.top) || (y <= r.bottom && x < cx);   // pointer sits ahead of this card
+    if (!beforeThis) continue;
+    const d = Math.hypot(x - cx, y - cy);
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  return best;
 }
 
-// HTML5 drag to move a panel WITHIN and BETWEEN the four zones. Every zone is a
-// drop target (including empty ones — they keep a slim visible strip while a
-// drag is active). On drop we read back the DOM order of each zone and persist
-// the whole { top,left,right,bottom } map. The compare card is transient (no
-// data-dm-card) so it never participates and never persists.
+// HTML5 drag to move a panel anywhere in the single free-flow container. Only the
+// title bar arms a drag (handle-only). On dragover we live-reorder the DOM; on
+// release we read the DOM order back and persist it. The compare card is
+// transient (no data-dm-card) so it never participates and never persists.
 function _dmWireCardDrag() {
-  const zones = [...document.querySelectorAll(".dm-zone[data-dm-zone]")];
-  if (!zones.length) return;
+  const flow = document.querySelector("[data-dm-flow]");
+  if (!flow) return;
   let dragging = null;
-  const clearOver = () => document.querySelectorAll(".dm-dragover, .dm-zone-dragover")
-    .forEach(c => c.classList.remove("dm-dragover", "dm-zone-dragover"));
-  // Read the current panel order out of each zone's DOM and persist it.
   const persist = () => {
-    const next = { top: [], left: [], right: [], bottom: [] };
-    for (const z of zones) {
-      const name = z.dataset.dmZone;
-      if (!next[name]) continue;
-      next[name] = [...z.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard);
-    }
-    _dmSaveZones(next);
+    const order = [...flow.querySelectorAll(".card[data-dm-card]")].map(c => c.dataset.dmCard);
+    _dmSaveFlow(order);
   };
-  // Insert the dragged card relative to a sibling card (before/after by midpoint).
-  const insertRelative = (card, e) => {
-    const rect = card.getBoundingClientRect();
-    const parent = card.parentNode;
-    if (e.clientY < rect.top + rect.height / 2) parent.insertBefore(dragging, card);
-    else parent.insertBefore(dragging, card.nextSibling);
-  };
-  document.querySelectorAll(".dm-zone .card[data-dm-card]").forEach(card => {
+  flow.querySelectorAll(".card[data-dm-card]").forEach(card => {
     // Handle-only dragging: the card stays inert until you press its title bar,
     // so a click/scroll/text-selection or a nested drag (roster players) in the
     // body never starts a panel move. mousedown on the handle arms it.
@@ -1432,55 +1390,36 @@ function _dmWireCardDrag() {
       if (card.getAttribute("draggable") !== "true") { e.preventDefault(); return; }   // not armed → not from the handle
       dragging = card; card.classList.add("dm-dragging");
       try { e.dataTransfer.effectAllowed = "move"; } catch (_) {}
-      document.body.classList.add("dm-dragging-active");   // reveal empty-zone drop strips
+      document.body.classList.add("dm-dragging-active");
     });
     card.addEventListener("dragend", () => {
       card.classList.remove("dm-dragging");
       card.setAttribute("draggable", "false");
       document.body.classList.remove("dm-dragging-active");
-      clearOver();
       dragging = null;
+      persist();
     });
-    card.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      if (!dragging || dragging === card) return;
-      // Skip the transient compare card as a sibling anchor — insert before it.
-      const anchor = card.classList.contains("dm-cmpcard") ? null : card;
-      if (anchor) { anchor.classList.add("dm-dragover"); insertRelative(anchor, e); }
-    });
-    card.addEventListener("dragleave", () => card.classList.remove("dm-dragover"));
   });
+  // Container-level: live-reorder as the pointer moves; persist on drop.
+  flow.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+    const ref = _dmFlowRefBefore(flow, e.clientX, e.clientY, dragging);
+    if (ref) { if (ref !== dragging.nextSibling) flow.insertBefore(dragging, ref); }
+    else if (flow.lastElementChild !== dragging) flow.appendChild(dragging);
+  });
+  flow.addEventListener("drop", (e) => { e.preventDefault(); persist(); });
   // Safety net: a handle press released WITHOUT a drag (mouseup off the handle)
   // must disarm every card. One-time document listeners — wireDraftMode re-runs
   // on every render, so guard against stacking duplicates.
   if (!window._dmCardDragDisarmWired) {
     window._dmCardDragDisarmWired = true;
-    const disarm = () => document.querySelectorAll('.dm-zone .card[data-dm-card][draggable="true"]')
+    const disarm = () => document.querySelectorAll('.dm-flow .card[data-dm-card][draggable="true"]')
       .forEach(c => { if (!c.classList.contains("dm-dragging")) c.setAttribute("draggable", "false"); });
     document.addEventListener("mouseup", disarm);
     document.addEventListener("dragend", disarm);
   }
-  // Zone-level drop target: handles empty zones and the gap below the last card.
-  zones.forEach(z => {
-    z.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      if (!dragging) return;
-      z.classList.add("dm-zone-dragover");
-      // If the pointer is below every card in this zone, append to the end.
-      const cards = [...z.querySelectorAll(".card[data-dm-card]")];
-      const last = cards[cards.length - 1];
-      if (!cards.length) { z.appendChild(dragging); return; }
-      if (last && last !== dragging) {
-        const r = last.getBoundingClientRect();
-        if (e.clientY > r.bottom) z.appendChild(dragging);
-      }
-    });
-    z.addEventListener("dragleave", (e) => {
-      // Only clear when actually leaving the zone (not entering a child).
-      if (!z.contains(e.relatedTarget)) z.classList.remove("dm-zone-dragover");
-    });
-    z.addEventListener("drop", (e) => { e.preventDefault(); clearOver(); persist(); });
-  });
 }
 
 // Compact category-total label for the expanded standings (item 17): OBP 3dp,
@@ -1785,7 +1724,6 @@ function wireDraftMode() {
   }));
   document.getElementById("picks-showall")?.addEventListener("click", () => { _liveDraft.showAllPicks = !_liveDraft.showAllPicks; renderDraft(); });
   _dmWireCardDrag();
-  _dmWireSplit();
   _dmWireCardResize();
   if (typeof wireNominationsPanel === "function") wireNominationsPanel(renderDraft);
   if (typeof wireAiPanel === "function") wireAiPanel();
