@@ -525,7 +525,10 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
    wrap. Each card caps its width and scrolls internally so one long name can't
    blow out the row. */
 .dm-poscols { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
-.dm-poscol { flex: 0 1 auto; min-width: 200px; max-width: 480px; overflow-x: auto; }
+/* NO overflow on the position cards: an inner scroll container would break the
+   sticky table headers (sticky pins to the nearest scrollport — it must be the
+   panel body). A too-wide row scrolls in the panel body instead. */
+.dm-poscol { flex: 0 1 auto; min-width: 200px; }
 .dm-poscol .dm-table { width: auto; min-width: 190px; }
 .dm-table { font-size: 12px; width: 100%; }
 
@@ -540,7 +543,9 @@ body.draft-mode .view-root { max-width: none; padding: 10px 18px; }
 .dm-slotrow.dm-slot-over { outline: 1px dashed var(--accent); outline-offset: -1px; background: rgba(79,142,247,.12); }
 .dm-slotrow.dm-slot-invalid { background: rgba(210,80,80,.20); }
 .dm-slotempty { color: var(--muted); }
-.dm-table th { position: sticky; top: 0; }
+/* Sticky column headers: pin to the top of the scrolling panel body. Needs an
+   opaque background (rows slide underneath) and a z-index above the tier dots. */
+.dm-table th { position: sticky; top: 0; background: var(--bg-2); z-index: 3; }
 /* Clickable team rows (Budgets / Projected Standings) → compare rosters (item 16) */
 .dm-table tr.dm-teamrow:hover { background: rgba(79,142,247,.08); }
 /* Endgame — forced-ON top-bar button + the prominent full-width strip (item 10) */

@@ -623,6 +623,12 @@ test("stats header: sortable columns, ERA/WHIP default ascending, arrow on activ
   assert(global._dmStatHead("P", { col: 3, dir: "asc" }).includes("ERA ▲"), "asc arrow on active");
 });
 
+test("_dmPoolCut: keeps players down to the -$5 floor, drops below", () => {
+  const pool = [{ name: "a", value: 30 }, { name: "b", value: 0 }, { name: "c", value: -5 }, { name: "d", value: -6 }, { name: "e" }];
+  const cut = global._dmPoolCut(pool).map(p => p.name).join(",");
+  assertEq(cut, "a,b,c,e", "-$5 stays, -$6 drops, missing value treated as $0");
+});
+
 test("stats header names the kind's stats; slash form only for mixed", () => {
   assert(global._dmStatHead("H").includes(">R<") && global._dmStatHead("H").includes(">OBP<"), "hitter header uses hitting names");
   assert(!global._dmStatHead("H").includes("R/QS"), "hitter header has no combined slash labels");

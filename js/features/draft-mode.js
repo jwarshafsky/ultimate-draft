@@ -834,6 +834,13 @@ function _dmPoolRows(inflation) {
   return _dmBasePool().filter(p => _dmModeMatch(p, _dmState.boardMode));
 }
 
+// Board depth (Jeff): no fixed top-N — every table runs the full pool down to
+// the -$5 value floor, and the panel body scrolls (sticky headers stay put).
+const _DM_POOL_FLOOR = -5;
+function _dmPoolCut(players) {
+  return players.filter(p => (p.value != null ? p.value : 0) >= _DM_POOL_FLOOR);
+}
+
 // Scan the available pool for tier cliffs: a position whose best remaining tier
 // is down to its last 1-2 players with a real value drop to the next tier — the
 // "last elite SS on the board" scarcity signal.
@@ -913,7 +920,7 @@ function _dmBoard(inflation) {
     const cols = _DM_POS_MODES.filter(m => posSel.has(m));
     html += '<div class="dm-poscols">';
     for (const m of cols) {
-      const rows = _dmMaybeStatSort(base.filter(p => _dmModeMatch(p, m))).slice(0, 40);
+      const rows = _dmMaybeStatSort(_dmPoolCut(base.filter(p => _dmModeMatch(p, m))));
       html += '<div class="dm-poscol"><h3 style="margin:6px 0; display:flex; align-items:center; gap:6px;">' + esc(m) +
         (cols.length > 1 ? '<button class="btn ghost" data-dm-colremove="' + esc(m) + '" title="Remove this column" style="width:auto; padding:0 6px; font-size:11px; line-height:1.4;">✕</button>' : '') +
         '</h3>' + _dmTable(rows, inflation, _dmKindForMode(m)) + '</div>';
@@ -921,14 +928,14 @@ function _dmBoard(inflation) {
     html += '</div>';
   } else if (_dmState.boardMode === "BPA") {
     const pool = _dmPoolRows(inflation);
-    const hit = _dmMaybeStatSort(pool.filter(p => _DM_HIT_POS.includes(p.posKey))).slice(0, 18);
-    const pit = _dmMaybeStatSort(pool.filter(p => p.posKey === "SP" || p.posKey === "RP")).slice(0, 18);
+    const hit = _dmMaybeStatSort(_dmPoolCut(pool.filter(p => _DM_HIT_POS.includes(p.posKey))));
+    const pit = _dmMaybeStatSort(_dmPoolCut(pool.filter(p => p.posKey === "SP" || p.posKey === "RP")));
     html += '<div class="dm-bpa">';
     html += '<div><h3 style="margin:6px 0;">Best Hitters</h3>' + _dmTable(hit, inflation, "H") + '</div>';
     html += '<div><h3 style="margin:6px 0;">Best Pitchers</h3>' + _dmTable(pit, inflation, "P") + '</div>';
     html += '</div>';
   } else {
-    html += _dmTable(_dmMaybeStatSort(_dmPoolRows(inflation)).slice(0, 60), inflation, _dmKindForMode(_dmState.boardMode));
+    html += _dmTable(_dmMaybeStatSort(_dmPoolCut(_dmPoolRows(inflation))), inflation, _dmKindForMode(_dmState.boardMode));
   }
   return html;
 }
