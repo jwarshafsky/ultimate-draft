@@ -419,8 +419,9 @@ function _dmBuildPanels(inflation) {
   const p = {};
   p.hero = { title: "On the Clock", body: _dmHero(), cls: "dm-panel-hero" };
   p.board = { title: "Available Players", body: _dmBoard(inflation), cls: "dm-panel-board" };
-  p.roster = { title: "My Roster", body: _dmMyRosterHtml() };
+  p.roster = { title: "My Roster", body: _dmMyRosterHtml(inflation) };
   p.budgets = { title: "Budgets", body: _dmBudgetsHtml() };
+  p.bands = { title: 'Bargain Bands <span class="muted small">remaining value by price band</span>', body: _dmBandsHtml(inflation) };
   p.standings = { title: 'Projected Standings <span class="muted small">if the rest goes to $/slot</span>', body: _dmStandingsHtml() };
   p.noms = { title: "Nominations", body: (typeof renderNominationsPanel === "function") ? renderNominationsPanel() : "" };
   p.history = { title: "Draft History", body: _dmHistoryHtml(), cls: "dm-panel-history" };
@@ -772,6 +773,13 @@ function _dmRecoHtml(name, lot) {
   html += '<div class="small muted" style="margin-top:3px;">at <b style="color:var(--text);">$' + high + '</b>' +
     (r.maxBid != null ? ' · your budget max <b style="color:var(--text);">$' + r.maxBid + '</b>' : '') + '</div>';
   html += '<div class="muted small" style="margin-top:6px;">' + esc(r.rationale) + '</div>';
+  // Market vs model (north-star §1): NFBC AAV against our inflated $ — the
+  // "room will overpay / quiet bargain" cue. Renders nothing when NFBC data
+  // isn't loaded (getNfbc → null), so a missing import can't break the hero.
+  const _val = getPlayerValue(name);
+  const _model = _val && typeof inflatedValue === "function" ? inflatedValue(_val, computeLiveInflation()) : null;
+  const _md = _dmMarketDeltaLine((typeof getNfbc === "function" ? getNfbc(name) : null)?.avg, _model);
+  if (_md) html += '<div class="small" style="margin-top:4px; color:' + _md.color + ';">📈 ' + esc(_md.txt) + '</div>';
   const tactic = _bidTactic(name, high, r, lot);
   if (tactic) html += '<div class="small" style="margin-top:4px; color:var(--accent);">💡 ' + esc(tactic) + '</div>';
   // Practice-mock bid controls (item 3). In a real ESPN draft Jeff bids on ESPN,
@@ -1097,12 +1105,12 @@ function _dmTable(players, inflation, kind) {
 const _DM_CARD_ORDER_KEY = "ud_dm_layout_v1";
 const _DM_ZONE_IDS = ["top", "left", "right", "bottom"];
 // The canonical set of panels. The array order IS the default flow order.
-const _DM_PANEL_IDS = ["hero", "board", "roster", "budgets", "standings", "noms", "history", "cats", "ai", "plan"];
+const _DM_PANEL_IDS = ["hero", "board", "roster", "budgets", "bands", "standings", "noms", "history", "cats", "ai", "plan"];
 // Panels that default to a full-width row; everything else defaults to a fixed
 // side-panel width and wraps. (Inline width from a user resize always overrides.)
 const _DM_WIDE_PANELS = ["hero", "board", "plan"];
-const _DM_DEFAULT_W = { roster: 470, budgets: 340, standings: 480, noms: 380, history: 440, cats: 480, ai: 440 };
-const _DM_DEFAULT_H = { board: 560, roster: 520, budgets: 300, standings: 360, noms: 320, history: 360, cats: 360, ai: 380 };
+const _DM_DEFAULT_W = { roster: 470, budgets: 340, bands: 440, standings: 480, noms: 380, history: 440, cats: 480, ai: 440 };
+const _DM_DEFAULT_H = { board: 560, roster: 520, budgets: 300, bands: 300, standings: 360, noms: 320, history: 360, cats: 360, ai: 380 };
 const _DM_DEFAULT_ZONES = {
   top: ["hero"],
   left: ["board"],
@@ -1369,6 +1377,113 @@ function _dmBudgetTint(cost, budget) {
   return "";
 }
 
+// --- plan drift (live reconciliation of the $Budget plan vs. the market) ----
+// How many players each ANCHOR slot type demands per team. Flex (CI/MI/Util)
+// and BN aren't modeled — they can be filled from anywhere, so a rank-based
+// price forecast for them would be noise.
+const _DM_SLOT_REQ = { "C": 1, "1B": 1, "2B": 1, "SS": 1, "3B": 1, "OF": 5, "P": 9 };
+
+// Total open demand (in PLAYERS, not teams) from every rival at each anchor
+// position: rivals will absorb roughly that many players off the top of the
+// positional pool before I fill mine.
+function _dmRivalDemand(states, myId) {
+  const need = {};
+  for (const pos of Object.keys(_DM_SLOT_REQ)) need[pos] = 0;
+  for (const st of Object.values(states || {})) {
+    if (String(st.teamId) === String(myId)) continue;
+    if ((st.slotsRemaining || 0) <= 0) continue;
+    for (const pos of Object.keys(_DM_SLOT_REQ)) {
+      const have = pos === "P" ? (st.posCounts?.SP || 0) + (st.posCounts?.RP || 0) : (st.posCounts?.[pos] || 0);
+      need[pos] += Math.max(0, _DM_SLOT_REQ[pos] - have);
+    }
+  }
+  return need;
+}
+
+// Expected total cost to fill `mine` slots at a position AFTER `rivals` demand
+// slots absorb the best remaining players: I land the players ranked
+// rivals..rivals+mine−1 in the (desc-sorted) value list. $1 floor; an exhausted
+// pool prices at $1. Pure — testable.
+function _dmExpectedFillCost(sortedVals, rivals, mine) {
+  let total = 0;
+  for (let k = 0; k < mine; k++) {
+    const v = sortedVals[rivals + k];
+    total += Math.max(1, Math.round(v != null && isFinite(v) ? v : 1));
+  }
+  return total;
+}
+
+// Per-anchor-position drift between Jeff's per-slot $Budget plan and the
+// forecast market cost of his still-open budgeted slots. Returns
+// { groups: [{type, mine, planned, expected, drift}], plannedOpenTotal }.
+function _dmPlanDrift(slots, budgets, pool, rivalNeed, inflation) {
+  const open = slots.filter(s => !s.player && budgets[s.i] != null);
+  const byType = {};
+  for (const s of open) (byType[s.type] = byType[s.type] || []).push(s);
+  const groups = [];
+  for (const type of Object.keys(byType)) {
+    const req = type === "P" ? "P" : type;
+    if (!(req in _DM_SLOT_REQ)) continue;   // flex/BN: no forecast
+    const mine = byType[type].length;
+    const planned = byType[type].reduce((s, x) => s + budgets[x.i], 0);
+    const vals = pool.filter(p => _dmSlotAccepts(type, p))
+      .map(p => (typeof inflatedValue === "function") ? inflatedValue(p, inflation) : (p.value || 0))
+      .sort((a, b) => b - a);
+    const expected = _dmExpectedFillCost(vals, rivalNeed[req] || 0, mine);
+    groups.push({ type, mine, planned, expected, drift: expected - planned });
+  }
+  groups.sort((a, b) => b.drift - a.drift);
+  return { groups, plannedOpenTotal: open.reduce((s, x) => s + budgets[x.i], 0) };
+}
+
+// The drift alert block under the roster totals. Only speaks up when something
+// is actionable: a position ≥$3 off plan, or the whole open-slot plan exceeding
+// the money actually left.
+function _dmPlanDriftHtml(slots, budgets, teamKey, inflation) {
+  let out = "";
+  try {
+    const states = computeLiveTeamStates();
+    const pool = availableDraftPool();
+    const drift = _dmPlanDrift(slots, budgets, pool, _dmRivalDemand(states, teamKey), inflation);
+    const my = states[teamKey];
+    const lines = [];
+    if (my && drift.plannedOpenTotal > my.budget) {
+      lines.push('<span style="color:var(--bad);font-weight:600;">⚠ open-slot plan $' + drift.plannedOpenTotal +
+        ' exceeds your remaining $' + my.budget + '</span>');
+    }
+    const hot = drift.groups.filter(g => Math.abs(g.drift) >= 3);
+    for (const g of hot) {
+      const over = g.drift > 0;
+      lines.push('<span style="color:' + (over ? "var(--bad)" : "var(--good)") + ';">' +
+        esc(g.type) + ': plan $' + g.planned + ' · market ~$' + g.expected +
+        (over ? ' → +$' + g.drift + ' over' : ' → $' + (-g.drift) + ' slack') + '</span>');
+    }
+    // Reallocation hint: biggest overage meets biggest slack.
+    const overG = drift.groups.find(g => g.drift >= 3);
+    const slackG = [...drift.groups].reverse().find(g => g.drift <= -3);
+    if (overG && slackG) {
+      lines.push('<span class="muted">→ consider shifting ~$' + Math.min(overG.drift, -slackG.drift) +
+        ' from ' + esc(slackG.type) + ' to ' + esc(overG.type) + '</span>');
+    }
+    if (lines.length) {
+      out = '<div class="small dm-plan-drift" style="margin-top:6px; padding-top:5px; border-top:1px dotted var(--border);">' +
+        '<b class="muted">Plan drift</b> · ' + lines.join(' · ') + '</div>';
+    }
+  } catch (e) { /* drift is advisory — never break the roster render */ }
+  return out;
+}
+
+// Market vs. model one-liner for the on-the-clock hero. `market` is the NFBC
+// AAV (may be absent — Jeff might not load NFBC data; return null and render
+// nothing). Pure — testable.
+function _dmMarketDeltaLine(market, model) {
+  if (market == null || model == null || !isFinite(market) || !isFinite(model)) return null;
+  const d = market - model;
+  if (d >= 3) return { txt: "market $" + Math.round(market) + " (+$" + Math.round(d) + " vs model) — room likely overpays; fade unless it stalls", color: "var(--warn)" };
+  if (d <= -3) return { txt: "market $" + Math.round(market) + " (−$" + Math.round(-d) + " vs model) — market undervalues; quiet bargain window", color: "var(--good)" };
+  return { txt: "market $" + Math.round(market) + " ≈ model", color: "var(--text-2)" };
+}
+
 // Assign entries to the fixed slot template. Manual pins win; the rest autofill
 // best-effort (most-constrained player first, then value), starters before
 // bench. Returns { slots:[{type,i,player}], overflow:[entry] }.
@@ -1400,8 +1515,8 @@ function _dmAssignRoster(entries, overrides) {
 
 // Render the fixed-slot roster table. teamKey scopes the drag pins.
 // withBudget (My Roster only): adds the editable per-slot $Budget column,
-// over/under tinting on $Cost, and the totals row.
-function _dmRosterSlotsHtml(entries, teamKey, withBudget) {
+// over/under tinting on $Cost, the totals row, and the plan-drift alerts.
+function _dmRosterSlotsHtml(entries, teamKey, withBudget, inflation) {
   const overrides = _dmRosterOverrides()[teamKey] || {};
   const { slots, overflow } = _dmAssignRoster(entries, overrides);
   const tk = esc(String(teamKey));
@@ -1448,6 +1563,7 @@ function _dmRosterSlotsHtml(entries, teamKey, withBudget) {
       '</tr></tfoot>';
   }
   html += '</table>';
+  if (withBudget) html += _dmPlanDriftHtml(slots, budgets, teamKey, inflation);
   if (overflow.length) {
     html += '<p class="small" style="margin:4px 0 0; color:var(--warn);">Over roster limit: ' +
       overflow.map(e => esc(e.name)).join(", ") + '</p>';
@@ -1455,7 +1571,7 @@ function _dmRosterSlotsHtml(entries, teamKey, withBudget) {
   return html;
 }
 
-function _dmMyRosterHtml() {
+function _dmMyRosterHtml(inflation) {
   const me = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : null;
   if (!me) return '<p class="muted small">Pick your team on Draft Setup (Test mode) to see your roster.</p>';
   const st = computeLiveTeamStates()[me.id];
@@ -1469,7 +1585,7 @@ function _dmMyRosterHtml() {
     entries.push(_dmRosterEntry(p.player, "$" + p.price, p.price));
   }
   let html = '<p class="small" style="margin:0 0 4px;">' + entries.length + ' rostered · <b>$' + (st ? st.budget : "?") + '</b> left · ' + (st ? st.slotsRemaining : "?") + ' slots · max bid <b style="color:var(--accent);">$' + (st ? st.maxBid : "?") + '</b></p>';
-  html += _dmRosterSlotsHtml(entries, me.id, true);
+  html += _dmRosterSlotsHtml(entries, me.id, true, inflation);
   return html;
 }
 
@@ -1489,10 +1605,92 @@ function _dmCompareRosterHtml(teamId) {
   return html;
 }
 
+// --- Bargain Bands: where is the remaining value hiding, by price band? -----
+const _DM_BANDS = [
+  { label: "$1–5", lo: 1, hi: 5 }, { label: "$6–15", lo: 6, hi: 15 },
+  { label: "$16–30", lo: 16, hi: 30 }, { label: "$31+", lo: 31, hi: Infinity },
+];
+// Band index for an (inflated) value. Pure — testable.
+function _dmBandOf(v) {
+  const r = Math.round(v);
+  if (r >= 31) return 3;
+  if (r >= 16) return 2;
+  if (r >= 6) return 1;
+  return 0;
+}
+
+// Panel: remaining players bucketed by inflated value — depth, total $, the top
+// names, and (when NFBC data is loaded) the avg market−model gap per band. A
+// band drying up while your open slots still need it = spend now; a deep cheap
+// band at your positions = safe to wait. NFBC absent → that column just says
+// "no data" (Jeff may not load it).
+function _dmBandsHtml(inflation) {
+  let pool = [];
+  try { pool = _dmPoolCut(availableDraftPool()); } catch (e) { return '<p class="muted small">pool unavailable.</p>'; }
+  const bands = _DM_BANDS.map(b => ({ ...b, players: [], sum: 0, mktSum: 0, mktN: 0 }));
+  for (const p of pool) {
+    const inf = (typeof inflatedValue === "function") ? inflatedValue(p, inflation) : (p.value || 0);
+    if (inf < 1) continue;
+    const b = bands[_dmBandOf(inf)];
+    b.players.push({ name: p.name, pos: p.posKey, inf });
+    b.sum += inf;
+    const n = (typeof getNfbc === "function") ? getNfbc(p.name) : null;
+    if (n && n.avg != null && isFinite(n.avg)) { b.mktSum += n.avg - inf; b.mktN++; }
+  }
+  if (!bands.some(b => b.players.length)) return '<p class="muted small">nobody left worth $1+.</p>';
+  const anyMkt = bands.some(b => b.mktN > 0);
+  let html = '<table class="dm-table"><thead><tr><th>Band</th><th class="num">Left</th><th class="num">Total $</th>' +
+    (anyMkt ? '<th class="num" title="Avg NFBC market minus our model — positive = the room pays over model here">Mkt−Mdl</th>' : '') +
+    '<th>Top remaining</th></tr></thead><tbody>';
+  for (let i = bands.length - 1; i >= 0; i--) {   // stars first
+    const b = bands[i];
+    b.players.sort((x, y) => y.inf - x.inf);
+    const top = b.players.slice(0, 3).map(p => esc(p.name) + ' <span class="muted">$' + Math.round(p.inf) + '</span>').join(", ");
+    const mkt = b.mktN ? (b.mktSum / b.mktN) : null;
+    html += '<tr><td class="dm-slotlabel">' + b.label + '</td>' +
+      '<td class="num' + (b.players.length <= 3 && i >= 2 ? '" style="color:var(--warn);font-weight:600;' : '') + '">' + b.players.length + '</td>' +
+      '<td class="num">$' + Math.round(b.sum) + '</td>' +
+      (anyMkt ? '<td class="num' + (mkt == null ? ' dim' : '') + '"' +
+        (mkt != null && mkt >= 2 ? ' style="color:var(--warn);"' : mkt != null && mkt <= -2 ? ' style="color:var(--good);"' : '') + '>' +
+        (mkt == null ? '—' : (mkt > 0 ? '+' : '') + mkt.toFixed(0)) + '</td>' : '') +
+      '<td class="small">' + (top || '<span class="dim">—</span>') + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<p class="muted small" style="margin:5px 0 0;">Few left in a high band = spend before it dries up; a deep cheap band at your open positions = safe to wait.</p>';
+  return html;
+}
+
+// Tiny sparkline of league-wide money remaining across the picks so far —
+// the slope shows whether the room is burning cash fast (front-loaded spend →
+// bargains later) or sitting on it (late money = end-game bidding wars).
+function _dmRoomSparkline() {
+  const picks = (typeof _liveDraft !== "undefined" && Array.isArray(_liveDraft.picks)) ? _liveDraft.picks : [];
+  if (picks.length < 2) return "";
+  const states = Object.values(computeLiveTeamStates());
+  const now = states.reduce((s, st) => s + Math.max(0, st.budget), 0);
+  const spentTotal = picks.reduce((s, p) => s + (p.price || 0), 0);
+  const start = now + spentTotal;
+  const pts = [start];
+  let run = start;
+  for (const p of picks) { run -= (p.price || 0); pts.push(run); }
+  const W = 170, H = 26, min = Math.min(...pts), max = Math.max(...pts);
+  const span = Math.max(1, max - min);
+  const line = pts.map((v, i) => (i / (pts.length - 1) * W).toFixed(1) + "," + (H - 2 - ((v - min) / span) * (H - 4)).toFixed(1)).join(" ");
+  return '<svg width="' + W + '" height="' + H + '" style="display:block; margin:0 0 6px;" aria-label="room money by pick">' +
+    '<polyline points="' + line + '" fill="none" stroke="var(--accent)" stroke-width="1.5"/></svg>';
+}
+
 function _dmBudgetsHtml() {
   const states = Object.values(computeLiveTeamStates());
   states.sort((a, b) => b.budget - a.budget);
-  let html = '<table class="dm-table"><thead><tr><th>Team</th><th class="num">$</th><th class="num">Slots</th><th class="num">Max</th></tr></thead><tbody>';
+  // Room liquidity: when the money dries up, stars clear under value — time
+  // your big buys against how many rivals can still pay star prices.
+  const room = states.reduce((s, st) => s + Math.max(0, st.budget), 0);
+  const rich25 = states.filter(st => st.maxBid >= 25).length;
+  const rich40 = states.filter(st => st.maxBid >= 40).length;
+  let html = '<p class="small" style="margin:0 0 5px;">Room <b>$' + room + '</b> left · <b>' + rich25 + '</b> teams can pay $25+ · <b>' + rich40 + '</b> can pay $40+</p>';
+  html += _dmRoomSparkline();
+  html += '<table class="dm-table"><thead><tr><th>Team</th><th class="num">$</th><th class="num">Slots</th><th class="num">Max</th></tr></thead><tbody>';
   for (const st of states) {
     // Clicking an opponent's row opens their roster next to mine (item 16).
     html += '<tr' + (st.isMe ? ' style="background:rgba(79,142,247,.10);"'

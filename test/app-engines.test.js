@@ -519,10 +519,10 @@ section("App engines — freeform panel canvas (draft-mode.js)");
 
 test("_dmPanelOrder: all panels once, canonical order by default", () => {
   const order = global._dmPanelOrder();
-  assertEq(order.length, 10, "10 panels");
+  assertEq(order.length, 11, "11 panels");
   assertEq(order[0], "hero", "hero first");
   assertEq(new Set(order).size, order.length, "no duplicates");
-  ["hero", "board", "roster", "budgets", "standings", "noms", "history", "cats", "ai", "plan"]
+  ["hero", "board", "roster", "budgets", "bands", "standings", "noms", "history", "cats", "ai", "plan"]
     .forEach(id => assert(order.includes(id), id + " present"));
 });
 
@@ -660,6 +660,57 @@ test("roster slots: $Proj/$Cost columns, editable $Budget, totals + tinting", ()
   const cmp = global._dmRosterSlotsHtml(entries, "opp", false);
   assert(!cmp.includes("$Budget") && !cmp.includes("<tfoot>"), "no budget column on other teams");
   global.setDmSlotBudget(3, null); global.setDmSlotBudget(0, null);
+});
+
+test("_dmExpectedFillCost: rivals absorb the top of the pool; $1 floor when exhausted", () => {
+  const vals = [40, 30, 20, 12, 6, 2];
+  assertEq(global._dmExpectedFillCost(vals, 0, 1), 40, "no rivals → best player's price");
+  assertEq(global._dmExpectedFillCost(vals, 2, 1), 20, "2 rival slots absorb 40+30 → I pay ~$20");
+  assertEq(global._dmExpectedFillCost(vals, 2, 2), 32, "two of my slots → ranks 3+4 (20+12)");
+  assertEq(global._dmExpectedFillCost(vals, 10, 2), 2, "pool exhausted → $1 floor each");
+});
+
+test("_dmPlanDrift: over/slack per anchor position; flex not modeled", () => {
+  const slots = [
+    { i: 0, type: "C", player: null }, { i: 7, type: "OF", player: null },
+    { i: 8, type: "OF", player: null }, { i: 5, type: "CI", player: null },
+    { i: 3, type: "SS", player: { name: "filled" } },
+  ];
+  const budgets = { 0: 2, 7: 10, 8: 10, 5: 15 };   // C planned $2, OF $20 total, CI $15 (flex → skipped)
+  const pool = [
+    { name: "C1", posKey: "C", elig: ["C", "UTIL"], type: "H", value: 9 },
+    { name: "OF1", posKey: "OF", elig: ["OF", "UTIL"], type: "H", value: 30 },
+    { name: "OF2", posKey: "OF", elig: ["OF", "UTIL"], type: "H", value: 25 },
+    { name: "OF3", posKey: "OF", elig: ["OF", "UTIL"], type: "H", value: 8 },
+  ];
+  const d = global._dmPlanDrift(slots, budgets, pool, { C: 0, OF: 1 }, null);
+  const of = d.groups.find(g => g.type === "OF"), c = d.groups.find(g => g.type === "C");
+  // OF: 1 rival takes the $30 guy; I fill 2 slots at 25+8=33 vs plan 20 → +13 over
+  assertEq(of.expected, 33, "OF expected after rival absorption");
+  assertEq(of.drift, 13, "OF over plan");
+  // C: no rivals → $9 vs plan $2 → +7 over
+  assertEq(c.drift, 7, "C over plan");
+  assert(!d.groups.find(g => g.type === "CI"), "flex CI skipped");
+  assertEq(d.plannedOpenTotal, 37, "open plan total includes flex budgets");
+});
+
+test("_dmMarketDeltaLine: overpay/bargain/≈, null-safe without NFBC data", () => {
+  assert(global._dmMarketDeltaLine(28, 22).txt.includes("+$6"), "market over model flagged");
+  assert(global._dmMarketDeltaLine(28, 22).color.includes("warn"), "overpay = warn color");
+  assert(global._dmMarketDeltaLine(18, 22).txt.includes("bargain"), "market under model = bargain");
+  assert(global._dmMarketDeltaLine(23, 22).txt.includes("≈"), "small gap = ≈");
+  assertEq(global._dmMarketDeltaLine(null, 22), null, "no NFBC data → renders nothing");
+  assertEq(global._dmMarketDeltaLine(28, null), null, "no model → nothing");
+});
+
+test("_dmBandOf: band edges", () => {
+  assertEq(global._dmBandOf(1), 0, "$1 → band 0");
+  assertEq(global._dmBandOf(5.4), 0, "$5 → band 0");
+  assertEq(global._dmBandOf(5.6), 1, "rounds to $6 → band 1");
+  assertEq(global._dmBandOf(15), 1, "$15 → band 1");
+  assertEq(global._dmBandOf(16), 2, "$16 → band 2");
+  assertEq(global._dmBandOf(30), 2, "$30 → band 2");
+  assertEq(global._dmBandOf(31), 3, "$31 → band 3");
 });
 
 test("_dmPoolCut: keeps players down to the -$5 floor, drops below", () => {
