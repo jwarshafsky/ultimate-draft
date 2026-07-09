@@ -3,10 +3,12 @@
 // these are his choices; for the other 11 teams they're his predictions. Local
 // only (single user), persisted to localStorage.
 //
-// Shape: { [teamId]: { [playerName]: { picked: bool, ineligible: bool } } }
+// Shape: { [teamId]: { [playerName]: { picked: bool, ineligible: bool, cost: number } } }
 //   picked     — Jeff thinks/decides this player is a keeper
 //   ineligible — manual override: not keepable (e.g. FA added after the trade
 //                deadline, a case we can't detect from draft history alone)
+//   cost       — manual keeper-cost override (dollars); overrides the cost we
+//                overlay from The League App. Sticks until Jeff edits it again.
 //
 // Also stores the keepers-page projection-source preference.
 
@@ -47,6 +49,12 @@ function isMyIneligible(teamId, name) {
   return !!getMyKeeper(teamId, name)?.ineligible;
 }
 
+// Manual keeper-cost override for a player, or null if none set (use overlaid cost).
+function getMyKeeperCost(teamId, name) {
+  const c = getMyKeeper(teamId, name)?.cost;
+  return (typeof c === "number" && isFinite(c)) ? c : null;
+}
+
 // All player names Jeff has marked as keepers for a team.
 function getMyTeamPicks(teamId) {
   const t = _myKeepers.teams[teamId] || {};
@@ -59,8 +67,8 @@ function setMyKeeper(teamId, name, picked) {
   const t = _myTeam(teamId);
   if (!t[name]) t[name] = { picked: false, ineligible: false };
   t[name].picked = !!picked;
-  // Clean up fully-empty entries to keep storage tidy.
-  if (!t[name].picked && !t[name].ineligible) delete t[name];
+  // Clean up fully-empty entries to keep storage tidy (keep a cost override).
+  if (!t[name].picked && !t[name].ineligible && t[name].cost == null) delete t[name];
   saveMyKeepers();
 }
 
@@ -68,7 +76,18 @@ function setMyIneligible(teamId, name, ineligible) {
   const t = _myTeam(teamId);
   if (!t[name]) t[name] = { picked: false, ineligible: false };
   t[name].ineligible = !!ineligible;
-  if (!t[name].picked && !t[name].ineligible) delete t[name];
+  if (!t[name].picked && !t[name].ineligible && t[name].cost == null) delete t[name];
+  saveMyKeepers();
+}
+
+// Set (or clear, with null/NaN) a manual keeper-cost override. Sticks in
+// localStorage until edited again, so it survives roster refreshes and reloads.
+function setMyKeeperCost(teamId, name, cost) {
+  const t = _myTeam(teamId);
+  if (!t[name]) t[name] = { picked: false, ineligible: false };
+  if (cost == null || !isFinite(cost)) delete t[name].cost;
+  else t[name].cost = Math.max(0, Math.round(cost));
+  if (!t[name].picked && !t[name].ineligible && t[name].cost == null) delete t[name];
   saveMyKeepers();
 }
 

@@ -130,7 +130,12 @@ function _teamCandidates(team, source) {
     const v = getPlayerValue(name);
     const type = o.type || (v ? v.type : "H");
     const pos = o.pos || (v ? v.pos : "—");
-    const cost = o.cost == null ? 0 : o.cost;
+    let cost = o.cost == null ? 0 : o.cost;
+    // Manual cost override (Jeff edited the Cost cell) wins over the overlaid
+    // League App cost and sticks until he edits it again.
+    const costOverride = (typeof getMyKeeperCost === "function") ? getMyKeeperCost(team.id, name) : null;
+    const costOverridden = costOverride != null;
+    if (costOverridden) cost = costOverride;
     const myPicked = (typeof isMyKeeper === "function") && isMyKeeper(team.id, name);
     const myIneligible = (typeof isMyIneligible === "function") && isMyIneligible(team.id, name);
     // Prospects use the same projected $ (ROS / next-year) as everyone else;
@@ -142,7 +147,7 @@ function _teamCandidates(team, source) {
     rows.push({
       name, pos, type, kind: o.kind, isMinor: o.kind === "minor",
       leagueSel: teamSel[name] || null, myPicked, myIneligible,
-      cost, costMissing: !!o.costMissing, predValue, surplus, value: null,
+      cost, costOverridden, costMissing: costOverridden ? false : !!o.costMissing, predValue, surplus, value: null,
       contract: o.contract || null, contractExpired, eligible,
     });
   };
@@ -229,7 +234,7 @@ function renderKeepers() {
 
   // === Controls ===
   let html = '<div class="card"><h2>Keepers by Team</h2>';
-  html += '<p class="muted small"><b>Surplus</b> = Predicted $ − Cost. <b>Value</b> = Predicted $ − (Cost ÷ Inflation) — so Value = Surplus only while Inflation is 1.00, and exceeds it as you check keepers. Expired players sink to the bottom and can’t be checked. <b>Minor-leaguers</b> are valued at their projected ROS/next-year $ when the projection source covers them (else “no proj”); since their cost is $0, that projected $ is their full surplus.</p>';
+  html += '<p class="muted small"><b>Surplus</b> = Predicted $ − Cost. <b>Value</b> = Predicted $ − (Cost ÷ Inflation) — so Value = Surplus only while Inflation is 1.00, and exceeds it as you check keepers. Expired players sink to the bottom and can’t be checked. <b>Minor-leaguers</b> are valued at their projected ROS/next-year $ when the projection source covers them (else “no proj”); since their cost is $0, that projected $ is their full surplus. <b>Cost is editable</b> — type over any figure to override The League App; it sticks until you change it (↺ resets).</p>';
   html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:8px;">';
 
   // Projection source
@@ -375,8 +380,20 @@ function renderKeepers() {
       }
       html += '<td>' + (badges.length ? badges.join(" ") : '<span class="dim">—</span>') + '</td>';
 
-      // Cost
-      html += '<td class="num">' + (r.isMinor ? '<span class="dim">$0</span>' : (r.costMissing ? '<span class="dim" title="No draft record — assumed">$' + r.cost + '?</span>' : '$' + r.cost)) + '</td>';
+      // Cost — editable (minors are fixed at $0 by rule). A manual edit sticks
+      // until re-edited; ↺ resets to the League App cost.
+      if (r.isMinor) {
+        html += '<td class="num"><span class="dim">$0</span></td>';
+      } else {
+        html += '<td class="num" style="white-space:nowrap;">$' +
+          '<input type="number" class="kp-cost" data-team="' + tid + '" data-player="' + pn + '" value="' + r.cost + '" min="0" step="1" ' +
+          'title="' + (r.costOverridden ? 'Manual cost — overrides The League App' : 'Edit keeper cost (sticks until changed)') + '" ' +
+          'style="width:42px; padding:1px 3px; text-align:right; background:transparent; border:1px solid var(--border); border-radius:3px; color:' +
+          (r.costOverridden ? 'var(--accent);font-weight:600' : 'inherit') + ';">' +
+          (r.costOverridden ? ' <a href="#" class="kp-cost-reset" data-team="' + tid + '" data-player="' + pn + '" title="Reset to League App cost" style="font-size:11px; text-decoration:none;">↺</a>'
+            : (r.costMissing ? ' <span class="dim" title="No draft record — assumed">?</span>' : '')) +
+          '</td>';
+      }
 
       // Predicted $ — projected ROS/next-year auction value. Minors that the
       // projection source doesn't cover yet read "no proj" (dim) rather than —.
@@ -449,6 +466,25 @@ function _wireKeepers() {
       e.preventDefault();
       const cur = isMyIneligible(el.dataset.team, el.dataset.player);
       setMyIneligible(el.dataset.team, el.dataset.player, !cur);
+      renderKeepers();
+    });
+  });
+  // Editable keeper cost — save on change (blur/Enter) and re-render so Surplus,
+  // Value, and inflation pick up the new number.
+  document.querySelectorAll(".kp-cost").forEach(el => {
+    el.addEventListener("change", () => {
+      const raw = el.value.trim();
+      const n = parseFloat(raw);
+      setMyKeeperCost(el.dataset.team, el.dataset.player, raw === "" || !isFinite(n) ? null : n);
+      renderKeepers();
+    });
+    // Enter commits (and blurs) without submitting anything.
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } });
+  });
+  document.querySelectorAll(".kp-cost-reset").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      setMyKeeperCost(el.dataset.team, el.dataset.player, null);
       renderKeepers();
     });
   });
