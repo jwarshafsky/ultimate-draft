@@ -339,13 +339,7 @@ function wireSettingsHandlers() {
   });
   document.getElementById("set-mystrat-clear")?.addEventListener("click", () => {
     if (!confirm("Clear My Draft Strategy? This resets the sliders and stances, clears target/punt categories, and wipes your written strategy + AI brief.")) return;
-    _settings.myStrategy = {
-      starsVsScrubs: 0, riskTolerance: 0,
-      closerStance: "stream", catcherStance: "stream",
-      targetCategories: [], puntCategories: [],
-    };
-    saveSettings();
-    if (typeof clearDraftStrategy === "function") clearDraftStrategy();
+    clearMyStrategyAll();
     renderSettings();   // whole card re-renders at defaults
   });
   document.getElementById("set-strategy-clear")?.addEventListener("click", () => {
@@ -383,6 +377,19 @@ function wireSettingsHandlers() {
 }
 
 // Helpers for other modules to read strategy
+// Full "Clear My Strategy" reset — sliders/stances to defaults, target & punt
+// categories emptied, written strategy + AI brief wiped. Shared by the Settings
+// card and the Draft Setup lobby so the two buttons can't drift apart.
+function clearMyStrategyAll() {
+  _settings.myStrategy = {
+    starsVsScrubs: 0, riskTolerance: 0,
+    closerStance: "stream", catcherStance: "stream",
+    targetCategories: [], puntCategories: [],
+  };
+  saveSettings();
+  if (typeof clearDraftStrategy === "function") clearDraftStrategy();
+}
+
 function getMyStrategy() { return _settings.myStrategy; }
 function getSettings() { return _settings; }
 

@@ -148,6 +148,7 @@ function renderDraftSetup(root) {
   html += '<div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">';
   html += '<button class="btn" id="ds-strategy-save" style="width:auto; padding:5px 12px;">Save</button>';
   html += '<button class="btn" id="ds-strategy-condense" style="width:auto; padding:5px 12px;">Condense for AI</button>';
+  html += '<button class="btn ghost" id="ds-strategy-clear" style="width:auto; padding:5px 12px;" title="Reset sliders/stances, clear target &amp; punt categories, and wipe your written strategy + AI brief">Clear My Strategy</button>';
   html += '<span class="small muted" id="ds-strategy-status">' + (strat.brief ? "Brief ready — shown in Draft Mode + fed to the AI" : "No AI brief yet") + '</span>';
   html += '<span style="flex:1;"></span>';
   html += '<span class="small muted">Sliders & punt categories: Settings ▸ My Strategy</span>';
@@ -379,6 +380,12 @@ function wireDraftSetup() {
     setDraftStrategyText(document.getElementById("ds-strategy-text").value);
     const st = document.getElementById("ds-strategy-status");
     if (st) st.textContent = "Saved.";
+  });
+  document.getElementById("ds-strategy-clear")?.addEventListener("click", () => {
+    if (!confirm("Clear My Draft Strategy? This resets the sliders and stances, clears target/punt categories, and wipes your written strategy + AI brief.")) return;
+    if (typeof clearMyStrategyAll === "function") clearMyStrategyAll();
+    else if (typeof clearDraftStrategy === "function") clearDraftStrategy();   // settings.js not loaded — still wipe the text/brief
+    renderDraft();   // re-renders the lobby: empty textarea, brief hidden, readiness check updates
   });
   document.getElementById("ds-strategy-condense")?.addEventListener("click", async () => {
     const st = document.getElementById("ds-strategy-status");
