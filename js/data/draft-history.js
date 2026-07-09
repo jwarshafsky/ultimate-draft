@@ -244,10 +244,11 @@ function getCurrentKeeperSalary(playerName) {
   if (exc[playerName] != null) return exc[playerName];
   const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
   if (!allOfPlayer.length) {
-    // No draft history — assume FAAB pickup. Per league constitution, FAAB
-    // pickups keep at $6 first keepable year, +$2/year after. Most likely
-    // case: picked up in the prior season and kept for upcoming = $8.
-    return 8;
+    // No draft history — a current-season FAAB pickup. (A player kept in any
+    // prior offseason appears in that year's draft as a keeper pick, so no
+    // record at all means the upcoming draft IS their first keepable year.)
+    // Constitution: all FA keepers = $6, regardless of FAAB cost.
+    return 6;
   }
   const upcomingYear = getUpcomingDraftYear();
   const mostRecent = allOfPlayer[0];
