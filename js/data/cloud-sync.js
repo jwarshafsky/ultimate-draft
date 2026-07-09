@@ -49,6 +49,8 @@ const SYNC_EXACT_KEYS = new Set([
   "ud_savant_hit_v1", "ud_savant_pit_v1",
   "ud_owner_aliases_v1",
   "ud_draft_history_v1",
+  "ud_owner_tendencies_v1",   // per-owner tells from REAL drafts (owner-tendencies.js)
+  "ud_draft_cadence_v1",      // learned pacing from ESPN-fed drafts (draft-cadence.js)
 ]);
 const SYNC_PREFIXES = ["ud_ros_"];   // manual/hosted ROS projection sources
 

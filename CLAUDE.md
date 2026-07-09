@@ -60,7 +60,10 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
 
 ## Working on it
 
-- No tests. Verify with `node -c <file>` (syntax) + browser preview.
+- Tests exist and are mandatory (convention #3): `bash scripts/test.sh` (11+
+  test files under `test/`) + `node test/simulate-draft.js --seed 7 --all`.
+  Also verify UI changes in the browser preview — the headless suite can't see
+  CSS cascade or focus behavior.
 - `.agentreview-history.md` logs past review rounds — read it before
   re-reporting known issues.
 - Jeff is non-technical: ship working, verified changes; explain in plain terms.

@@ -194,7 +194,10 @@ for (const k of Object.keys(g)) global[k] = g[k];
 
 const files = [
   "data/budget-adjust.js",
+  "data/owner-tendencies.js",
+  "data/draft-cadence.js",
   "core/inflation.js",
+  "core/invariants.js",
   "features/endgame.js",
   "features/nominations.js",
   "features/draft-setup.js",
@@ -442,7 +445,7 @@ test("all-green fixture → no blockers", () => {
   setRealMode(); resetDraftState();
   global._feed.extPresent = true;
   global._feed.tabAt = Date.now();
-  ls.setItem("ud_proxy_key", "k");
+  global.ESPN.proxyKey = "k";   // the readiness check reads what espn.js sends
   const checks = global._dsReadinessChecks();
   const bad = checks.filter(c => c.level === "bad");
   assertEq(bad.length, 0, "no blockers (got: " + bad.map(c => c.label).join(", ") + ")");
@@ -453,7 +456,7 @@ test("all-green fixture → no blockers", () => {
 test("missing proxy key and feed OFF are blockers", () => {
   resetDraftState();
   ls.setItem("ud_feed_mode", "off");
-  ls.removeItem("ud_proxy_key");
+  global.ESPN.proxyKey = "";
   global._feed.extPresent = false;
   const checks = global._dsReadinessChecks();
   const bad = checks.filter(c => c.level === "bad").map(c => c.label);
@@ -464,7 +467,7 @@ test("missing proxy key and feed OFF are blockers", () => {
 
 test("no dollar source is a blocker; stale dollars only a warning", () => {
   setRealMode(); resetDraftState();
-  ls.setItem("ud_proxy_key", "k");
+  global.ESPN.proxyKey = "k";
   global._feed.extPresent = true; global._feed.tabAt = Date.now();
   const realHasDollars = global.rosHasDollars;
   global.rosHasDollars = () => false;
@@ -480,6 +483,65 @@ test("no dollar source is a blocker; stale dollars only a warning", () => {
     const dollar = checks.find(c => c.label.includes("Dollar values"));
     assertEq(dollar.level, "warn", "30-day-old dollars warn, not block");
   } finally { global._ros = realRos; }
+});
+
+// =====================================================================
+section("Keeper inflation override flows app-wide (flat + tiered)");
+// =====================================================================
+
+test("manual override anchors computeFlatInflation and the tiered distribution conserves it", () => {
+  setRealMode(); resetDraftState();
+  global._keeperInflationOverride = () => 1.30;
+  try {
+    const flat = global.computeFlatInflation();
+    assert(flat, "flat inflation computed");
+    assert(Math.abs(flat.multiplier - 1.30) < 1e-9, "flat multiplier = override (got " + flat.multiplier + ")");
+    const tiered = global.computeTieredInflation();
+    assert(tiered && tiered.mode === "tiered", "tiered computed");
+    // The tiered split must distribute the OVERRIDDEN excess exactly.
+    const excess = (flat.multiplier - 1) * flat.remainingValue;
+    const distributed = Object.keys(tiered.tierValue)
+      .reduce((s, k) => s + tiered.tierValue[k] * (tiered.tierMult[k] - 1), 0);
+    assert(Math.abs(distributed - excess) < 0.01, "tier distribution conserves the override excess (" + distributed.toFixed(2) + " vs " + excess.toFixed(2) + ")");
+  } finally { delete global._keeperInflationOverride; }
+});
+
+test("no override → pool-derived multiplier unchanged", () => {
+  setRealMode(); resetDraftState();
+  const flat = global.computeFlatInflation();
+  assert(flat && isFinite(flat.multiplier), "flat computed without keepers.js loaded");
+});
+
+// =====================================================================
+section("I-MONEY invariant — full roster with leftover cash");
+// =====================================================================
+
+test("full roster (slotsRemaining=0) with cash left reports maxBid=0 and is NOT an I-MONEY error", () => {
+  setRealMode(); resetDraftState();
+  // computeLiveTeamStates correctly reports maxBid=0 for a full roster; the
+  // invariant must expect the same, not budget−(0−1).
+  const realStates = global.computeLiveTeamStates;
+  global.computeLiveTeamStates = () => ({
+    jeff: { teamId: "jeff", ownerName: "Jeff", budget: 50, spent: 210, keptCost: 0, slotsRemaining: 0, maxBid: 0, posCounts: {} },
+  });
+  try {
+    const r = global.checkDraftInvariants();
+    const bad = r.violations.filter(v => v.id === "I-MONEY" && /maxBid/.test(v.detail));
+    assertEq(bad.length, 0, "no maxBid false positive (got: " + bad.map(v => v.detail).join(" | ") + ")");
+  } finally { global.computeLiveTeamStates = realStates; }
+});
+
+test("open-roster maxBid identity still enforced (regression guard)", () => {
+  setRealMode(); resetDraftState();
+  const realStates = global.computeLiveTeamStates;
+  global.computeLiveTeamStates = () => ({
+    jeff: { teamId: "jeff", ownerName: "Jeff", budget: 50, spent: 210, keptCost: 0, slotsRemaining: 5, maxBid: 99, posCounts: {} },
+  });
+  try {
+    const r = global.checkDraftInvariants();
+    const bad = r.violations.filter(v => v.id === "I-MONEY" && /maxBid/.test(v.detail));
+    assertEq(bad.length, 1, "wrong maxBid on an open roster IS still flagged");
+  } finally { global.computeLiveTeamStates = realStates; }
 });
 
 // =====================================================================
@@ -527,6 +589,138 @@ test("no projection pool → weight-only basis, still totals 100%", () => {
 test("all weights zero → null shares (no divide-by-zero)", () => {
   const r = global._dsTierShares({ T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 });
   assertEq(r.pct, null, "null when nothing to distribute");
+});
+
+// =====================================================================
+section("Owner-tendency persistence (real drafts only)");
+// =====================================================================
+
+// Fill the event log with enough nominations to clear the archive threshold.
+function seedTellsSession(nomTeam) {
+  global._dlog.leagueId = 1200; global._dlog.startedAt = 111222333;
+  for (let i = 0; i < 9; i++) {
+    pushLot(nomTeam, 5000 + i, { othersBid: i % 2 === 0, nomRebids: i % 2 === 0, winner: i % 2 === 0 ? nomTeam : 2, price: 7 });
+  }
+}
+
+test("real mode + home league → tells archived, aggregated, idempotent", () => {
+  setRealMode(); resetDraftState();
+  ls.removeItem("ud_owner_tendencies_v1");
+  seedTellsSession(1);   // espn 1 = matt
+  assertEq(global.recordOwnerTendencies(), true, "recorded");
+  assertEq(global.recordOwnerTendencies(), true, "second call upserts (same session)");
+  const stored = JSON.parse(ls.getItem("ud_owner_tendencies_v1"));
+  assertEq(Object.keys(stored.sessions).length, 1, "one session (idempotent by stream key)");
+  const h = global.getOwnerTendencyHistory("matt");
+  assert(h && h.drafts === 1 && h.noms === 9, "aggregated for the mapped OWNER id (got " + JSON.stringify(h) + ")");
+  assert(h.chased >= 2, "chases carried through");
+  const note = global.ownerTendencyNote(1);
+  assert(note && note.includes("chased"), "historical note renders (got: " + note + ")");
+});
+
+test("test mode / bot mock / foreign league never touch the profiles", () => {
+  resetDraftState();
+  ls.removeItem("ud_owner_tendencies_v1");
+  seedTellsSession(1);
+  ls.setItem("ud_feed_mode", "test");
+  assertEq(global.recordOwnerTendencies(), false, "test mode blocked");
+  setRealMode();
+  global.mockFeedActive = () => true;
+  try { assertEq(global.recordOwnerTendencies(), false, "bot practice mock blocked"); }
+  finally { delete global.mockFeedActive; }
+  const realLeague = global.ESPN.leagueId;
+  global.ESPN.leagueId = 999;
+  try { assertEq(global.recordOwnerTendencies(), false, "foreign league blocked"); }
+  finally { global.ESPN.leagueId = realLeague; }
+  assertEq(ls.getItem("ud_owner_tendencies_v1"), null, "store untouched");
+});
+
+// =====================================================================
+section("Draft cadence — learn from ESPN feeds, real wins outright");
+// =====================================================================
+
+// N full lots with realistic timing: nom → 4 bids (500ms apart, +$1 each) →
+// SOLD 25s after the nom → next nom 2s later.
+function seedCadenceSession(leagueId, startedAt, lots) {
+  global._dlog.events = [];
+  global._dlog.leagueId = leagueId; global._dlog.startedAt = startedAt;
+  let seq = 0, t = 1000000;
+  for (let i = 0; i < lots; i++) {
+    const pid = 7000 + i;
+    global._dlog.events.push({ cmd: "NOMINATION", teamId: 1 + (i % 4), playerId: pid, seq: ++seq, at: t });
+    for (let b = 0; b < 4; b++) {
+      global._dlog.events.push({ cmd: "BID", teamId: 2 + (b % 3), playerId: pid, amount: 2 + b, seq: ++seq, at: t + 1000 + b * 500 });
+    }
+    global._dlog.events.push({ cmd: "SOLD", teamId: 2, playerId: pid, amount: 5, seq: ++seq, at: t + 25000 });
+    t += 27000;
+  }
+}
+
+test("deriveCadenceFromEvents measures increments, gaps, lot length, between-lots", () => {
+  resetDraftState();
+  seedCadenceSession(1200, 1, 3);
+  const { samples, sold } = global.deriveCadenceFromEvents(global._dlog.events);
+  assertEq(sold, 3, "3 sold lots");
+  assert(samples.increments.every(x => x === 1), "increments are the $1 steps");
+  assert(samples.interBidMs.every(x => x === 500), "inter-bid gaps 500ms");
+  assert(samples.lotMs.every(x => x === 25000), "lot duration 25s");
+  assert(samples.betweenLotMs.every(x => x === 2000), "2s between lots");
+  assert(samples.bidsPerLot.every(x => x === 4), "4 bids per lot");
+});
+
+test("INIT breaks timing chains (no cross-reconnect junk samples)", () => {
+  resetDraftState();
+  global._dlog.events = [
+    { cmd: "NOMINATION", teamId: 1, playerId: 1, seq: 1, at: 1000 },
+    { cmd: "SOLD", teamId: 2, playerId: 1, amount: 3, seq: 2, at: 26000 },
+    { cmd: "INIT", seq: 3, at: 27000 },
+    { cmd: "NOMINATION", teamId: 1, playerId: 2, seq: 4, at: 900000 },   // long after — must NOT be a between-lots sample
+    { cmd: "SOLD", teamId: 2, playerId: 2, amount: 3, seq: 5, at: 925000 },
+  ];
+  const { samples } = global.deriveCadenceFromEvents(global._dlog.events);
+  assertEq(samples.betweenLotMs.length, 0, "no between-lot sample across the INIT gap");
+});
+
+test("ESPN mock feeds the mock bucket; a real draft then takes over outright", () => {
+  resetDraftState();
+  ls.removeItem("ud_draft_cadence_v1");
+  // 1) an ESPN mock room (feed test) — learns into 'mock'
+  ls.setItem("ud_feed_mode", "test");
+  seedCadenceSession(555, 10, 10);
+  assertEq(global.recordDraftCadence(), "mock", "ESPN mock recorded to the mock bucket");
+  let pool = global.getCadenceSamples();
+  assert(pool && pool.source === "mock", "mock samples drive pacing while no real draft exists");
+  // 2) the real home-league draft arrives — real bucket wins outright
+  setRealMode();
+  seedCadenceSession(1200, 20, 10);
+  assertEq(global.recordDraftCadence(), "real", "real draft recorded to the real bucket");
+  pool = global.getCadenceSamples();
+  assert(pool && pool.source === "real", "real cadence wins the moment it exists");
+  // 3) idempotent per stream
+  assertEq(global.recordDraftCadence(), "real", "upsert");
+  const stored = JSON.parse(ls.getItem("ud_draft_cadence_v1"));
+  assertEq(Object.keys(stored.real).length, 1, "one real session (idempotent)");
+  assertEq(Object.keys(stored.mock).length, 1, "mock bucket intact");
+});
+
+test("bot practice mocks and short stubs never record", () => {
+  resetDraftState();
+  ls.removeItem("ud_draft_cadence_v1");
+  setRealMode();
+  seedCadenceSession(1200, 30, 10);
+  global.mockFeedActive = () => true;
+  try { assertEq(global.recordDraftCadence(), null, "bot mock excluded"); }
+  finally { delete global.mockFeedActive; }
+  seedCadenceSession(1200, 31, 3);   // < 8 sold
+  assertEq(global.recordDraftCadence(), null, "too-short session excluded");
+  assertEq(ls.getItem("ud_draft_cadence_v1"), null, "store untouched");
+});
+
+test("cadenceDraw samples the empirical array; null on empty", () => {
+  assertEq(global.cadenceDraw([]), null, "empty → null");
+  assertEq(global.cadenceDraw(null), null, "null → null");
+  const v = global.cadenceDraw([7]);
+  assertEq(v, 7, "single-element draw");
 });
 
 summary("Draft intelligence: category bid, tells, squeeze, readiness");

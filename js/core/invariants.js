@@ -51,7 +51,8 @@ const _INV_REAL_OWNER_IDS = [
 // For each team in the CURRENT draft context:
 //   base   = 260 + adj (real) | 260 (test)
 //   budget = base − keeperCost − spent
-//   maxBid = max(0, budget − max(0, slotsRemaining − 1))
+//   maxBid = 0 when slotsRemaining ≤ 0 (full roster can't bid), else
+//            max(0, budget − max(0, slotsRemaining − 1))
 // and Σ spent across teams === Σ pick prices.
 function _invCheckMoney(v) {
   const states = _invSafe(() =>
@@ -81,9 +82,10 @@ function _invCheckMoney(v) {
       });
     }
 
-    // maxBid identity
+    // maxBid identity — a FULL roster can't bid at all, so its maxBid is 0 no
+    // matter how much cash is stranded (mirrors computeLiveTeamStates/endgame).
     const slotsRem = Number(st.slotsRemaining) || 0;
-    const expectMax = Math.max(0, st.budget - Math.max(0, slotsRem - 1));
+    const expectMax = slotsRem <= 0 ? 0 : Math.max(0, st.budget - Math.max(0, slotsRem - 1));
     if (st.maxBid !== expectMax) {
       v.push({
         id: "I-MONEY", severity: "error",

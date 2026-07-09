@@ -102,6 +102,12 @@ function deleteDraftConfig(id) {
 // ---------------------------------------------------------------------------
 
 function renderDraftSetup(root) {
+  // Session learnings — snapshot owner tells (REAL drafts only) and pacing
+  // (any extension-fed ESPN room) into their persistent stores. Both are
+  // internally gated + idempotent, so a lobby render is a safe trigger.
+  try { if (typeof recordOwnerTendencies === "function") recordOwnerTendencies(); } catch (e) {}
+  try { if (typeof recordDraftCadence === "function") recordDraftCadence(); } catch (e) {}
+
   let html = '<div class="ds-wrap">';
 
   // === Header: enter draft ===
@@ -154,8 +160,9 @@ function renderDraftSetup(root) {
   html += '</div>';
   html += '<div id="ds-strategy-brief" class="small" style="margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--bg-3); white-space:pre-wrap;' + (strat.brief ? '' : ' display:none;') + '">' + esc(strat.brief) + '</div>';
   if (my) {
-    // Preference sliders/stances (auto-save on change; flow into nominations,
-    // the AI assistant, and the mock bots playing YOUR team).
+    // Preference sliders/stances (auto-save on change; consumed by the AI
+    // assistant context, the board's roster-fit badges, and the category
+    // dashboard — punted cats stop counting as needs).
     html += '<div style="margin-top:14px; padding-top:10px; border-top:1px solid var(--border);">';
     html += '<div class="grid cols-2" style="gap:14px 18px;">';
     html += '<div><div class="small"><b>Stars vs. Scrubs</b> <span class="muted">— spread the money or load up on studs + $1 fills</span></div>';
@@ -214,6 +221,16 @@ function _dsReadyChips() {
   s += '<span>' + dot(getValues().length > 0) + 'projections</span>';
   s += '</span>';
   return s;
+}
+
+// Directional label for a -2..+2 preference slider (moved here from settings.js
+// with the strategy sliders — this file is its only consumer now).
+function sliderLabel(val, labels) {
+  if (val <= -2) return "←← " + labels[0];
+  if (val === -1) return "← " + labels[0];
+  if (val === 0) return labels[1];
+  if (val === 1) return labels[2] + " →";
+  return labels[2] + " →→";
 }
 
 // ---------------------------------------------------------------------------
@@ -351,10 +368,11 @@ function _dsReadinessChecks() {
   add(_feed.extPresent ? "ok" : "bad", "Keeper Edge extension", _feed.extPresent ? "heartbeat live" : "no heartbeat — reload the extension at chrome://extensions");
   add(draftTabOpen() ? "ok" : "warn", "ESPN draft tab", draftTabOpen() ? "open" : "open it BEFORE the draft starts so the INIT backfill has the full state");
 
-  // Proxy (ESPN data, Rotowire news, AI assistant all ride it)
+  // Proxy (ESPN data, Rotowire news, AI assistant all ride it). Read the SAME
+  // values espn.js attaches to requests (ESPN.proxyUrl/proxyKey) — checking a
+  // different source than the sender could show green while calls 401.
   const proxyUrl = (typeof ESPN !== "undefined") && ESPN.proxyUrl;
-  let proxyKey = null;
-  try { proxyKey = localStorage.getItem("ud_proxy_key"); } catch (e) {}
+  const proxyKey = (typeof ESPN !== "undefined") && ESPN.proxyKey;
   if (proxyUrl && proxyKey) add("ok", "Proxy", "URL + key set");
   else add("bad", "Proxy", !proxyUrl ? "no proxy URL (Settings)" : "no proxy key — ESPN/AI calls will 401 (Settings ▸ Proxy key)");
 

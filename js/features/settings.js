@@ -38,8 +38,16 @@ const _settings = {
     enabled: false,
     autoTrigger: true,            // trigger AI on each new pick
     cooldownMs: 8000,
-    model: "claude-opus-4-7",
+    model: "claude-opus-4-8",
   },
+};
+
+// Retired Anthropic model ids → current equivalent. Synced settings can carry a
+// model that's been deprecated since it was saved; migrate on load so AI calls
+// don't 404 against the API.
+const _MODEL_MIGRATIONS = {
+  "claude-opus-4-7": "claude-opus-4-8",
+  "claude-sonnet-4-6": "claude-sonnet-5",
 };
 
 function loadSettings() {
@@ -47,6 +55,9 @@ function loadSettings() {
     const v = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
     if (v) {
       Object.assign(_settings, v);
+      if (_settings.ai && _MODEL_MIGRATIONS[_settings.ai.model]) {
+        _settings.ai.model = _MODEL_MIGRATIONS[_settings.ai.model];
+      }
       // Push into engine globals
       VALUATION.hitBudgetPct = _settings.hitBudgetPct;
       VALUATION.benchSlots = _settings.benchSlots;
@@ -153,7 +164,7 @@ function renderSettings() {
   html += '<div>';
   html += '<h3>Model</h3>';
   html += '<select id="set-ai-model" style="width: 100%;">';
-  for (const m of ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]) {
+  for (const m of ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]) {
     html += '<option value="' + m + '"' + (s.ai.model === m ? " selected" : "") + '>' + esc(m) + '</option>';
   }
   html += '</select>';
@@ -186,13 +197,7 @@ function renderSettings() {
   wireSettingsHandlers();
 }
 
-function sliderLabel(val, labels) {
-  if (val <= -2) return "←← " + labels[0];
-  if (val === -1) return "← " + labels[0];
-  if (val === 0) return labels[1];
-  if (val === 1) return labels[2] + " →";
-  return labels[2] + " →→";
-}
+// (sliderLabel moved to draft-setup.js with the strategy sliders.)
 
 function wireSettingsHandlers() {
   const live = (id, fn) => {

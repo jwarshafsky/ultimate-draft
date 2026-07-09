@@ -163,14 +163,20 @@ function renderCategoryDashboard() {
   html += ' <span class="muted small">/ 120 (1st place = ~95+)</span>';
   html += '</div>';
 
-  // Targets / punts
+  // Targets / punts — strategy-aware: a category Jeff has declared punted is
+  // reported separately, never as a "need"; declared target cats get a 🎯.
   const cats = ["R","HR","RBI","SB","OBP","QS","K","SV_HLD","ERA","WHIP"];
-  const weak = cats.filter(c => result.ranks[c] >= 9);
-  const strong = cats.filter(c => result.ranks[c] <= 4);
-  if (weak.length || strong.length) {
+  const strat = (typeof getMyStrategy === "function") ? getMyStrategy() : null;
+  const punts = new Set((strat && strat.puntCategories) || []);
+  const targetCats = new Set((strat && strat.targetCategories) || []);
+  const mark = (c) => esc(c) + (targetCats.has(c) ? " 🎯" : "");
+  const weak = cats.filter(c => result.ranks[c] >= 9 && !punts.has(c));
+  const strong = cats.filter(c => result.ranks[c] <= 4 && !punts.has(c));
+  if (weak.length || strong.length || punts.size) {
     html += '<div style="margin-top: 12px;">';
-    if (strong.length) html += '<div class="small good">Strong: ' + strong.map(esc).join(", ") + '</div>';
-    if (weak.length) html += '<div class="small bad">Need to address: ' + weak.map(esc).join(", ") + '</div>';
+    if (strong.length) html += '<div class="small good">Strong: ' + strong.map(mark).join(", ") + '</div>';
+    if (weak.length) html += '<div class="small bad">Need to address: ' + weak.map(mark).join(", ") + '</div>';
+    if (punts.size) html += '<div class="small muted">Punting: ' + [...punts].map(esc).join(", ") + ' — excluded from needs.</div>';
     html += '</div>';
   }
 

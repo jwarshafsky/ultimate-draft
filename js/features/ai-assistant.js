@@ -14,7 +14,7 @@
 
 const AI = {
   enabled: false,
-  model: "claude-opus-4-7",
+  model: "claude-opus-4-8",
   lastSuggestion: null,
   lastSentAt: 0,
   cooldownMs: 8000,  // don't spam Claude — minimum gap between calls
@@ -79,8 +79,50 @@ function buildAiContext() {
       myTargets.push({ name: p.name, pos: p.pos, dream: t.dream, fair: t.fair, walkAway: t.walkAway, currentInflated: p.inflated });
     }
   }
-  // My strategy prefs from Settings
+  // My strategy prefs (set on the Draft Setup lobby)
   const strategy = (typeof getMyStrategy === "function") ? getMyStrategy() : null;
+
+  // The lot on the clock RIGHT NOW with every deterministic signal the cockpit
+  // shows (reco prices, category fit, room temperature, tactic, tells) — so the
+  // AI's advice starts from the same numbers Jeff is looking at instead of
+  // contradicting them blind.
+  let onTheClock = null;
+  try {
+    const lot = (typeof currentLotFromEvents === "function" &&
+      (getFeedMode() !== "off" || (typeof mockFeedActive === "function" && mockFeedActive())))
+      ? currentLotFromEvents() : null;
+    const lotName = lot ? lot.name
+      : (typeof _liveDraft !== "undefined" && _liveDraft.current ? _liveDraft.current.player : null);
+    if (lotName && !/^Player \d+$/.test(lotName)) {
+      const high = lot ? (lot.highBid || 0) : ((typeof _liveDraft !== "undefined" && _liveDraft.highBid) || 0);
+      const reco = (typeof recommendBid === "function") ? recommendBid(lotName) : null;
+      const temp = (lot && typeof lotTemperature === "function") ? lotTemperature(lot) : null;
+      const tactic = (reco && typeof _bidTactic === "function") ? _bidTactic(lotName, high, reco, lot) : null;
+      onTheClock = {
+        player: lotName,
+        highBid: high,
+        highBidder: (lot && lot.highTeamId != null && typeof _dmTeamLabel === "function") ? _dmTeamLabel(lot.highTeamId) : null,
+        recommend: reco ? {
+          walkAway: reco.walkEff != null ? reco.walkEff : reco.walk,
+          stretch: reco.stretchEff != null ? reco.stretchEff : reco.stretch,
+          categoryFitAdjustment: reco.catAdj && reco.catAdj.adj
+            ? { dollars: reco.catAdj.adj, why: reco.catAdj.why } : null,
+          myMaxBid: reco.maxBid,
+          rationale: reco.rationale,
+        } : null,
+        roomTemperature: temp ? { read: temp.level, note: temp.note } : null,
+        tacticalNudge: tactic || null,
+      };
+    }
+  } catch (e) {}
+
+  // Live nomination tells — owners telegraphing targets / hunting a position.
+  let ownerTells = [];
+  try {
+    if (typeof nominationTellsSummary === "function") {
+      ownerTells = nominationTellsSummary().map(r => ({ owner: r.label, read: r.note }));
+    }
+  } catch (e) {}
 
   return {
     myTeam: me.name,
@@ -92,10 +134,12 @@ function buildAiContext() {
     myCategoryRanks: cats.ranks,
     myRotoPoints: cats.rotoPoints.toFixed(1),
     myStrategy: strategy,
-    // Jeff's own written game plan, AI-condensed (Settings ▸ Draft Strategy).
-    // Treat as the highest-priority guidance after explicit target prices.
+    // Jeff's own written game plan, AI-condensed (Draft Setup lobby ▸ Draft
+    // strategy). Treat as the highest-priority guidance after target prices.
     myWrittenStrategy: (typeof strategyForAi === "function") ? strategyForAi() : null,
     myTargetPrices: myTargets,
+    onTheClock,
+    ownerTells,
     topPool,
     recentPicks: (typeof _liveDraft !== "undefined" ? _liveDraft.picks : []).slice(-6).map(p => ({
       player: p.player, team: p.team, price: p.price,
@@ -114,6 +158,8 @@ async function callAi(context, userMessage) {
 You give short, actionable advice: which players to bid on, target prices, when to nominate dump candidates, and category-balance trade-offs. Honor the user's pre-set dream/fair/walk-away prices (never recommend bidding above walk-away). Respect user's strategy preferences (stars-vs-scrubs tilt, risk tolerance, punt categories). Keep responses under 150 words. Use specific dollar amounts and player names. Format as 1-3 tight bullets.
 
 Live-bid tactics you may invoke sparingly when relevant: rooms stall at round numbers ($10/$20/$30), so a bid one dollar over ("$21") often breaks a wall cheaply; a "shutdown" jump straight to an opponent's known max bid ends the auction since they can't legally top it; only bid up a player you don't want when you're confident someone else will take him.
+
+The "onTheClock" block (when present) is the tool's own deterministic read of the live lot — recommended walk-away/stretch (already category- and inflation-adjusted), room temperature, a tactical nudge, and "ownerTells" (opponents telegraphing targets). Treat those numbers as the baseline: build on them rather than re-deriving prices, and if you advise against them, say why in a few words.
 
 ${AUCTION_STRATEGY}
 

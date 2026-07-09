@@ -168,9 +168,23 @@ function computeFlatInflation(opts) {
   };
   const hitValAll = remainingHit + keptHit;
   const pitValAll = remainingPit + keptPit;
-  const multiplier = norm(leagueRemaining, remainingValue, baselineMultiplier);
-  const hitMult = norm(hitRemaining, remainingHit, hitValAll > 0 ? hitBudget / hitValAll : 1);
-  const pitMult = norm(pitRemaining, remainingPit, pitValAll > 0 ? pitBudget / pitValAll : 1);
+  let multiplier = norm(leagueRemaining, remainingValue, baselineMultiplier);
+  let hitMult = norm(hitRemaining, remainingHit, hitValAll > 0 ? hitBudget / hitValAll : 1);
+  let pitMult = norm(pitRemaining, remainingPit, pitValAll > 0 ? pitBudget / pitValAll : 1);
+
+  // Keepers-page manual inflation override: when Jeff pins the number there,
+  // every inflation consumer (Values, Board, Overview card, the tiered
+  // distribution) must anchor to it — two tabs showing two inflation worlds is
+  // the seam class that burned the mock cockpit (R16). Auto (no override)
+  // keeps the pool-derived number. Scale hit/pit proportionally so their
+  // split survives the re-anchor.
+  const _kOverride = (typeof _keeperInflationOverride === "function") ? _keeperInflationOverride() : null;
+  if (_kOverride != null && isFinite(_kOverride) && _kOverride > 0 && multiplier > 0) {
+    const f = _kOverride / multiplier;
+    multiplier = _kOverride;
+    hitMult *= f;
+    pitMult *= f;
+  }
 
   return {
     mode: "flat",

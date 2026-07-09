@@ -72,10 +72,32 @@ function mockFeedPumping() { return !!_mockFeed.pumping; }
 
 // ---------------------------------------------------------------------------
 // Cadence samplers (all Math.random-driven so a seeded RNG makes them
-// deterministic in tests). Numbers fitted to the captured ESPN mock.
+// deterministic in tests). Each first tries the LEARNED empirical samples
+// (draft-cadence.js — pooled ESPN mocks until a real draft is recorded, then
+// real-draft-only); the hardcoded numbers fitted to the captured 2026-07-04
+// ESPN mock remain the fallback when nothing has been learned yet.
+
+// Learned-cadence memo — getCadenceSamples() pools arrays across sessions, so
+// don't rebuild it on every one of the thousands of draws in a mock.
+const _mfCadMemo = { t: 0, v: null };
+function _mfCadence() {
+  if (typeof getCadenceSamples !== "function") return null;
+  const now = Date.now();
+  if (now - _mfCadMemo.t < 30000) return _mfCadMemo.v;
+  let v = null;
+  try { v = getCadenceSamples(); } catch (e) {}
+  _mfCadMemo.t = now; _mfCadMemo.v = v;
+  return v;
+}
+function _mfCadDraw(field) {
+  const c = _mfCadence();
+  return (c && typeof cadenceDraw === "function") ? cadenceDraw(c[field]) : null;
+}
 
 // Bid increment: median $1, mean ~$2.56, p90 ~$6.
 function _mfSampleIncrement() {
+  const learned = _mfCadDraw("increments");
+  if (learned != null) return learned;
   const r = Math.random();
   if (r < 0.52) return 1;   // R15 F1: P($1) must exceed .5 so the MEDIAN increment is $1 (ESPN-measured)
   if (r < 0.68) return 2;
@@ -88,6 +110,8 @@ function _mfSampleIncrement() {
 
 // Inter-bid gap in ms: log-normal, median 0.56s, p95 ~4.5s.
 function _mfSampleInterBid() {
+  const learned = _mfCadDraw("interBidMs");
+  if (learned != null) return Math.max(150, Math.min(20000, Math.round(learned)));
   const u1 = Math.random() || 1e-9, u2 = Math.random();
   const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   const mu = Math.log(0.56), sigma = 1.26;   // exp(mu)=0.56; exp(mu+1.645σ)≈4.5
@@ -98,6 +122,8 @@ function _mfSampleInterBid() {
 
 // Lot duration in ms: ESPN's clock dominates — ~25s nearly constant, p95 ~28s.
 function _mfSampleLotDuration() {
+  const learned = _mfCadDraw("lotMs");
+  if (learned != null) return Math.max(3000, Math.min(120000, Math.round(learned)));
   const r = Math.random();
   if (r < 0.90) return 25000;
   if (r < 0.97) return 25000 + Math.floor(Math.random() * 3000);   // 25–28s
@@ -105,7 +131,20 @@ function _mfSampleLotDuration() {
 }
 
 // Gap between lots (~2s fixed with a touch of jitter).
-function _mfSampleBetweenLots() { return 1800 + Math.floor(Math.random() * 600); }
+function _mfSampleBetweenLots() {
+  const learned = _mfCadDraw("betweenLotMs");
+  if (learned != null) return Math.max(300, Math.min(30000, Math.round(learned)));
+  return 1800 + Math.floor(Math.random() * 600);
+}
+
+// One-line pacing provenance for the lobby card: what's driving the tempo.
+function mockFeedCadenceNote() {
+  const c = _mfCadence();
+  if (!c) return "pacing: built-in (fitted to the 7/4 ESPN mock)";
+  return c.source === "real"
+    ? "pacing: learned from your real draft" + (c.sessions > 1 ? "s (" + c.sessions + ")" : "")
+    : "pacing: learned from " + c.sessions + " ESPN mock" + (c.sessions === 1 ? "" : "s");
+}
 
 // ---------------------------------------------------------------------------
 // One lot's bid trace: an escalating ladder from $1 to the engine's clearing
@@ -940,6 +979,7 @@ function renderMockFeedControls(compact) {
   html += '</div>';
   if (active) html += '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">' + _mfSkipControls(false) + '</div>';
   html += '<p class="muted small" style="margin:6px 0 0;">Start jumps you into the cockpit and the draft begins. Bots nominate and bid using each owner\'s tendencies; <b>you nominate on your turn and bid or pass from Your Call</b>. Nothing advances until the lot resolves — hero, ticker, budgets, projected standings and Debrief all run live.</p>';
+  html += '<div class="dim small" style="margin-top:4px;">' + esc(mockFeedCadenceNote()) + '</div>';
   html += '<div class="small" id="mf-status" style="margin-top:6px;">' + _mfStatusText() + '</div>';
   html += '</div>';
   return html;

@@ -140,16 +140,43 @@ function renderDebrief() {
     html += '<div class="card"><h3>Room reads</h3><p class="muted small">Not enough bid detail in the stream to classify sales this time.</p></div>';
   }
 
-  // Nomination patterns (first look)
-  const noms = _dbNominationPatterns();
-  if (noms) {
-    html += '<div class="card"><h3>Nomination patterns <span class="muted small">(first look — telegraphed targets)</span></h3>';
-    html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">Nominated</th><th class="num">Won own noms</th></tr></thead><tbody>';
-    for (const r of noms) {
-      const label = (typeof draftTestMode === "function" && draftTestMode()) ? "Team " + r.teamId : ((typeof espnTeamIdToOwnerId === "function" && getTeam(espnTeamIdToOwnerId(r.teamId))?.owner) || "Team " + r.teamId);
-      html += '<tr><td>' + esc(label) + '</td><td class="num">' + r.noms + '</td><td class="num">' + r.selfWins + '</td></tr>';
+  // Tells discovered — the rich live-tells read (chases, position hunts,
+  // telegraphed targets) from nominationTells(); falls back to the basic
+  // noms/self-wins table when the tells engine isn't loaded.
+  const tellsMap = (typeof nominationTells === "function") ? nominationTells() : null;
+  const tellIds = tellsMap ? Object.keys(tellsMap).filter(id => tellsMap[id].noms > 0) : [];
+  if (tellIds.length) {
+    const label = (tid) => (typeof draftTestMode === "function" && draftTestMode()) ? "Team " + tid
+      : ((typeof espnTeamIdToOwnerId === "function" && getTeam(espnTeamIdToOwnerId(Number(tid)))?.owner) || "Team " + tid);
+    tellIds.sort((a, b) => tellsMap[b].noms - tellsMap[a].noms);
+    html += '<div class="card"><h3>Tells discovered <span class="muted small">(opponent patterns from the bid stream — leverage for next year)</span></h3>';
+    html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">Noms</th><th class="num">Chased own</th><th class="num">Won own</th><th>Read</th></tr></thead><tbody>';
+    for (const tid of tellIds) {
+      const t = tellsMap[tid];
+      const bits = [];
+      if (t.chased >= 2 && t.chased / t.noms >= 0.4) bits.push("nominates his targets");
+      for (const [pos, n] of Object.entries(t.posNoms)) {
+        if (n >= 3 && n / t.noms >= 0.5) bits.push("hunting " + pos);
+      }
+      if (t.targets.length) bits.push("landed: " + t.targets.slice(0, 3).join(", "));
+      html += '<tr><td>' + esc(label(tid)) + '</td><td class="num">' + t.noms + '</td><td class="num">' + t.chased + '</td><td class="num">' + t.ownWins + '</td>' +
+        '<td class="small ' + (bits.length ? '' : 'dim') + '">' + (bits.length ? esc(bits.join(" · ")) : "—") + '</td></tr>';
     }
-    html += '</tbody></table><p class="muted small" style="margin-top:4px;">Teams that win the players they nominate are telegraphing targets — leverage for next year.</p></div>';
+    html += '</tbody></table>';
+    html += '<p class="muted small" style="margin-top:4px;">Chasing = re-bidding on his own nomination after someone else held it (the opener doesn\'t count).</p>';
+    html += '<div id="debrief-tendency-note"></div>';
+    html += '</div>';
+  } else {
+    const noms = _dbNominationPatterns();
+    if (noms) {
+      html += '<div class="card"><h3>Nomination patterns <span class="muted small">(first look — telegraphed targets)</span></h3>';
+      html += '<table style="font-size:12px;"><thead><tr><th>Team</th><th class="num">Nominated</th><th class="num">Won own noms</th></tr></thead><tbody>';
+      for (const r of noms) {
+        const label = (typeof draftTestMode === "function" && draftTestMode()) ? "Team " + r.teamId : ((typeof espnTeamIdToOwnerId === "function" && getTeam(espnTeamIdToOwnerId(r.teamId))?.owner) || "Team " + r.teamId);
+        html += '<tr><td>' + esc(label) + '</td><td class="num">' + r.noms + '</td><td class="num">' + r.selfWins + '</td></tr>';
+      }
+      html += '</tbody></table><p class="muted small" style="margin-top:4px;">Teams that win the players they nominate are telegraphing targets — leverage for next year.</p></div>';
+    }
   }
 
   return html;
@@ -239,6 +266,15 @@ function openDebrief() {
   document.getElementById("debrief-close")?.addEventListener("click", closeDebrief);
   document.getElementById("debrief-audit")?.addEventListener("click", runDraftAudit);
   ov.addEventListener("click", (e) => { if (e.target === ov) closeDebrief(); });
+  // Session learnings: archive owner tells (REAL home-league drafts only —
+  // bots/strangers never touch the human profiles) + pacing samples. Both are
+  // gated + idempotent inside their modules.
+  try {
+    const saved = (typeof recordOwnerTendencies === "function") && recordOwnerTendencies();
+    const note = document.getElementById("debrief-tendency-note");
+    if (note && saved) note.innerHTML = '<p class="small good" style="margin:4px 0 0;">✓ Saved to owner profiles — these tells carry into next year\'s draft prep.</p>';
+  } catch (e) {}
+  try { if (typeof recordDraftCadence === "function") recordDraftCadence(); } catch (e) {}
 }
 function closeDebrief() {
   document.getElementById("debrief-overlay")?.remove();

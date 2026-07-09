@@ -282,7 +282,8 @@ function _nomTellsBlock() {
   let html = '<div class="small" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">';
   html += '<div class="muted" style="margin-bottom:4px;">📡 <b>Nomination tells</b> (this draft)</div>';
   for (const r of rows) {
-    html += '<div style="margin-top:2px;"><b>' + esc(r.label) + '</b> <span class="muted">— ' + esc(r.note) + '</span></div>';
+    html += '<div style="margin-top:2px;"><b>' + esc(r.label) + '</b> <span class="muted">— ' + esc(r.note) + '</span>' +
+      (r.hist ? ' <span class="dim">· ' + esc(r.hist) + '</span>' : '') + '</div>';
   }
   html += '</div>';
   return html;

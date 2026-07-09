@@ -84,8 +84,21 @@ document.addEventListener("click", (e) => {
 // ---------------------------------------------------------------------------
 // Current lot from the event stream: walk the log; a NOMINATION (or first BID)
 // after the last SOLD opens a lot, SOLD closes it.
+// The event walk below is O(events) and callers run it several times per render
+// with renders arriving every bot bid — at a 15k-event cap that's real waste by
+// hour three of draft day. The walk result is pure in the event list, so cache
+// it keyed the same way nominationTells does; the TIME-dependent fields (quiet/
+// idle) and the name lookup (async name map) stay computed fresh on every call.
+const _dmLotCache = { evsRef: null, len: -1, lastSeq: -1, lot: null };
 function currentLotFromEvents() {
   const evs = _dlog.events;
+  const lastSeq = evs.length ? (evs[evs.length - 1].seq || 0) : 0;
+  // Valid only for the SAME array object at the same length/seq — appends,
+  // overflow splices, and wholesale replacement (stream rotation, tests) all
+  // change at least one of the three.
+  if (_dmLotCache.evsRef === evs && _dmLotCache.len === evs.length && _dmLotCache.lastSeq === lastSeq) {
+    return _dmLotFinish(_dmLotCache.lot);
+  }
   let lot = null;
   const soldIds = new Set();   // a trailing BID for an already-SOLD player must not reopen a lot (P2R1 state-2)
   for (const e of evs) {
@@ -106,6 +119,16 @@ function currentLotFromEvents() {
       if (Number.isFinite(e.amount)) lot.bids.push({ teamId: e.teamId, amount: e.amount, at: e.at, ack: e.cmd === "BID_ACK" });
     }
   }
+  _dmLotCache.evsRef = evs;
+  _dmLotCache.len = evs.length;
+  _dmLotCache.lastSeq = lastSeq;
+  _dmLotCache.lot = lot;
+  return _dmLotFinish(lot);
+}
+
+// Time-dependent + name-map-dependent finishing pass over the cached walk
+// result — always fresh (idle state ticks with the clock; names resolve async).
+function _dmLotFinish(lot) {
   if (!lot) return null;
   const lastAt = lot.bids.length ? lot.bids[lot.bids.length - 1].at : lot.at;
   // Quiet lots go IDLE, not blank — every real auction has commissioner
@@ -236,10 +259,12 @@ function _dmTellLine(lot) {
   const t = nominationTells()[lot.nomTeamId];
   if (!t || t.noms < 3 || t.chased < 2 || (t.chased / t.noms) < 0.4) return '';
   const who = _dmTeamLabel(lot.nomTeamId);
+  const hist = (typeof ownerTendencyNote === "function") ? ownerTendencyNote(lot.nomTeamId) : null;
   return '<div class="small" style="margin-top:4px; color:var(--warn);">📡 <b>Tell:</b> ' + esc(who) +
     ' chased ' + t.chased + ' of his own ' + t.noms + ' noms' +
     (t.ownWins ? ' (won ' + t.ownWins + (t.targets.length ? ': ' + esc(t.targets.slice(0, 2).join(", ")) : '') + ')' : '') +
-    ' — likely a real target; bidding him up is risky but his $ can be drained.</div>';
+    ' — likely a real target; bidding him up is risky but his $ can be drained.' +
+    (hist ? ' <span class="muted">' + esc(hist) + '</span>' : '') + '</div>';
 }
 
 // Per-owner tells summary for the Nominations panel: who telegraphs targets,
@@ -256,7 +281,10 @@ function nominationTellsSummary() {
     }
     const hunted = Object.entries(t.posNoms).filter(([, n]) => n >= 3 && n / t.noms >= 0.5);
     for (const [pos, n] of hunted) bits.push("hunting " + pos + " (" + n + "/" + t.noms + " noms)");
-    if (bits.length) rows.push({ espnId: Number(espnId), label: _dmTeamLabel(Number(espnId)), noms: t.noms, note: bits.join(" · ") });
+    if (bits.length) {
+      const hist = (typeof ownerTendencyNote === "function") ? ownerTendencyNote(Number(espnId)) : null;
+      rows.push({ espnId: Number(espnId), label: _dmTeamLabel(Number(espnId)), noms: t.noms, note: bits.join(" · "), hist: hist || null });
+    }
   }
   rows.sort((a, b) => b.noms - a.noms);
   return rows;
@@ -305,12 +333,21 @@ function rosterFit(playerName) {
   }
   else if ((_DM_FLEX[val.posKey === "SS" || val.posKey === "2B" ? "MI" : val.posKey === "1B" || val.posKey === "3B" ? "CI" : "UTIL"] || []).includes(val.posKey) && ctx.openPos.has("UTIL")) { score += 0.5; }
   // Category need — does he clear a notable bar in one of my weak cats?
+  // Strategy-aware: a PUNTED category is never a need (his help there is
+  // worthless to me); a TARGET category earns a smaller bonus even when I'm
+  // not weak in it yet.
   const tot = (typeof aggregateCats === "function") ? aggregateCats([playerName]) : null;
   if (tot) {
+    const strat = (typeof getMyStrategy === "function") ? getMyStrategy() : null;
+    const punts = new Set((strat && strat.puntCategories) || []);
+    const targetCats = new Set((strat && strat.targetCategories) || []);
     for (const c of ["SB", "HR", "R", "RBI", "QS", "K", "SV_HLD"]) {
-      if (!ctx.weak.has(c)) continue;
+      if (punts.has(c)) continue;
       const v = c === "SV_HLD" ? tot.SV_HLD : tot[c];
-      if (v != null && _FIT_NOTABLE[c] && v >= _FIT_NOTABLE[c]) { score += 1; parts.push("+" + (c === "SV_HLD" ? "SV+H" : c)); }
+      const notable = v != null && _FIT_NOTABLE[c] && v >= _FIT_NOTABLE[c];
+      if (!notable) continue;
+      if (ctx.weak.has(c)) { score += 1; parts.push("+" + (c === "SV_HLD" ? "SV+H" : c)); }
+      else if (targetCats.has(c)) { score += 0.5; parts.push("+" + (c === "SV_HLD" ? "SV+H" : c) + " 🎯"); }
     }
   }
   if (!score) return null;
@@ -1945,7 +1982,7 @@ function _dmPlanBar() {
   const brief = (typeof strategyForAi === "function") ? strategyForAi() : null;
   return brief
     ? '<div class="small" style="white-space:pre-wrap;">' + esc(brief) + '</div>'
-    : '<p class="muted small" style="margin:0;">No strategy written — Settings ▸ Draft Strategy.</p>';
+    : '<p class="muted small" style="margin:0;">No strategy written — exit to Draft Setup and fill in the Draft strategy card.</p>';
 }
 
 // Full pick-by-pick draft history (newest first), for the "history" side card.

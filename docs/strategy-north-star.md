@@ -20,8 +20,9 @@ positional scarcity, so the sim trains real price discipline instead of overpayi
 - ✅ FanGraphs $ (Jeff's exact settings) preferred over SGP; SGP fallback.
 - ✅ Tiered keeper inflation, budget-conserving, normalized to 1.00 at zero keepers.
 - ✅ Verdict chip (Buy/Fair/Overpay) + "your max bid" at the decision moment.
-- 🟡 **Market vs. model gap** (NFBC AAV vs. our inflated $). NFBC prices imported;
-  surface a per-player *market−model delta* as a target/fade cue on Values/Board.
+- ✅ **Market vs. model gap** (NFBC AAV vs. our inflated $): Δmkt column on the
+  Draft Mode board + a market-vs-model cue line on the on-the-clock hero
+  (`_dmMarketDeltaLine`) — "room will overpay / quiet bargain".
 - Market truths to encode (KB `adp_and_market_inefficiencies`, DraftKick):
   stars clear **$5–10 over** projection; **SB and saves carry a premium**; catchers
   deflate; first-player-in-a-tier often gets a small discount, last-in-tier pays $5–10 more.
@@ -44,20 +45,26 @@ positional scarcity, so the sim trains real price discipline instead of overpayi
 ## 4. Nomination strategy (information + budget warfare)
 - ✅ Mock engine `nomMix` (target / dump / drain / blocker) + positional-run awareness.
 - ✅ Nomination Targets panel (your keepers vs. opponents' open needs).
-- 🔲 **Drain/enforce suggestions** during *live* draft: "nominate X (a position Y is
-  desperate for) to drain their budget" — extend Nominations to opponent-need-aware picks.
+- ✅ **Drain/enforce suggestions** during *live* draft: Nominations panel goal
+  selector (Drain a rival / dump / blocker, opponent-need-aware) + the live
+  Squeeze/enforcement tactic on the hero.
+- ✅ **Nomination tells** (live draft archaeology): owners who chase their own
+  nominations or hunt one position are flagged on the hero + Nominations panel
+  (`nominationTells`), archived per owner from real drafts (owner-tendencies.js).
 - 🔲 **First-in-tier cue**: flag when nominating the first player of a tier (discount
   window) vs. waiting (supply squeeze). Tier-cliff dividers already exist on the board.
 
 ## 5. Live-bid tactics (mostly for the AI assistant + mock realism)
 DraftKick's human-auction tactics — model in the AI assistant and/or mock AI:
-- 🔲 **Round-number resistance** ($10/$20/$30 thresholds — more lots clear there than
-  chance): the AI could advise "bid $21 to break their $20 wall," and the mock AI could
-  hesitate at round numbers.
-- 🔲 **Max-bid leverage**: *Shutdown* (jump to opponent's exact max) and *Squeeze*
-  (push to their max, then drop) — AI plays these using `computeLiveTeamStates()` max bids.
-- 🔲 **Price enforcement risk**: only bid up a player you don't want when you're *sure*
-  they'll be outbid — the AI should quantify that risk before suggesting it.
+- ✅ **Round-number resistance**: `_bidTactic` advises "bid $21 to break the $20
+  wall" below your walk price.
+- ✅ **Max-bid leverage**: *Shutdown* (jump to the field's max) below walk;
+  *Squeeze* (`_squeezeTactic`, push the rival toward his max, ceiling capped at
+  fair) at/above walk — both from `computeLiveTeamStates()` max bids.
+- ✅ **Price enforcement risk**: quantified before a squeeze is suggested
+  (distinct-bidder count + room temperature); cold/empty rooms get an explicit
+  "don't enforce" instead. All of these now also ride into the AI context
+  (`onTheClock` block) so Claude builds on them rather than re-deriving.
 - 🔲 **Bid timing**: lightning/sniper framing → the mock's stepwise bidding already
   models pacing; the AI could suggest tempo.
 
@@ -70,11 +77,14 @@ DraftKick's human-auction tactics — model in the AI assistant and/or mock AI:
   category is unreachable rather than just flagging it.
 
 ## 7. Owner tendencies & draft archaeology (the planned edge)
-- 🔲 **Owner over-invests in hitting/pitching** → predictable nomination patterns; scout
-  and exploit. This is the planned "owner tendencies via Jeff's draft history" feature.
-- 🔲 **Draft archaeology**: which managers nominated players they ultimately signed =
-  they telegraph targets → future price-enforcement leverage. Reconstruct from History /
-  live nomination log; persist as per-owner notes for next year.
+- 🟡 **Owner over-invests in hitting/pitching** → History tab builds per-owner
+  tendency profiles from imported draft results (feeds the mock engine); deeper
+  analytics on the collected draft_events data still open.
+- 🟡 **Draft archaeology**: LIVE tells built (`nominationTells` — chases, position
+  hunts, telegraphed targets, on the hero + Nominations panel + Debrief), and
+  they now PERSIST per owner across seasons (owner-tendencies.js — real
+  home-league drafts only, never bots/strangers). Still open: bid-increment
+  habits, overpay-by-position patterns from the full event archive.
 
 ---
 

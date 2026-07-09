@@ -1,6 +1,27 @@
 # Live Draft 2027 — Redesign & Intelligence Build Plan
 
 **Status:** PLANNED (Jul 3 2026) — open questions for Jeff at the bottom; answers may reshape scope.
+
+## Status update (2026-07-09)
+
+Phases 1–2 are SHIPPED and battle-tested (capture, Supabase mirror, Draft Mode
+cockpit, hardening rounds). Phase 3 is largely shipped: projected live
+standings, recommended bid (now category-aware — walk/stretch shift by marginal
+roto worth), nomination goals incl. drain, endgame optimizer, room-temperature
+detector, live nomination TELLS (chases/position hunts) with per-owner
+persistence across seasons (`js/data/owner-tendencies.js`, REAL home-league
+drafts only), Squeeze/enforcement tactics with quantified risk, and the full
+deterministic signal set feeding the AI context. Phase 4's pre-draft checklist
+shipped as the 🧳 Draft-day readiness card (Draft Setup lobby). `deriveCadence`
+shipped with a design change: pacing is learned LOCALLY from extension-fed
+event logs (`js/data/draft-cadence.js`) — ESPN mock rooms accumulate into a
+"mock" bucket, and the first REAL home-league draft takes over pacing outright
+(Jeff's rule, 2026-07-09); no Supabase round-trip needed.
+
+**Still open from this plan:** post-draft reco replay + room-temp accuracy
+scoring (Phase 4 debrief item), first-in-tier nomination cue, bid-timing/tempo
+advice, deeper owner analytics on the archived event data (bid-increment
+habits, overpay-by-position).
 **Origin:** Jeff's feature brainstorm (bid database, UI redo, on-the-clock card, projected
 standings, strategy input, nomination goals, endgame optimizer, cold-room detector).
 **Read first:** `strategy-north-star.md` (feature philosophy), `project_ultimate_draft.md`
