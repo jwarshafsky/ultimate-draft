@@ -161,16 +161,105 @@ function ownerInterest(playerName, opts) {
   return out.slice(0, opts.limit || 3);
 }
 
-function _dmInterestHtml(name) {
+function _dmInterestHtml(name, lot) {
   const interest = ownerInterest(name, { limit: 3 });
-  if (!interest.length) return '';
-  let html = '<div class="small" style="margin-top:6px;"><span class="muted">👀 Likely interested:</span> ';
-  html += interest.map(i =>
-    '<span style="white-space:nowrap;">' + esc(i.ownerName) +
-    ' <span class="' + (i.canAfford ? 'muted' : 'dim') + '">(' + esc(i.reason) + ')</span></span>'
-  ).join(' · ');
-  html += '</div>';
+  let html = '';
+  if (interest.length) {
+    html += '<div class="small" style="margin-top:6px;"><span class="muted">👀 Likely interested:</span> ';
+    html += interest.map(i =>
+      '<span style="white-space:nowrap;">' + esc(i.ownerName) +
+      ' <span class="' + (i.canAfford ? 'muted' : 'dim') + '">(' + esc(i.reason) + ')</span></span>'
+    ).join(' · ');
+    html += '</div>';
+  }
+  html += _dmTellLine(lot);
   return html;
+}
+
+// ---------------------------------------------------------------------------
+// Nomination tells — draft archaeology, live (north-star §7). One walk over the
+// raw event stream: who nominated whom, whether the nominator CHASED his own
+// nomination (bid again after another team held it), and whether he won it
+// against real competition. Owners who chase their own noms telegraph targets;
+// owners who keep nominating one position are hunting it. Works identically on
+// mock feeds, so Jeff can rehearse reading the room. Cached per event count —
+// updateDraftModeLive patches the hero every bot bid.
+const _dmTellsCache = { key: null, val: null };   // mutated, never reassigned (tests hold a reference)
+function nominationTells() {
+  const evs = (typeof _dlog !== "undefined" && Array.isArray(_dlog.events)) ? _dlog.events : [];
+  const lastSeq = evs.length ? (evs[evs.length - 1].seq || 0) : 0;
+  const key = evs.length + ":" + lastSeq + "|" + (typeof _dlog !== "undefined" ? _dlog.leagueId + ":" + _dlog.startedAt : "");
+  if (_dmTellsCache.key === key) return _dmTellsCache.val;
+  const byTeam = {};
+  const team = id => (byTeam[id] = byTeam[id] || { noms: 0, chased: 0, ownWins: 0, targets: [], posNoms: {} });
+  let lot = null;   // { playerId, nomTeamId, othersBid, counted }
+  for (const e of evs) {
+    if (e.cmd === "INIT") { lot = null; continue; }   // reconnect gap — mid-lot state can't be trusted
+    if (e.cmd === "NOMINATION" && e.playerId != null && e.playerId > 1000 && e.teamId != null) {
+      lot = { playerId: e.playerId, nomTeamId: e.teamId, othersBid: false, counted: false };
+      const t = team(e.teamId);
+      t.noms++;
+      const nm = _resolveEspnName(e.playerId);
+      const v = (nm && typeof getPlayerValue === "function") ? getPlayerValue(nm) : null;
+      if (v && v.posKey) t.posNoms[v.posKey] = (t.posNoms[v.posKey] || 0) + 1;
+      continue;
+    }
+    if ((e.cmd === "BID" || e.cmd === "BID_ACK") && lot && e.playerId === lot.playerId) {
+      // The opening bid rides with the nomination, so only a bid placed AFTER
+      // another team held the lot counts as chasing — that's re-engagement,
+      // not the mandatory opener.
+      if (e.teamId !== lot.nomTeamId) lot.othersBid = true;
+      else if (lot.othersBid && !lot.counted) { lot.counted = true; team(lot.nomTeamId).chased++; }
+      continue;
+    }
+    if (e.cmd === "SOLD" && e.playerId != null && lot && lot.playerId === e.playerId) {
+      if (e.teamId === lot.nomTeamId && lot.othersBid) {
+        const t = team(lot.nomTeamId);
+        t.ownWins++;
+        // A win over competition implies a chase even if the bids fell in an
+        // INIT gap and were never logged.
+        if (!lot.counted) t.chased++;
+        const nm = _resolveEspnName(e.playerId);
+        if (nm && !/^Player \d+$/.test(nm) && t.targets.length < 4) t.targets.push(nm);
+      }
+      lot = null;
+    }
+  }
+  _dmTellsCache.key = key;
+  _dmTellsCache.val = byTeam;
+  return byTeam;
+}
+
+// The current lot's tell: is this nominator known to nominate players he wants?
+function _dmTellLine(lot) {
+  if (!lot || lot.nomTeamId == null || typeof nominationTells !== "function") return '';
+  const t = nominationTells()[lot.nomTeamId];
+  if (!t || t.noms < 3 || t.chased < 2 || (t.chased / t.noms) < 0.4) return '';
+  const who = _dmTeamLabel(lot.nomTeamId);
+  return '<div class="small" style="margin-top:4px; color:var(--warn);">📡 <b>Tell:</b> ' + esc(who) +
+    ' chased ' + t.chased + ' of his own ' + t.noms + ' noms' +
+    (t.ownWins ? ' (won ' + t.ownWins + (t.targets.length ? ': ' + esc(t.targets.slice(0, 2).join(", ")) : '') + ')' : '') +
+    ' — likely a real target; bidding him up is risky but his $ can be drained.</div>';
+}
+
+// Per-owner tells summary for the Nominations panel: who telegraphs targets,
+// who's hunting a position. Only owners with a real signal make the list.
+function nominationTellsSummary() {
+  const byTeam = nominationTells();
+  const rows = [];
+  for (const [espnId, t] of Object.entries(byTeam)) {
+    if (t.noms < 3) continue;
+    const bits = [];
+    if (t.chased >= 2 && (t.chased / t.noms) >= 0.4) {
+      bits.push("chases his own noms (" + t.chased + "/" + t.noms + (t.ownWins ? ", won " + t.ownWins : "") + ")" +
+        (t.targets.length ? ": " + t.targets.slice(0, 3).join(", ") : ""));
+    }
+    const hunted = Object.entries(t.posNoms).filter(([, n]) => n >= 3 && n / t.noms >= 0.5);
+    for (const [pos, n] of hunted) bits.push("hunting " + pos + " (" + n + "/" + t.noms + " noms)");
+    if (bits.length) rows.push({ espnId: Number(espnId), label: _dmTeamLabel(Number(espnId)), noms: t.noms, note: bits.join(" · ") });
+  }
+  rows.sort((a, b) => b.noms - a.noms);
+  return rows;
 }
 
 // Roster fit — a fast, local score (no AI) blending position need + category
@@ -285,25 +374,48 @@ function recommendBid(playerName) {
   if (maxBid != null && walk > maxBid) { walk = maxBid; reasons.push("capped by your max bid"); }
   if (maxBid != null && stretch > maxBid) stretch = maxBid;
   if (stretch < walk) stretch = walk;
-  return { walk: Math.max(1, walk), stretch: Math.max(1, stretch), maxBid, rationale: reasons.join(" · ") };
+  walk = Math.max(1, walk); stretch = Math.max(1, stretch);
+  // Category marginal worth: shift walk/stretch by what he does to MY projected
+  // roto standings (categoryBidAdjustment, cached per lot). Base prices stay in
+  // the result — the hero shows both versions, base → adjusted.
+  const catAdj = (typeof categoryBidAdjustment === "function") ? categoryBidAdjustment(playerName) : null;
+  let walkEff = walk, stretchEff = stretch;
+  if (catAdj && catAdj.adj) {
+    walkEff = Math.max(1, walk + catAdj.adj);
+    stretchEff = Math.max(walkEff, stretch + catAdj.adj);
+    if (maxBid != null) { walkEff = Math.min(walkEff, Math.max(1, maxBid)); stretchEff = Math.min(stretchEff, Math.max(1, maxBid)); }
+    if (stretchEff < walkEff) stretchEff = walkEff;
+  }
+  return { walk, stretch, walkEff, stretchEff, catAdj, maxBid, rationale: reasons.join(" · ") };
 }
 
 // ---------------------------------------------------------------------------
 // Projected standings: each team's eventual roster = keepers (incl call-ups) +
 // picks so far + a projected fill of its open slots from the remaining pool,
 // where richer teams (higher $/slot) land the better remaining players.
-function computeLiveProjStandings() {
+// `assume` = { name, price }: run the counterfactual where MY team wins that
+// player at that price (he leaves the pool, my money/slots shrink) — the
+// category-marginal-worth cue diffs this against the plain run.
+function computeLiveProjStandings(assume) {
   if (typeof computeMockStandings !== "function") return null;
   const states = computeLiveTeamStates();
   const selections = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : {};
   const inflMult = computeLiveInflation()?.multiplier || 1;
-  const pool = availableDraftPool();
+  const meTeam = assume ? (typeof getMyDraftTeam === "function" ? getMyDraftTeam() : (typeof getMyTeam === "function" ? getMyTeam() : null)) : null;
+  if (assume && !meTeam) assume = null;   // no seat → counterfactual is undefined; run plain
+  const nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (x => String(x || "").toLowerCase());
+  let pool = availableDraftPool();
+  if (assume) pool = pool.filter(p => nk(p.name) !== nk(assume.name));
   const money = {}, slots = {}, fills = {};
   for (const t of (typeof draftTeams === "function" ? draftTeams() : LEAGUE.teams)) {
     const st = states[t.id];
     money[t.id] = Math.max(0, st ? st.budget : 0);
     slots[t.id] = Math.max(0, st ? st.slotsRemaining : 0);
     fills[t.id] = [];
+  }
+  if (assume) {
+    money[meTeam.id] = Math.max(0, (money[meTeam.id] || 0) - Math.max(1, assume.price || 1));
+    slots[meTeam.id] = Math.max(0, (slots[meTeam.id] || 0) - 1);
   }
   // Allocate the remaining pool (value-descending) to open teams: the richest
   // team that can still afford a player lands him. Selecting on ABSOLUTE money
@@ -345,11 +457,69 @@ function computeLiveProjStandings() {
       .filter(([_, f]) => f.keeper)   // minor keepers are stashed — no ML slot
       .map(([name]) => ({ name }));
     const picks = _liveDraft.picks.filter(p => p.team === t.id).map(p => ({ name: p.player, price: p.price, value: getPlayerValue(p.player)?.value || 0 }));
+    if (assume && t.id === meTeam.id) picks.push({ name: assume.name, price: Math.max(1, assume.price || 1), value: getPlayerValue(assume.name)?.value || 0 });
     synth[t.id] = { teamId: t.id, ownerName: t.owner, isMe: !!t.isMe, kept, drafted: [...picks, ...fills[t.id]] };
   }
   const res = computeMockStandings(synth);
   if (res) res.projectedFills = fills;
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Category marginal worth (north-star §6 / plan Phase 3): what winning the
+// on-the-clock player does to MY projected roto standings vs. letting the room
+// have him — the baseline run already fills my open slot with a generic pool
+// player, so the diff is his edge over that alternative, in roto points.
+// Cached per (player, pick count, seat): updateDraftModeLive re-renders the
+// hero on every bot bid (~0.5s) and the two standings runs are not free.
+const _dmCatAdjCache = { key: null, val: null };   // mutated, never reassigned (tests hold a reference)
+function categoryBidAdjustment(name) {
+  const meTeam = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : (typeof getMyTeam === "function" ? getMyTeam() : null);
+  if (!meTeam || !name) return null;
+  const key = name + "|" + _liveDraft.picks.length + "|" + meTeam.id + "|" + (_liveDraft.streamKey || "");
+  if (_dmCatAdjCache.key === key) return _dmCatAdjCache.val;
+  let out = null;
+  try { out = _dmCatAdjCompute(name, meTeam); } catch (e) { console.warn("cat adjustment failed:", e); }
+  _dmCatAdjCache.key = key;
+  _dmCatAdjCache.val = out;
+  return out;
+}
+
+function _dmCatAdjCompute(name, meTeam) {
+  const val = getPlayerValue(name);
+  if (!val) return null;
+  // Without a stat projection the with-me run can't credit him in any category
+  // (he'd read as a downgrade on a $0 stat line) — no honest adjustment exists.
+  if (typeof getProjection === "function" && !getProjection(name)) return null;
+  const st = computeLiveTeamStates()[meTeam.id];
+  if (!st || st.slotsRemaining <= 0) return null;
+  const inflMult = computeLiveInflation()?.multiplier || 1;
+  const price = Math.max(1, Math.round((val.value || 0) * inflMult));
+  const base = computeLiveProjStandings();
+  if (!base || !base.anyData) return null;
+  const withMe = computeLiveProjStandings({ name, price });
+  if (!withMe || !withMe.anyData) return null;
+  const mb = base.teams.find(t => t.teamId === meTeam.id);
+  const mw = withMe.teams.find(t => t.teamId === meTeam.id);
+  if (!mb || !mw) return null;
+  const deltaPts = mw.rotoPoints - mb.rotoPoints;
+  // Which categories moved (rank_c = N + 1 − points_c; best = N pts = 1st).
+  const labels = (typeof CAT_LABELS !== "undefined") ? CAT_LABELS : {};
+  const ord = (typeof _ord === "function") ? _ord : (n => String(n));
+  const movers = [];
+  for (const c of base.cats) {
+    const rb = base.N + 1 - (mb.catPoints[c] || 0);
+    const rw = withMe.N + 1 - (mw.catPoints[c] || 0);
+    if (Math.abs(rw - rb) >= 0.5) movers.push({ c, rb, rw, gain: rb - rw });
+  }
+  movers.sort((a, b) => Math.abs(b.gain) - Math.abs(a.gain));
+  const why = movers.slice(0, 2)
+    .map(m => (labels[m.c] || m.c) + " " + ord(Math.round(m.rb)) + "→" + ord(Math.round(m.rw)))
+    .join(", ");
+  // A marginal roto point runs ~$3 in a $260×12 auction; clamp so the cue
+  // nudges the price call instead of replacing it.
+  const adj = Math.max(-6, Math.min(6, Math.round(deltaPts * 3)));
+  return { adj, deltaPts, why: why || null, assumedPrice: price };
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +736,7 @@ function _dmHero() {
       html += newsBlock;
       if (!newsBlock && inj) html += '<div class="small dim" style="margin-top:4px;">No recent Rotowire item — no return estimate available.</div>';
     }
-    html += '<div id="dm-interest">' + _dmInterestHtml(name) + '</div>';
+    html += '<div id="dm-interest">' + _dmInterestHtml(name, lot) + '</div>';
     const temp = lot ? lotTemperature(lot) : null;
     html += '<div id="dm-temp">' + (temp ? _dmTempChip(temp) : '') + '</div>';
     html += '<div id="dm-idle">' + (lot && lot.idle ? '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>' : '') + '</div>';
@@ -652,7 +822,10 @@ function _dmBidMeter(lot) {
   // Call" numbers aren't duplicated): the white tick = fair = walk-away, and an
   // accent tick = your stretch price for this player.
   const reco = (typeof recommendBid === "function") ? recommendBid(lot.name) : null;
-  const stretch = (reco && reco.stretch && reco.stretch > fair) ? reco.stretch : null;
+  // The tick is the category-adjusted stretch when there is one, so the meter
+  // agrees with the verdict; the hero's Category-fit line shows base → adjusted.
+  const recoStretch = reco ? (reco.stretchEff != null ? reco.stretchEff : reco.stretch) : null;
+  const stretch = (recoStretch && recoStretch > fair) ? recoStretch : null;
   const ceiling = Math.max(Math.ceil(fair * 1.8), Math.ceil((stretch || 0) * 1.12), Math.ceil(bid * 1.1), 6);
   const pct = (v) => Math.max(0, Math.min(100, (v / ceiling) * 100));
   const bargainEnd = pct(fair * 0.85), fairMid = pct(fair), overpayStart = pct(fair * 1.15), bidPct = pct(bid);
@@ -763,9 +936,13 @@ function _dmRecoHtml(name, lot) {
   const r = recommendBid(name);
   if (!r) return pre + '<span class="muted small">no value data for ' + esc(name) + '</span>';
   const high = lot ? lot.highBid : (_liveDraft.highBid || 0);
+  // Verdict reads against the category-adjusted prices (walkEff/stretchEff fall
+  // back to base when there's no adjustment) — the line below shows both.
+  const vWalk = r.walkEff != null ? r.walkEff : r.walk;
+  const vStretch = r.stretchEff != null ? r.stretchEff : r.stretch;
   let verdict, vcolor;
-  if (high < r.walk) { verdict = "room to bid"; vcolor = "var(--good)"; }
-  else if (high < r.stretch) { verdict = "stretch territory"; vcolor = "var(--warn)"; }
+  if (high < vWalk) { verdict = "room to bid"; vcolor = "var(--good)"; }
+  else if (high < vStretch) { verdict = "stretch territory"; vcolor = "var(--warn)"; }
   else { verdict = "walk away"; vcolor = "var(--bad)"; }
   // The walk-away/stretch prices now live on the bid meter as ticks, so this
   // panel is the DECISION: a big verdict word + your budget cap + the why.
@@ -773,6 +950,18 @@ function _dmRecoHtml(name, lot) {
   html += '<div class="small muted" style="margin-top:3px;">at <b style="color:var(--text);">$' + high + '</b>' +
     (r.maxBid != null ? ' · your budget max <b style="color:var(--text);">$' + r.maxBid + '</b>' : '') + '</div>';
   html += '<div class="muted small" style="margin-top:6px;">' + esc(r.rationale) + '</div>';
+  // Category fit: winning him at ~walk vs. letting the room have him, measured
+  // in projected roto points and shown as a ±$ shift with BOTH price versions.
+  if (r.catAdj && r.catAdj.adj) {
+    const a = r.catAdj.adj;
+    const col = a > 0 ? "var(--good)" : "var(--bad)";
+    html += '<div class="small" style="margin-top:4px;">🧮 Category fit: <b style="color:' + col + ';">' +
+      (a > 0 ? "+" : "−") + "$" + Math.abs(a) + '</b>' +
+      (r.catAdj.why ? ' <span class="muted">(' + esc(r.catAdj.why) + ')</span>' : '') +
+      ' — walk $' + r.walk + '→<b>$' + r.walkEff + '</b> · stretch $' + r.stretch + '→<b>$' + r.stretchEff + '</b></div>';
+  } else if (r.catAdj) {
+    html += '<div class="small dim" style="margin-top:4px;">🧮 Category fit: neutral — walk/stretch unchanged</div>';
+  }
   // Market vs model (north-star §1): NFBC AAV against our inflated $ — the
   // "room will overpay / quiet bargain" cue. Renders nothing when NFBC data
   // isn't loaded (getNfbc → null), so a missing import can't break the hero.
@@ -802,22 +991,71 @@ function _dmRecoHtml(name, lot) {
   return pre + html;
 }
 
-// One tactical nudge (kept deliberately light): break a round-number wall, or
-// a shutdown jump to the field's max when you want the player and can afford it.
+// One tactical nudge (kept deliberately light). Below your walk price it plays
+// the BUYING tactics (round-number wall break, shutdown jump); at/above your
+// walk it flips to ENFORCEMENT — the Squeeze (push the rival toward his known
+// max, then drop) with the get-stuck risk quantified before it's suggested
+// (north-star §5: only bid up a player you don't want when you're sure he'll
+// be outbid). Prices read against the category-adjusted walk/stretch.
 function _bidTactic(name, high, r, lot) {
-  if (!r || high >= r.walk) return null;   // only when you'd still bid
-  // Round-number resistance: rooms stall at $10/$20/$30.
-  if (high >= 10 && high % 10 === 0 && high + 1 <= r.maxBid) {
-    return "Bid $" + (high + 1) + " to break the $" + high + " wall.";
+  if (!r) return null;
+  const walk = r.walkEff != null ? r.walkEff : r.walk;
+  const stretch = r.stretchEff != null ? r.stretchEff : r.stretch;
+  if (high < walk) {
+    // Round-number resistance: rooms stall at $10/$20/$30.
+    if (high >= 10 && high % 10 === 0 && high + 1 <= r.maxBid) {
+      return "Bid $" + (high + 1) + " to break the $" + high + " wall.";
+    }
+    // Shutdown: if the interested field's top max bid is below yours, a jump to
+    // their max ends it — nobody can legally top it.
+    const interest = (typeof ownerInterest === "function") ? ownerInterest(name, { limit: 5 }) : [];
+    const fieldMax = interest.reduce((m, i) => Math.max(m, i.maxBid || 0), 0);
+    if (fieldMax > 0 && fieldMax >= high && fieldMax < r.maxBid && fieldMax <= stretch && interest.length >= 1) {
+      return "Shutdown: a jump to $" + fieldMax + " tops the field's max — no one can counter.";
+    }
+    return null;
   }
-  // Shutdown: if the interested field's top max bid is below yours, a jump to
-  // their max ends it — nobody can legally top it.
-  const interest = (typeof ownerInterest === "function") ? ownerInterest(name, { limit: 5 }) : [];
-  const fieldMax = interest.reduce((m, i) => Math.max(m, i.maxBid || 0), 0);
-  if (fieldMax > 0 && fieldMax >= high && fieldMax < r.maxBid && fieldMax <= r.stretch && interest.length >= 1) {
-    return "Shutdown: a jump to $" + fieldMax + " tops the field's max — no one can counter.";
+  return _squeezeTactic(name, high, r, lot);
+}
+
+// Squeeze / price enforcement, with the risk of getting stuck quantified from
+// the live lot: distinct other bidders + the room-temperature read. Suggested
+// only while the rival is still UNDER market (he's getting a bargain) and the
+// worst case — the field drops and you own him near fair value — is survivable.
+function _squeezeTactic(name, high, r, lot) {
+  if (!lot || !Array.isArray(lot.bids) || lot.highTeamId == null) return null;
+  const myEspn = (typeof getMyDraftEspnId === "function") ? getMyDraftEspnId() : null;
+  if (myEspn != null && Number(lot.highTeamId) === Number(myEspn)) return null;   // I'm the high bidder (mock seat)
+  const ownerId = (typeof espnTeamIdToOwnerId === "function") ? espnTeamIdToOwnerId(lot.highTeamId) : null;
+  // Real mode carries no mock seat — recognize myself by the owner mapping too,
+  // or the tactic happily suggests squeezing ME.
+  const meTeam = (typeof getMyDraftTeam === "function") ? getMyDraftTeam() : (typeof getMyTeam === "function" ? getMyTeam() : null);
+  if (meTeam && ownerId != null && ownerId === meTeam.id) return null;
+  const st = ownerId != null ? computeLiveTeamStates()[ownerId] : null;
+  if (!st || !isFinite(st.maxBid)) return null;
+  const headroom = st.maxBid - high;
+  if (headroom < 3) return null;   // nothing worth draining
+  const fair = _dmFairValue(name);
+  if (!fair || high >= Math.round(fair)) return null;   // already paying full price — nothing to enforce
+  // Ceiling: never push past his max−1 (he can't be forced above it) nor past
+  // fair (your worst case = owning him at market, not above it), and it has to
+  // fit YOUR budget in case it sticks.
+  let ceiling = Math.min(st.maxBid - 1, Math.round(fair));
+  if (r.maxBid != null) ceiling = Math.min(ceiling, r.maxBid);
+  if (ceiling <= high) return null;
+  const temp = (typeof lotTemperature === "function") ? lotTemperature(lot) : null;
+  const others = new Set(lot.bids
+    .filter(b => b.teamId !== lot.highTeamId && (myEspn == null || Number(b.teamId) !== Number(myEspn)))
+    .map(b => b.teamId)).size;
+  const who = st.ownerName || _dmTeamLabel(lot.highTeamId);
+  if ((temp && temp.level === "cold") || others === 0) {
+    return "Don't price-enforce: " + (temp && temp.level === "cold" ? "room reads cold" : "no other bidders in") +
+      " — a squeeze bid likely sticks to you.";
   }
-  return null;
+  const risk = ((temp && temp.level === "hot") || others >= 2) ? "low" : "medium";
+  return "Squeeze: " + who + " can pay $" + st.maxBid + " — push toward $" + ceiling +
+    " to drain him (worst case you own him at ≤ fair). Risk " + risk + ": " + others +
+    " other bidder" + (others === 1 ? "" : "s") + " active" + (temp && temp.level === "hot" ? ", room is hot" : "") + ".";
 }
 
 // --- available players board ---
@@ -2024,7 +2262,7 @@ function updateDraftModeLive() {
       }
     }
     const interest = document.getElementById("dm-interest");
-    if (interest) interest.innerHTML = _dmInterestHtml(lot.name);
+    if (interest) interest.innerHTML = _dmInterestHtml(lot.name, lot);
     const idleEl = document.getElementById("dm-idle");
     if (idleEl) idleEl.innerHTML = lot.idle ? '<div class="small" style="margin-top:4px; color:var(--warn);">⏸ Lot quiet ' + lot.idleMin + 'm — draft likely paused; resumes automatically.</div>' : '';
   }

@@ -275,7 +275,7 @@ function renderDraftControls() {
   if (typeof leagueOverrideActive === "function" && leagueOverrideActive()) {
     html += '<div class="card" style="border-color: var(--warn); background: rgba(210,153,34,.08); padding:10px 12px;">' +
       '<b style="color: var(--warn);">⚠ TEST MODE — polling league ' + esc(String(ESPN.leagueId)) + '</b>' +
-      '<div class="small muted" style="margin-top:4px;">The Teams strip, bidder dropdown, and budgets below are <b>your real league\'s</b> slots — test mode only changes which league\'s pick feed is read. Watch <b>Recent Picks</b> (bottom right): each auto-pick appearing there as "Team N — Player — $" confirms the live feed works. Clear the Test league ID in Settings when done.</div></div>';
+      '<div class="small muted" style="margin-top:4px;">The Teams strip, bidder dropdown, and budgets below are <b>your real league\'s</b> slots — test mode only changes which league\'s pick feed is read. Watch <b>Recent Picks</b> (bottom right): each auto-pick appearing there as "Team N — Player — $" confirms the live feed works. When done, paste your real league URL in Draft Setup (or switch the feed to Real) to clear the override.</div></div>';
   }
   html += '<div class="card" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 12px;">';
   html += '<b>Manual Entry</b> <span class="muted small">' + n + ' pick' + (n === 1 ? '' : 's') + ' recorded · keepers excluded · fallback view</span>';

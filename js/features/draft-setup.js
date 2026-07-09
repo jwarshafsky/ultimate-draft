@@ -113,6 +113,9 @@ function renderDraftSetup(root) {
   html += '<button class="btn primary" id="ds-enter" style="font-size:16px; padding:10px 22px;">⛶ Enter Draft</button>';
   html += '</div>';
 
+  // === Draft-day readiness (plan Phase 4) ===
+  html += _dsReadinessCard();
+
   // === Connection: league URL + feed mode (reuses the pick-feed panel) ===
   html += '<div class="card"><h3 style="margin:0 0 6px;">League & connection</h3>';
   html += '<p class="muted small" style="margin:0 0 6px;">Paste your ESPN league or draft-room URL (or a league id). Your real league arms <b>Real</b> mode; any other league becomes a <b>Test</b> mock.</p>';
@@ -178,6 +181,102 @@ function _dsReadyChips() {
   s += '<span>' + dot(getValues().length > 0) + 'projections</span>';
   s += '</span>';
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Draft-day readiness (plan Phase 4): every data feed, connection, and prep
+// item the cockpit leans on, checked in one card so nothing is discovered
+// broken at the first nomination. Pure presence/freshness checks — no network.
+
+function _dsAgeDays(iso) {
+  if (!iso) return null;
+  const t = typeof iso === "number" ? iso : Date.parse(iso);
+  if (!isFinite(t)) return null;
+  return Math.floor((Date.now() - t) / 86400000);
+}
+function _dsAgeLabel(days) {
+  if (days == null) return "";
+  return days === 0 ? "today" : days === 1 ? "yesterday" : days + " days ago";
+}
+
+function _dsReadinessChecks() {
+  const checks = [];
+  const add = (level, label, detail) => checks.push({ level, label, detail: detail || "" });
+  const mode = getFeedMode();
+  const isTest = (typeof draftTestMode === "function") && draftTestMode();
+
+  // Feed + pipe
+  if (mode === "real") add("ok", "Feed mode REAL", "home-league picks only");
+  else if (mode === "test") add("warn", "Feed mode TEST", "mock context — flip to Real for draft day");
+  else add("bad", "Feed mode OFF", "no picks will arrive; set Real (or Test for a mock)");
+  add(_feed.extPresent ? "ok" : "bad", "Keeper Edge extension", _feed.extPresent ? "heartbeat live" : "no heartbeat — reload the extension at chrome://extensions");
+  add(draftTabOpen() ? "ok" : "warn", "ESPN draft tab", draftTabOpen() ? "open" : "open it BEFORE the draft starts so the INIT backfill has the full state");
+
+  // Proxy (ESPN data, Rotowire news, AI assistant all ride it)
+  const proxyUrl = (typeof ESPN !== "undefined") && ESPN.proxyUrl;
+  let proxyKey = null;
+  try { proxyKey = localStorage.getItem("ud_proxy_key"); } catch (e) {}
+  if (proxyUrl && proxyKey) add("ok", "Proxy", "URL + key set");
+  else add("bad", "Proxy", !proxyUrl ? "no proxy URL (Settings)" : "no proxy key — ESPN/AI calls will 401 (Settings ▸ Proxy key)");
+
+  // Projections + dollar values (the whole valuation stack)
+  const src = (typeof activeProjSource === "function") ? activeProjSource() : null;
+  const srcLabel = (src && typeof getRosSourceLabel === "function") ? getRosSourceLabel(src) : src;
+  const hasDollars = src && (typeof rosHasDollars === "function") && rosHasDollars(src);
+  if (hasDollars) {
+    const rec = (typeof _ros !== "undefined" && _ros.data) ? _ros.data[src] : null;
+    const days = _dsAgeDays(rec && (rec.updatedAt || rec.importedAt));
+    add(days != null && days > 14 ? "warn" : "ok", "Dollar values (" + (srcLabel || "?") + ")",
+      days != null ? "updated " + _dsAgeLabel(days) + (days > 14 ? " — consider a fresh FanGraphs export" : "") : "loaded");
+  } else {
+    add("bad", "Dollar values", "no $ source active — values, inflation, and every bid cue run on this (Data tab)");
+  }
+  const stats = src && (typeof rosHasData === "function") && rosHasData(src);
+  add(stats ? "ok" : "warn", "Stat projections",
+    stats ? (srcLabel || "loaded") : "none for the active source — projected standings, category fit, and pace need them (Data tab)");
+
+  // Market data (optional but drives the market-vs-model cue)
+  const nfbcMeta = (typeof getNfbcMeta === "function") ? getNfbcMeta() : null;
+  if (nfbcMeta && nfbcMeta.count > 0) {
+    const days = _dsAgeDays(nfbcMeta.importedAt);
+    add(days != null && days > 21 ? "warn" : "ok", "Market data (NFBC)",
+      nfbcMeta.count + " players" + (days != null ? ", " + _dsAgeLabel(days) : ""));
+  } else {
+    add("warn", "Market data (NFBC)", "not imported — market-vs-model cues stay hidden (Data tab)");
+  }
+
+  // Prep
+  const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : null;
+  add(strat && strat.brief ? "ok" : "warn", "Strategy brief",
+    strat && strat.brief ? "ready — shown in Draft Mode + fed to the AI" : "write + condense your plan below");
+  if (!isTest) {
+    let kept = 0;
+    try {
+      const sel = (typeof getEffectiveKeeperSelections === "function") ? getEffectiveKeeperSelections() : {};
+      for (const t of Object.values(sel)) kept += Object.values(t).filter(f => f && (f.keeper || f.minorKeeper)).length;
+    } catch (e) {}
+    add(kept > 0 ? "ok" : "warn", "Keeper predictions", kept > 0 ? kept + " marked — inflation is live" : "none marked — inflation runs at 1.00 (Keepers tab)");
+  }
+  return checks;
+}
+
+function _dsReadinessCard() {
+  let checks = [];
+  try { checks = _dsReadinessChecks(); } catch (e) { console.warn("readiness checks failed:", e); return ''; }
+  const bad = checks.filter(c => c.level === "bad").length;
+  const warn = checks.filter(c => c.level === "warn").length;
+  const icon = { ok: "✅", warn: "⚠️", bad: "❌" };
+  let html = '<div class="card"><h3 style="margin:0 0 6px;">🧳 Draft-day readiness</h3>';
+  html += '<p class="muted small" style="margin:0 0 8px;">' + (bad ? '<b style="color:var(--bad);">' + bad + ' blocker' + (bad === 1 ? '' : 's') + '</b>' + (warn ? ' + ' + warn + ' to review' : '')
+    : warn ? '<b style="color:var(--warn);">' + warn + ' item' + (warn === 1 ? '' : 's') + ' to review</b>'
+    : '<b style="color:var(--good);">All clear.</b>') + ' Checks refresh on every visit to this tab.</p>';
+  html += '<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:4px 18px;">';
+  for (const c of checks) {
+    html += '<div class="small" style="display:flex; gap:7px; align-items:baseline;">' + icon[c.level] +
+      ' <span><b>' + esc(c.label) + '</b>' + (c.detail ? ' <span class="muted">— ' + esc(c.detail) + '</span>' : '') + '</span></div>';
+  }
+  html += '</div></div>';
+  return html;
 }
 
 function _dsLeagueStatus() {

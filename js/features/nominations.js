@@ -251,6 +251,7 @@ function renderNominationsPanel(opts) {
     html += '<div class="muted small">' + (goal === "all"
       ? "Nomination suggestions appear once projections are loaded and your keepers are set."
       : "No strong “" + esc(NOM_GOALS.find(g => g.id === goal)?.label || goal) + "” candidates right now — try another goal.") + '</div>';
+    html += _nomTellsBlock();
     return html;
   }
   const colors = { drain: "var(--bad)", dump: "var(--warn)", blocker: "var(--accent)", target: "var(--good)", overvalue: "var(--warn)", run: "var(--accent)", burn: "var(--text-3)" };
@@ -266,6 +267,24 @@ function renderNominationsPanel(opts) {
     html += '</tr>';
   }
   html += '</tbody></table>';
+  html += _nomTellsBlock();
+  return html;
+}
+
+// Live nomination tells (draft archaeology — north-star §7): owners who chase
+// their own nominations or keep hammering one position, read straight from the
+// event stream this draft. Empty until enough nominations accumulate.
+function _nomTellsBlock() {
+  if (typeof nominationTellsSummary !== "function") return '';
+  let rows = [];
+  try { rows = nominationTellsSummary() || []; } catch (_) { return ''; }
+  if (!rows.length) return '';
+  let html = '<div class="small" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">';
+  html += '<div class="muted" style="margin-bottom:4px;">📡 <b>Nomination tells</b> (this draft)</div>';
+  for (const r of rows) {
+    html += '<div style="margin-top:2px;"><b>' + esc(r.label) + '</b> <span class="muted">— ' + esc(r.note) + '</span></div>';
+  }
+  html += '</div>';
   return html;
 }
 
