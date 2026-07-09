@@ -117,93 +117,11 @@ function renderSettings() {
   html += '</div>';
   html += '</div></div>';
 
-  // === Tier Absorption ===
-  html += '<div class="card"><h2>Tier Absorption Weights</h2>';
-  html += '<p class="muted small">How much of total inflation each tier absorbs. T1 elite ($35+) takes most; T5 endgame ($1-4) barely moves. Tune toward 1.0 across the board for flat-ish, or steepen the curve for harder star inflation.</p>';
-  html += '<div class="grid cols-5" style="gap: 12px;">';
-  const tierLabels = { T1: "T1 $35+", T2: "T2 $20-34", T3: "T3 $10-19", T4: "T4 $5-9", T5: "T5 $1-4" };
-  for (const t of ["T1", "T2", "T3", "T4", "T5"]) {
-    html += '<div>';
-    html += '<div class="muted small">' + tierLabels[t] + '</div>';
-    html += '<input id="set-tier-' + t + '" type="number" step="0.05" min="0" max="3" value="' + s.tierAbsorption[t] + '" style="width: 100%;">';
-    html += '</div>';
-  }
-  html += '</div></div>';
-
-  // === My Strategy ===
-  html += '<div class="card"><div style="display:flex; align-items:center; gap:10px;"><h2 style="margin:0;">My Draft Strategy</h2>' +
-    '<span style="flex:1;"></span>' +
-    '<button class="btn ghost" id="set-mystrat-clear" style="width:auto; padding:5px 12px;" title="Reset sliders/stances, clear target &amp; punt categories, and wipe your written strategy + AI brief">Clear My Strategy</button></div>';
-  html += '<p class="muted small">These preferences flow into nomination suggestions, the AI assistant, and the mock simulator when it plays YOUR team.</p>';
-  html += '<div class="grid cols-2" style="gap: 18px;">';
-
-  html += '<div>';
-  html += '<h3>Stars vs. Scrubs</h3>';
-  html += '<p class="muted small">Spread (-2) buys many mid-tier players. Stars+Scrubs (+2) loads up on $40+ studs and fills with $1 endgame.</p>';
-  html += '<div class="settings-slider"><input type="range" min="-2" max="2" step="1" value="' + s.myStrategy.starsVsScrubs + '" id="set-sv-scrubs" style="flex: 1;">';
-  html += '<span id="set-sv-scrubs-val" style="font-family: var(--mono); width: 100px; text-align: right;">' + sliderLabel(s.myStrategy.starsVsScrubs, ["Spread", "Balanced", "Stars+Scrubs"]) + '</span></div>';
-  html += '</div>';
-
-  html += '<div>';
-  html += '<h3>Risk Tolerance</h3>';
-  html += '<p class="muted small">Safe floors (-2) prefer proven veterans. High ceilings (+2) chase upside / breakouts / younger players.</p>';
-  html += '<div class="settings-slider"><input type="range" min="-2" max="2" step="1" value="' + s.myStrategy.riskTolerance + '" id="set-risk" style="flex: 1;">';
-  html += '<span id="set-risk-val" style="font-family: var(--mono); width: 100px; text-align: right;">' + sliderLabel(s.myStrategy.riskTolerance, ["Safe", "Moderate", "Ceiling"]) + '</span></div>';
-  html += '</div>';
-
-  html += '<div>';
-  html += '<h3>Closer Stance</h3>';
-  html += '<select id="set-closer" style="width: 100%;">';
-  for (const opt of ["pay-up", "moderate", "stream"]) {
-    html += '<option value="' + opt + '"' + (s.myStrategy.closerStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
-  }
-  html += '</select>';
-  html += '<p class="muted small" style="margin-top: 4px;">Pay-up = buy 2 elite closers early. Moderate = 1 closer + setup men. Stream = punt SV+HLD or only buy at endgame discount.</p>';
-  html += '</div>';
-
-  html += '<div>';
-  html += '<h3>Catcher Stance</h3>';
-  html += '<select id="set-catcher" style="width: 100%;">';
-  for (const opt of ["pay-up", "elite-only", "stream"]) {
-    html += '<option value="' + opt + '"' + (s.myStrategy.catcherStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
-  }
-  html += '</select>';
-  html += '<p class="muted small" style="margin-top: 4px;">Pay-up = $15+ for backstop. Elite-only = top 5 or punt. Stream = endgame only.</p>';
-  html += '</div>';
-  html += '</div>';
-
-  // Punt / Target categories
-  html += '<div style="margin-top: 14px;"><h3>Category Strategy</h3>';
-  html += '<div class="grid cols-2"><div>';
-  html += '<div class="muted small">Target (extra weight)</div>';
-  html += '<div class="cat-chips" data-target-list="target">';
-  const allCats = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
-  for (const c of allCats) {
-    const on = s.myStrategy.targetCategories.includes(c);
-    html += '<button class="tag-btn cat-chip' + (on ? " on" : "") + '" data-cat="' + c + '" data-list="targetCategories">' + esc(c) + '</button>';
-  }
-  html += '</div></div><div>';
-  html += '<div class="muted small">Punt (zero weight)</div>';
-  html += '<div class="cat-chips" data-target-list="punt">';
-  for (const c of allCats) {
-    const on = s.myStrategy.puntCategories.includes(c);
-    html += '<button class="tag-btn cat-chip' + (on ? " on" : "") + '" data-cat="' + c + '" data-list="puntCategories">' + esc(c) + '</button>';
-  }
-  html += '</div></div></div></div>';
-
-  // Free-text strategy → AI-condensed brief carried into every draft-day prompt
-  const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : { text: "", brief: "" };
-  html += '<div style="margin-top: 14px;"><h3>Draft Strategy (your words)</h3>';
-  html += '<p class="muted small" style="margin:0 0 6px;">Write your plan — targets, budgets by position, punts, players to avoid, nomination ideas. "Condense for AI" turns it into a tight brief the assistant carries through the whole draft (shown in Draft Mode too).</p>';
-  html += '<textarea id="set-strategy-text" rows="7" style="width:100%; resize:vertical;" placeholder="e.g. Stars and scrubs. Up to $95 total on two anchor bats. Punt saves — cheap HLD relievers only. Hard cap $12 on catchers…">' + esc(strat.text) + '</textarea>';
-  html += '<div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">';
-  html += '<button class="btn" id="set-strategy-save" style="width:auto; padding:6px 14px;">Save strategy</button>';
-  html += '<button class="btn primary" id="set-strategy-condense" style="width:auto; padding:6px 14px;">Condense for AI</button>';
-  html += '<button class="btn ghost" id="set-strategy-clear" style="width:auto; padding:6px 14px;">Clear strategy</button>';
-  html += '<span class="small muted" id="set-strategy-status">' + (strat.brief ? 'Brief ready' + (strat.briefAt ? ' (' + new Date(strat.briefAt).toLocaleDateString() + ')' : '') : 'No brief yet') + '</span>';
-  html += '</div>';
-  html += '<div id="set-strategy-brief" class="small" style="margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--bg-3); white-space:pre-wrap;' + (strat.brief ? '' : ' display:none;') + '">' + esc(strat.brief) + '</div>';
-  html += '</div>';
+  // (Tier absorption + My Strategy sliders/stances/chips + the written plan all
+  // moved to the Live Draft tab's Draft Setup lobby — Jeff wants every draft
+  // knob where the drafting happens. Settings keeps the engine plumbing only.)
+  html += '<div class="card"><h2>Draft Strategy</h2>';
+  html += '<p class="muted small" style="margin:0;">Strategy sliders, category targets/punts, keeper-inflation tiers, and your written plan now live on the <a href="#" id="set-goto-draft">Live Draft tab</a>.</p>';
   html += '</div>';
 
   // === Proxy URL + key (ESPN + Claude) ===
@@ -285,18 +203,9 @@ function wireSettingsHandlers() {
     const v = parseInt(e.target.value, 10);
     document.getElementById("set-hit-pct-val").textContent = v + "% / " + (100 - v) + "%";
   });
-  live("set-sv-scrubs", (e) => {
-    document.getElementById("set-sv-scrubs-val").textContent = sliderLabel(parseInt(e.target.value, 10), ["Spread", "Balanced", "Stars+Scrubs"]);
-  });
-  live("set-risk", (e) => {
-    document.getElementById("set-risk-val").textContent = sliderLabel(parseInt(e.target.value, 10), ["Safe", "Moderate", "Ceiling"]);
-  });
-
-  // Category chips toggle on click without saving
-  document.querySelectorAll(".cat-chip").forEach(b => {
-    b.addEventListener("click", () => {
-      b.classList.toggle("on");
-    });
+  document.getElementById("set-goto-draft")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (typeof switchView === "function") switchView("draft");
   });
 
   document.getElementById("set-proxy-save")?.addEventListener("click", () => {
@@ -314,15 +223,6 @@ function wireSettingsHandlers() {
     _settings.benchSlots = parseInt(document.getElementById("set-bench").value, 10) || 48;
     _settings.rpCap = parseInt(document.getElementById("set-rp-cap").value, 10) || 30;
     _settings.inflationMode = document.getElementById("set-inf-mode").value;
-    for (const t of ["T1", "T2", "T3", "T4", "T5"]) {
-      _settings.tierAbsorption[t] = parseFloat(document.getElementById("set-tier-" + t).value) || 1;
-    }
-    _settings.myStrategy.starsVsScrubs = parseInt(document.getElementById("set-sv-scrubs").value, 10);
-    _settings.myStrategy.riskTolerance = parseInt(document.getElementById("set-risk").value, 10);
-    _settings.myStrategy.closerStance = document.getElementById("set-closer").value;
-    _settings.myStrategy.catcherStance = document.getElementById("set-catcher").value;
-    _settings.myStrategy.targetCategories = Array.from(document.querySelectorAll('.cat-chip.on[data-list="targetCategories"]')).map(b => b.dataset.cat);
-    _settings.myStrategy.puntCategories = Array.from(document.querySelectorAll('.cat-chip.on[data-list="puntCategories"]')).map(b => b.dataset.cat);
     _settings.ai.model = document.getElementById("set-ai-model").value;
     _settings.ai.cooldownMs = (parseInt(document.getElementById("set-ai-cooldown").value, 10) || 8) * 1000;
     _settings.ai.autoTrigger = document.getElementById("set-ai-auto").checked;
@@ -331,39 +231,6 @@ function wireSettingsHandlers() {
   });
   document.getElementById("set-reset")?.addEventListener("click", () => {
     if (confirm("Reset all settings to defaults?")) resetSettings();
-  });
-  document.getElementById("set-strategy-save")?.addEventListener("click", () => {
-    setDraftStrategyText(document.getElementById("set-strategy-text").value);
-    const st = document.getElementById("set-strategy-status");
-    if (st) st.textContent = "Saved.";
-  });
-  document.getElementById("set-mystrat-clear")?.addEventListener("click", () => {
-    if (!confirm("Clear My Draft Strategy? This resets the sliders and stances, clears target/punt categories, and wipes your written strategy + AI brief.")) return;
-    clearMyStrategyAll();
-    renderSettings();   // whole card re-renders at defaults
-  });
-  document.getElementById("set-strategy-clear")?.addEventListener("click", () => {
-    if (!confirm("Clear your draft strategy and AI brief?")) return;
-    clearDraftStrategy();
-    const ta = document.getElementById("set-strategy-text");
-    if (ta) ta.value = "";
-    const box = document.getElementById("set-strategy-brief");
-    if (box) { box.textContent = ""; box.style.display = "none"; }
-    const st = document.getElementById("set-strategy-status");
-    if (st) st.textContent = "No brief yet";
-  });
-  document.getElementById("set-strategy-condense")?.addEventListener("click", async () => {
-    const st = document.getElementById("set-strategy-status");
-    setDraftStrategyText(document.getElementById("set-strategy-text").value);
-    if (st) st.textContent = "Condensing…";
-    try {
-      const brief = await condenseDraftStrategy();
-      const box = document.getElementById("set-strategy-brief");
-      if (box) { box.textContent = brief; box.style.display = ""; }
-      if (st) st.textContent = "Brief ready.";
-    } catch (e) {
-      if (st) st.textContent = "Failed: " + e.message;
-    }
   });
   document.getElementById("set-sync-now")?.addEventListener("click", async () => {
     if (typeof syncPullNow !== "function") return;
@@ -377,20 +244,21 @@ function wireSettingsHandlers() {
 }
 
 // Helpers for other modules to read strategy
-// Full "Clear My Strategy" reset — sliders/stances to defaults, target & punt
-// categories emptied, written strategy + AI brief wiped. Shared by the Settings
-// card and the Draft Setup lobby so the two buttons can't drift apart.
-function clearMyStrategyAll() {
-  _settings.myStrategy = {
-    starsVsScrubs: 0, riskTolerance: 0,
-    closerStance: "stream", catcherStance: "stream",
-    targetCategories: [], puntCategories: [],
-  };
-  saveSettings();
-  if (typeof clearDraftStrategy === "function") clearDraftStrategy();
-}
-
 function getMyStrategy() { return _settings.myStrategy; }
+// The Draft Setup lobby's strategy controls write here directly (auto-save).
+function setMyStrategyField(field, value) {
+  _settings.myStrategy[field] = value;
+  saveSettings();
+}
+function setTierAbsorptionWeight(tier, value) {
+  const v = parseFloat(value);
+  if (isFinite(v)) _settings.tierAbsorption[tier] = Math.max(0, Math.min(2.5, v));
+  saveSettings();
+}
+function resetTierAbsorption() {
+  _settings.tierAbsorption = { T1: 1.6, T2: 1.35, T3: 1.0, T4: 0.6, T5: 0.2 };
+  saveSettings();
+}
 function getSettings() { return _settings; }
 
 // Load settings at startup. Must run AFTER VALUATION and other globals exist.

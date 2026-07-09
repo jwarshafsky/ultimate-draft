@@ -141,20 +141,52 @@ function renderDraftSetup(root) {
   if (typeof renderMockFeedControls === "function") html += renderMockFeedControls(false);
   if (typeof renderMockArchive === "function") html += renderMockArchive();
 
-  // === Strategy ===
+  // === Strategy (written plan + preference sliders — moved here from Settings) ===
   const strat = (typeof getDraftStrategy === "function") ? getDraftStrategy() : { text: "", brief: "" };
+  const my = (typeof getMyStrategy === "function") ? getMyStrategy() : null;
   html += '<div class="card"><h3 style="margin:0 0 6px;">Draft strategy</h3>';
   html += '<textarea id="ds-strategy-text" rows="5" style="width:100%; resize:vertical;" placeholder="Your plan — targets, position budgets, punts, players to avoid…">' + esc(strat.text) + '</textarea>';
   html += '<div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">';
   html += '<button class="btn" id="ds-strategy-save" style="width:auto; padding:5px 12px;">Save</button>';
   html += '<button class="btn" id="ds-strategy-condense" style="width:auto; padding:5px 12px;">Condense for AI</button>';
-  html += '<button class="btn ghost" id="ds-strategy-clear" style="width:auto; padding:5px 12px;" title="Reset sliders/stances, clear target &amp; punt categories, and wipe your written strategy + AI brief">Clear My Strategy</button>';
+  html += '<button class="btn ghost" id="ds-strategy-clear" style="width:auto; padding:5px 12px;" title="Wipe the written plan + AI brief (sliders and category picks stay put)">Clear text</button>';
   html += '<span class="small muted" id="ds-strategy-status">' + (strat.brief ? "Brief ready — shown in Draft Mode + fed to the AI" : "No AI brief yet") + '</span>';
-  html += '<span style="flex:1;"></span>';
-  html += '<span class="small muted">Sliders & punt categories: Settings ▸ My Strategy</span>';
   html += '</div>';
   html += '<div id="ds-strategy-brief" class="small" style="margin-top:8px; padding:8px 10px; border:1px solid var(--border); background:var(--bg-3); white-space:pre-wrap;' + (strat.brief ? '' : ' display:none;') + '">' + esc(strat.brief) + '</div>';
+  if (my) {
+    // Preference sliders/stances (auto-save on change; flow into nominations,
+    // the AI assistant, and the mock bots playing YOUR team).
+    html += '<div style="margin-top:14px; padding-top:10px; border-top:1px solid var(--border);">';
+    html += '<div class="grid cols-2" style="gap:14px 18px;">';
+    html += '<div><div class="small"><b>Stars vs. Scrubs</b> <span class="muted">— spread the money or load up on studs + $1 fills</span></div>';
+    html += '<div class="settings-slider" style="flex-wrap:wrap;"><input type="range" min="-2" max="2" step="1" value="' + my.starsVsScrubs + '" id="ds-sv-scrubs" style="flex:1; min-width:140px;">';
+    html += '<span id="ds-sv-scrubs-val" style="font-family:var(--mono); white-space:nowrap;">' + sliderLabel(my.starsVsScrubs, ["Spread", "Balanced", "Stars+Scrubs"]) + '</span></div></div>';
+    html += '<div><div class="small"><b>Risk Tolerance</b> <span class="muted">— proven floors or upside/breakout ceilings</span></div>';
+    html += '<div class="settings-slider" style="flex-wrap:wrap;"><input type="range" min="-2" max="2" step="1" value="' + my.riskTolerance + '" id="ds-risk" style="flex:1; min-width:140px;">';
+    html += '<span id="ds-risk-val" style="font-family:var(--mono); white-space:nowrap;">' + sliderLabel(my.riskTolerance, ["Safe", "Moderate", "Ceiling"]) + '</span></div></div>';
+    html += '<div><div class="small"><b>Closers</b> <span class="muted">— pay-up = 2 elite early · moderate = 1 + setup men · stream = endgame only</span></div>';
+    html += '<select id="ds-closer" style="width:100%;">';
+    for (const opt of ["pay-up", "moderate", "stream"]) html += '<option value="' + opt + '"' + (my.closerStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
+    html += '</select></div>';
+    html += '<div><div class="small"><b>Catchers</b> <span class="muted">— pay-up = $15+ · elite-only = top 5 or punt · stream = endgame only</span></div>';
+    html += '<select id="ds-catcher" style="width:100%;">';
+    for (const opt of ["pay-up", "elite-only", "stream"]) html += '<option value="' + opt + '"' + (my.catcherStance === opt ? " selected" : "") + '>' + esc(opt) + '</option>';
+    html += '</select></div>';
+    html += '</div>';
+    const allCats = ["R", "HR", "RBI", "SB", "OBP", "QS", "K", "SV_HLD", "ERA", "WHIP"];
+    html += '<div class="grid cols-2" style="gap:14px 18px; margin-top:10px;"><div>';
+    html += '<div class="muted small">Target categories (extra weight)</div><div class="cat-chips">';
+    for (const c of allCats) html += '<button class="tag-btn cat-chip ds-cat-chip' + (my.targetCategories.includes(c) ? " on" : "") + '" data-cat="' + c + '" data-list="targetCategories">' + esc(c) + '</button>';
+    html += '</div></div><div>';
+    html += '<div class="muted small">Punt categories (zero weight)</div><div class="cat-chips">';
+    for (const c of allCats) html += '<button class="tag-btn cat-chip ds-cat-chip' + (my.puntCategories.includes(c) ? " on" : "") + '" data-cat="' + c + '" data-list="puntCategories">' + esc(c) + '</button>';
+    html += '</div></div></div>';
+    html += '</div>';
+  }
   html += '</div>';
+
+  // === Keeper inflation tiers (moved from Settings, numbers → sliders) ===
+  html += _dsTierCard();
 
   // === Keepers & budgets ===
   html += _dsKeepersBudgetsCard();
@@ -182,6 +214,44 @@ function _dsReadyChips() {
   s += '<span>' + dot(getValues().length > 0) + 'projections</span>';
   s += '</span>';
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Keeper-inflation tier sliders (moved from Settings; number boxes → sliders
+// with plain-English labels). The weights say which shelf of player soaks up
+// the extra money cheap keepers leave in the room.
+
+const _DS_TIERS = [
+  { id: "T1", label: "Elite stars ($35+)" },
+  { id: "T2", label: "Stars ($20–34)" },
+  { id: "T3", label: "Mid-tier ($10–19)" },
+  { id: "T4", label: "Value buys ($5–9)" },
+  { id: "T5", label: "Endgame ($1–4)" },
+];
+function _dsTierWord(v) {
+  return v < 0.25 ? "barely marked up" : v < 0.75 ? "small markup" : v < 1.25 ? "average markup"
+       : v < 1.8 ? "big markup" : "huge markup";
+}
+function _dsTierValLabel(v) {
+  return "×" + Number(v).toFixed(2) + " · " + _dsTierWord(Number(v));
+}
+
+function _dsTierCard() {
+  const s = (typeof getSettings === "function") ? getSettings() : null;
+  if (!s || !s.tierAbsorption) return '';
+  let html = '<div class="card"><div style="display:flex; align-items:center; gap:10px;"><h3 style="margin:0;">Who pays the keeper-inflation markup?</h3>';
+  html += '<span style="flex:1;"></span>';
+  html += '<button class="btn ghost" id="ds-tier-reset" style="width:auto; padding:3px 12px; font-size:11px;" title="Back to the recommended curve (elite stars soak up most of it)">↺ Recommended</button></div>';
+  html += '<p class="muted small" style="margin:4px 0 8px;">Cheap keepers leave extra money in the room, so draft prices run above the sticker values. These sliders decide which players soak up that extra money — normally the elite stars take the biggest markup while $1 endgame players stay $1. (Uses the Tiered inflation mode; switchable in Settings.)</p>';
+  html += '<div class="grid cols-2" style="gap:10px 22px;">';
+  for (const t of _DS_TIERS) {
+    const v = s.tierAbsorption[t.id] != null ? s.tierAbsorption[t.id] : 1;
+    html += '<div><div class="small"><b>' + esc(t.label) + '</b></div>';
+    html += '<div class="settings-slider" style="flex-wrap:wrap;"><input type="range" min="0" max="2.5" step="0.05" value="' + v + '" id="ds-tier-' + t.id + '" class="ds-tier-slider" data-tier="' + t.id + '" style="flex:1; min-width:140px;">';
+    html += '<span id="ds-tier-' + t.id + '-val" style="font-family:var(--mono); white-space:nowrap;">' + _dsTierValLabel(v) + '</span></div></div>';
+  }
+  html += '</div></div>';
+  return html;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,10 +452,47 @@ function wireDraftSetup() {
     if (st) st.textContent = "Saved.";
   });
   document.getElementById("ds-strategy-clear")?.addEventListener("click", () => {
-    if (!confirm("Clear My Draft Strategy? This resets the sliders and stances, clears target/punt categories, and wipes your written strategy + AI brief.")) return;
-    if (typeof clearMyStrategyAll === "function") clearMyStrategyAll();
-    else if (typeof clearDraftStrategy === "function") clearDraftStrategy();   // settings.js not loaded — still wipe the text/brief
+    if (!confirm("Clear your written strategy and AI brief? (Sliders and category picks are untouched.)")) return;
+    if (typeof clearDraftStrategy === "function") clearDraftStrategy();
     renderDraft();   // re-renders the lobby: empty textarea, brief hidden, readiness check updates
+  });
+
+  // Preference sliders/stances/chips — auto-save straight into settings.
+  const wireStratSlider = (id, field, labels) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", () => {
+      const lbl = document.getElementById(id + "-val");
+      if (lbl) lbl.textContent = sliderLabel(parseInt(el.value, 10), labels);
+    });
+    el.addEventListener("change", () => setMyStrategyField(field, parseInt(el.value, 10)));
+  };
+  if (typeof setMyStrategyField === "function") {
+    wireStratSlider("ds-sv-scrubs", "starsVsScrubs", ["Spread", "Balanced", "Stars+Scrubs"]);
+    wireStratSlider("ds-risk", "riskTolerance", ["Safe", "Moderate", "Ceiling"]);
+    document.getElementById("ds-closer")?.addEventListener("change", (e) => setMyStrategyField("closerStance", e.target.value));
+    document.getElementById("ds-catcher")?.addEventListener("change", (e) => setMyStrategyField("catcherStance", e.target.value));
+    document.querySelectorAll(".ds-cat-chip").forEach(b => b.addEventListener("click", () => {
+      b.classList.toggle("on");
+      const list = b.dataset.list;
+      const on = Array.from(document.querySelectorAll('.ds-cat-chip.on[data-list="' + list + '"]')).map(x => x.dataset.cat);
+      setMyStrategyField(list, on);
+    }));
+  }
+
+  // Keeper-inflation tier sliders — label live on drag, save on release.
+  document.querySelectorAll(".ds-tier-slider").forEach(el => {
+    el.addEventListener("input", () => {
+      const lbl = document.getElementById(el.id + "-val");
+      if (lbl) lbl.textContent = _dsTierValLabel(el.value);
+    });
+    el.addEventListener("change", () => {
+      if (typeof setTierAbsorptionWeight === "function") setTierAbsorptionWeight(el.dataset.tier, el.value);
+    });
+  });
+  document.getElementById("ds-tier-reset")?.addEventListener("click", () => {
+    if (typeof resetTierAbsorption === "function") resetTierAbsorption();
+    renderDraft();
   });
   document.getElementById("ds-strategy-condense")?.addEventListener("click", async () => {
     const st = document.getElementById("ds-strategy-status");
