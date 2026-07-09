@@ -482,4 +482,51 @@ test("no dollar source is a blocker; stale dollars only a warning", () => {
   } finally { global._ros = realRos; }
 });
 
+// =====================================================================
+section("Tier-absorption shares (single-pie conservation)");
+// =====================================================================
+
+const RECO_W = { T1: 1.6, T2: 1.35, T3: 1.0, T4: 0.6, T5: 0.2 };
+
+test("shares total exactly 100% (dollar basis, projections loaded)", () => {
+  const r = global._dsTierShares(RECO_W);
+  assertEq(r.basis, "dollar", "value pool present → dollar-weighted");
+  const sum = ["T1", "T2", "T3", "T4", "T5"].reduce((a, t) => a + r.pct[t], 0);
+  assertEq(sum, 100, "integer shares sum to 100 (got " + sum + ")");
+});
+
+test("raising ONE weight lifts its share and lowers every other share", () => {
+  const base = global._dsTierShares(RECO_W).pct;
+  const bumped = global._dsTierShares({ ...RECO_W, T1: 2.5 }).pct;
+  assert(bumped.T1 > base.T1, "T1 share rises (" + base.T1 + "→" + bumped.T1 + ")");
+  for (const t of ["T2", "T3", "T4", "T5"]) {
+    assert(bumped[t] <= base[t], t + " share does not rise (" + base[t] + "→" + bumped[t] + ")");
+  }
+  const sum = ["T1", "T2", "T3", "T4", "T5"].reduce((a, t) => a + bumped[t], 0);
+  assertEq(sum, 100, "still totals 100 after the bump");
+});
+
+test("scaling ALL weights by a constant leaves shares unchanged (only ratios matter)", () => {
+  const a = global._dsTierShares(RECO_W).pct;
+  const b = global._dsTierShares({ T1: 3.2, T2: 2.7, T3: 2.0, T4: 1.2, T5: 0.4 }).pct;   // ×2
+  for (const t of ["T1", "T2", "T3", "T4", "T5"]) assertEq(a[t], b[t], t + " share invariant to scaling");
+});
+
+test("no projection pool → weight-only basis, still totals 100%", () => {
+  const realGetValues = global.getValues;
+  global.getValues = () => [];
+  try {
+    const r = global._dsTierShares(RECO_W);
+    assertEq(r.basis, "weight", "empty pool → weight-only");
+    const sum = ["T1", "T2", "T3", "T4", "T5"].reduce((a, t) => a + r.pct[t], 0);
+    assertEq(sum, 100, "weight shares sum to 100");
+    assert(r.pct.T1 > r.pct.T5, "higher weight → bigger share");
+  } finally { global.getValues = realGetValues; }
+});
+
+test("all weights zero → null shares (no divide-by-zero)", () => {
+  const r = global._dsTierShares({ T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 });
+  assertEq(r.pct, null, "null when nothing to distribute");
+});
+
 summary("Draft intelligence: category bid, tells, squeeze, readiness");

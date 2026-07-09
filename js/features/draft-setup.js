@@ -228,12 +228,74 @@ const _DS_TIERS = [
   { id: "T4", label: "Value buys ($5–9)" },
   { id: "T5", label: "Endgame ($1–4)" },
 ];
-function _dsTierWord(v) {
-  return v < 0.25 ? "barely marked up" : v < 0.75 ? "small markup" : v < 1.25 ? "average markup"
-       : v < 1.8 ? "big markup" : "huge markup";
+const _DS_TIER_IDS = ["T1", "T2", "T3", "T4", "T5"];
+
+// Bucket the remaining (non-kept, positive-value) pool by tier — exactly what
+// computeTieredInflation distributes the markup across. null when no projection
+// pool is loaded yet (then shares fall back to weight-only).
+function _dsTierValueBuckets() {
+  if (typeof getValues !== "function") return null;
+  const values = getValues();
+  if (!values || !values.length) return null;
+  const _nk = (typeof normalizePlayerName === "function") ? normalizePlayerName : (s => String(s || "").toLowerCase());
+  let kept = new Set();
+  try { if (typeof collectKeepers === "function") kept = new Set(collectKeepers().map(k => _nk(k.name))); } catch (_) {}
+  const tv = { T1: 0, T2: 0, T3: 0, T4: 0, T5: 0 };
+  let total = 0;
+  for (const p of values) {
+    if (!p || !(p.value > 0) || kept.has(_nk(p.name))) continue;
+    const t = (typeof tierForValue === "function") ? tierForValue(p.value) : null;
+    if (t && tv[t] != null) { tv[t] += p.value; total += p.value; }
+  }
+  return total > 0 ? tv : null;
 }
-function _dsTierValLabel(v) {
-  return "×" + Number(v).toFixed(2) + " · " + _dsTierWord(Number(v));
+
+// Each tier's share of the (fixed) markup pie for a set of weights. This mirrors
+// the engine's own normalization: dollars to tier k = value_in_k × weight_k /
+// Σ(value × weight), so the shares ALWAYS total 100% no matter the weights, and
+// raising one slider shrinks every other tier's share automatically. When no
+// projection pool is loaded, falls back to weight-only shares (labeled).
+function _dsTierShares(weights) {
+  const buckets = _dsTierValueBuckets();
+  const contrib = {}; let denom = 0;
+  for (const t of _DS_TIER_IDS) {
+    const w = Math.max(0, parseFloat(weights[t]) || 0);
+    contrib[t] = (buckets ? buckets[t] : 1) * w;
+    denom += contrib[t];
+  }
+  const raw = {};
+  for (const t of _DS_TIER_IDS) raw[t] = denom > 0 ? (contrib[t] / denom) * 100 : 0;
+  return { pct: denom > 0 ? _dsRoundTo100(raw) : null, basis: buckets ? "dollar" : "weight" };
+}
+
+// Largest-remainder rounding so the five integer percentages sum to exactly 100.
+function _dsRoundTo100(raw) {
+  const out = {}; const rema = []; let sum = 0;
+  for (const t of _DS_TIER_IDS) { out[t] = Math.floor(raw[t]); sum += out[t]; rema.push([t, raw[t] - out[t]]); }
+  let left = 100 - sum;
+  rema.sort((a, b) => b[1] - a[1]);
+  for (let i = 0; i < rema.length && left > 0; i++, left--) out[rema[i][0]]++;
+  return out;
+}
+
+// Read the five live slider values from the DOM (falls back to saved settings).
+function _dsCurrentTierWeights() {
+  const s = (typeof getSettings === "function") ? getSettings() : null;
+  const w = {};
+  for (const t of _DS_TIER_IDS) {
+    const el = document.getElementById("ds-tier-" + t);
+    w[t] = el ? parseFloat(el.value) : (s && s.tierAbsorption ? s.tierAbsorption[t] : 1);
+  }
+  return w;
+}
+
+// Recompute + repaint all five share readouts live as any one slider drags.
+function _dsUpdateTierShares() {
+  const { pct } = _dsTierShares(_dsCurrentTierWeights());
+  for (const t of _DS_TIER_IDS) {
+    const lbl = document.getElementById("ds-tier-" + t + "-val");
+    if (lbl) lbl.textContent = pct ? pct[t] + "%" : "—";
+  }
 }
 
 function _dsTierCard() {
@@ -242,13 +304,19 @@ function _dsTierCard() {
   let html = '<div class="card"><div style="display:flex; align-items:center; gap:10px;"><h3 style="margin:0;">Who pays the keeper-inflation markup?</h3>';
   html += '<span style="flex:1;"></span>';
   html += '<button class="btn ghost" id="ds-tier-reset" style="width:auto; padding:3px 12px; font-size:11px;" title="Back to the recommended curve (elite stars soak up most of it)">↺ Recommended</button></div>';
-  html += '<p class="muted small" style="margin:4px 0 8px;">Cheap keepers leave extra money in the room, so draft prices run above the sticker values. These sliders decide which players soak up that extra money — normally the elite stars take the biggest markup while $1 endgame players stay $1. (Uses the Tiered inflation mode; switchable in Settings.)</p>';
+  html += '<p class="muted small" style="margin:4px 0 8px;">Cheap keepers leave a <b>fixed</b> pot of extra money in the room (set by how many bargains there are, not by these sliders). The percentages show each shelf\'s share of that pot — normally the elite stars take the biggest cut while $1 endgame players stay $1. <b>They always total 100%</b>, so dragging one slider up rebalances every other share down. (Uses the Tiered inflation mode; switchable in Settings.)</p>';
+  const initShares = _dsTierShares(s.tierAbsorption);
+  if (initShares.basis === "weight") {
+    html += '<p class="small" style="margin:0 0 8px; color:var(--warn);">Shares are approximate until projections load — then they reflect where the money actually goes (a shelf with more players absorbs more).</p>';
+  }
   html += '<div class="grid cols-2" style="gap:10px 22px;">';
   for (const t of _DS_TIERS) {
     const v = s.tierAbsorption[t.id] != null ? s.tierAbsorption[t.id] : 1;
-    html += '<div><div class="small"><b>' + esc(t.label) + '</b></div>';
+    const pctTxt = initShares.pct ? initShares.pct[t.id] + "%" : "—";
+    html += '<div><div class="small" style="display:flex; justify-content:space-between; gap:8px;"><b>' + esc(t.label) + '</b>' +
+      '<span class="muted">share of markup</span></div>';
     html += '<div class="settings-slider" style="flex-wrap:wrap;"><input type="range" min="0" max="2.5" step="0.05" value="' + v + '" id="ds-tier-' + t.id + '" class="ds-tier-slider" data-tier="' + t.id + '" style="flex:1; min-width:140px;">';
-    html += '<span id="ds-tier-' + t.id + '-val" style="font-family:var(--mono); white-space:nowrap;">' + _dsTierValLabel(v) + '</span></div></div>';
+    html += '<span id="ds-tier-' + t.id + '-val" style="font-family:var(--mono); white-space:nowrap; min-width:44px; text-align:right; font-weight:600;">' + pctTxt + '</span></div></div>';
   }
   html += '</div></div>';
   return html;
@@ -482,10 +550,9 @@ function wireDraftSetup() {
 
   // Keeper-inflation tier sliders — label live on drag, save on release.
   document.querySelectorAll(".ds-tier-slider").forEach(el => {
-    el.addEventListener("input", () => {
-      const lbl = document.getElementById(el.id + "-val");
-      if (lbl) lbl.textContent = _dsTierValLabel(el.value);
-    });
+    // Live: repaint ALL five shares (dragging one moves every share), no save.
+    el.addEventListener("input", () => { if (typeof _dsUpdateTierShares === "function") _dsUpdateTierShares(); });
+    // Release: persist the weight (rerender rebuilds the card from saved state).
     el.addEventListener("change", () => {
       if (typeof setTierAbsorptionWeight === "function") setTierAbsorptionWeight(el.dataset.tier, el.value);
     });
