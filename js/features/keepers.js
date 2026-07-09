@@ -385,14 +385,18 @@ function renderKeepers() {
       if (r.isMinor) {
         html += '<td class="num"><span class="dim">$0</span></td>';
       } else {
-        html += '<td class="num" style="white-space:nowrap;">$' +
-          '<input type="number" class="kp-cost" data-team="' + tid + '" data-player="' + pn + '" value="' + r.cost + '" min="0" step="1" ' +
+        // The $ + input stay put; the trailing ↺/? lives in a fixed-width slot
+        // to its right that's always reserved, so editing never shifts the number.
+        const trailing = r.costOverridden
+          ? '<a href="#" class="kp-cost-reset" data-team="' + tid + '" data-player="' + pn + '" title="Reset to League App cost" style="text-decoration:none;">↺</a>'
+          : (r.costMissing ? '<span class="dim" title="No draft record — assumed">?</span>' : '');
+        html += '<td class="num"><span style="display:inline-flex; align-items:center; justify-content:flex-end; white-space:nowrap;">' +
+          '<span>$<input type="number" class="kp-cost" data-team="' + tid + '" data-player="' + pn + '" value="' + r.cost + '" min="0" step="1" ' +
           'title="' + (r.costOverridden ? 'Manual cost — overrides The League App' : 'Edit keeper cost (sticks until changed)') + '" ' +
           'style="width:42px; padding:1px 3px; text-align:right; background:transparent; border:1px solid var(--border); border-radius:3px; color:' +
-          (r.costOverridden ? 'var(--accent);font-weight:600' : 'inherit') + ';">' +
-          (r.costOverridden ? ' <a href="#" class="kp-cost-reset" data-team="' + tid + '" data-player="' + pn + '" title="Reset to League App cost" style="font-size:11px; text-decoration:none;">↺</a>'
-            : (r.costMissing ? ' <span class="dim" title="No draft record — assumed">?</span>' : '')) +
-          '</td>';
+          (r.costOverridden ? 'var(--accent);font-weight:600' : 'inherit') + ';"></span>' +
+          '<span style="display:inline-block; width:16px; margin-left:3px; text-align:center; font-size:11px;">' + trailing + '</span>' +
+          '</span></td>';
       }
 
       // Predicted $ — projected ROS/next-year auction value. Minors that the
