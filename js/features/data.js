@@ -195,7 +195,7 @@ function renderDataHealthCard() {
     h += '<div class="small muted" style="margin-bottom:8px;">Hosted projection feed: available.</div>';
   }
 
-  h += '<table><thead><tr><th>Store</th><th class="num">Rows</th><th>Last updated</th><th>Status</th></tr></thead><tbody>';
+  h += '<table><thead><tr><th>Store</th><th class="num">Rows</th><th>Last updated</th><th>Status</th><th></th></tr></thead><tbody>';
   for (const s of rep.flaggable) {
     const stampTxt = s.stamp
       ? esc(new Date(s.stamp).toLocaleDateString()) + (s.ageDays != null ? ' <span class="muted">(' + s.ageDays + 'd)</span>' : '')
@@ -203,7 +203,13 @@ function renderDataHealthCard() {
     const status = s.warnings.length
       ? s.warnings.map(w => '<span class="bad">⚠ ' + esc(w) + '</span>').join('<br>')
       : '<span class="good">ok</span>';
-    h += '<tr><td>' + esc(s.label) + '</td><td class="num">' + esc(String(s.rows)) + '</td><td>' + stampTxt + '</td><td>' + status + '</td></tr>';
+    // Every store is clearable right here, healthy or not — "I want this data
+    // gone" shouldn't require it to be flagged first (Jeff: no way to clear
+    // preseason projections).
+    const clearBtn = (s.onClean && s.keys && s.keys.length)
+      ? '<button class="btn ghost dh-clear" data-dh-clear="' + esc(s.keys[0]) + '" style="width:auto; padding:2px 10px; font-size:11px; color:var(--bad);">Clear</button>'
+      : '';
+    h += '<tr><td>' + esc(s.label) + '</td><td class="num">' + esc(String(s.rows)) + '</td><td>' + stampTxt + '</td><td>' + status + '</td><td>' + clearBtn + '</td></tr>';
   }
   h += '</tbody></table>';
 
@@ -405,20 +411,27 @@ function renderData() {
   html += '</div>';
   html += '</div></div>';
 
-  // === Reset ===
-  if (meta.hitterCount || meta.pitcherCount || nfbcMeta.count || savantHit || savantPit) {
-    html += '<div class="card"><h3>Reset</h3>';
-    html += '<div style="display: flex; gap: 8px; flex-wrap: wrap;">';
-    if (meta.hitterCount || meta.pitcherCount) html += '<button class="btn danger" id="clear-proj">Clear projections</button>';
-    if (nfbcMeta.count) html += '<button class="btn danger" id="clear-nfbc">Clear NFBC</button>';
-    if (savantHit || savantPit) html += '<button class="btn danger" id="clear-savant">Clear Statcast</button>';
-    html += '</div></div>';
-  }
+  // (The old bottom "Reset" card is gone — every store now has its own Clear
+  // button on the Data health table row, healthy or flagged, so there's exactly
+  // one place to remove data and it works even when the store isn't flagged.)
 
   root.innerHTML = html;
 
   // Data health cleanup button.
   document.getElementById("dh-cleanup")?.addEventListener("click", openDataCleanup);
+  // Per-store Clear buttons in the health table (keyed by the store's first
+  // backing localStorage key — stable across the re-render).
+  document.querySelectorAll(".dh-clear").forEach(b => b.addEventListener("click", () => {
+    const rep = buildDataHealth();
+    const s = rep.flaggable.find(x => x.keys && x.keys[0] === b.dataset.dhClear);
+    if (!s) return;
+    if (!confirm("Clear " + s.label + " (" + s.rows + ")? This only removes the imported data — your keeper picks, notes, and strategy are untouched.")) return;
+    try { if (s.onClean) s.onClean(); } catch (e) { console.warn("clear failed for " + s.label, e); }
+    for (const k of (s.keys || [])) { try { localStorage.removeItem(k); } catch (e) {} }
+    if (typeof refreshValues === "function") refreshValues();
+    if (typeof fireData === "function") fireData();
+    renderData();
+  }));
 
   // Wire all imports with a consistent helper
   function wireImport(textareaId, fileId, sourceId, fn, label) {
@@ -552,13 +565,6 @@ function renderData() {
     if (confirm("Clear " + getRosSourceLabel(_dataRosSel) + " dollar values?")) { clearRosDollars(_dataRosSel); renderData(); }
   });
 
-  document.getElementById("clear-proj")?.addEventListener("click", () => {
-    if (confirm("Clear all projections?")) clearProjections();
-  });
-  document.getElementById("clear-nfbc")?.addEventListener("click", () => {
-    if (confirm("Clear NFBC market prices?")) clearNfbc();
-  });
-  document.getElementById("clear-savant")?.addEventListener("click", () => {
-    if (confirm("Clear Statcast data?")) clearStatcast();
-  });
+  // (clear-proj / clear-nfbc / clear-savant handlers removed with the Reset
+  // card — per-store Clear lives on the Data health rows now.)
 }
