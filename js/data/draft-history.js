@@ -242,6 +242,26 @@ function getCurrentKeeperSalary(playerName) {
   if (!playerName) return null;
   const exc = (typeof getKeeperPriceExceptions === "function") ? getKeeperPriceExceptions() : {};
   if (exc[playerName] != null) return exc[playerName];
+  // The League App is the authoritative contract book. When its data is
+  // loaded, it settles the price outright in two directions:
+  //   - player NOT in it → his drafted contract died when he was dropped;
+  //     whoever rosters him now added him via FAAB, and the constitution
+  //     prices ALL FA keepers at $6 (draft history no longer applies).
+  //   - player IN it with a real price (majors' nextYearPrice, a callup's
+  //     set price) → that price wins over any history-derived estimate.
+  // Minors ($0 until called up) and price-less callups fall through to the
+  // escalator, as does everything when League App data isn't loaded.
+  if (typeof getLeagueContractByName === "function" &&
+      typeof getLeagueRosterData === "function" && getLeagueRosterData()) {
+    const ci = getLeagueContractByName(playerName);
+    if (!ci) return 6;
+    if (ci.kind === "major" && ci.contract && typeof ci.contract.nextYearPrice === "number") {
+      return ci.contract.nextYearPrice;
+    }
+    if (ci.kind === "callup" && !ci.costMissing && typeof ci.cost === "number") {
+      return ci.cost;
+    }
+  }
   const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
   if (!allOfPlayer.length) {
     // No draft history — a current-season FAAB pickup. (A player kept in any
