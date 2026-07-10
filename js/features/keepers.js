@@ -523,6 +523,10 @@ async function _loadKeeperRosters(force) {
   if (typeof loadLeagueRosters === "function") {
     tasks.push(loadLeagueRosters(!!force).catch(e => { _keepersState.leagueError = e.message || String(e); }));
   }
+  // Cap-tracker salaries (disambiguate traded FAAB-chain players → $6 keepers).
+  if (typeof loadCapSalaries === "function") {
+    tasks.push(loadCapSalaries(!!force));   // failure keeps the cached map; never blocks the page
+  }
   // Membership from live ESPN (only if a proxy is configured).
   if (typeof fetchEspnRosters === "function" && typeof getProxyUrl === "function" && getProxyUrl()) {
     tasks.push(fetchEspnRosters(0)

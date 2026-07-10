@@ -263,11 +263,19 @@ function getCurrentKeeperSalary(playerName) {
   // drafted contract (drafted-then-dropped players would otherwise re-price
   // off dead draft history). DRAFT and TRADE keep their cost basis — trades
   // transfer salary — so they fall through to the history escalator below.
-  if (typeof espnAcquisitionType === "function" &&
-      espnAcquisitionType(playerName) === "ADD") {
+  const _acq = (typeof espnAcquisitionType === "function")
+    ? espnAcquisitionType(playerName) : null;
+  if (_acq === "ADD") return 6;
+  const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
+  // TRADE hides the chain: a FAAB pickup traded onward is still a $6 FA
+  // keeper, but ESPN tags him TRADE and his old draft history would re-price
+  // him off a dead contract. The cap tracker resolves the chain — FAAB-chain
+  // players carry exactly $1 cap salary. Require the draft price to rule out
+  // a legit $1 auction buy (a real $1 basis also shows $1 on the sheet).
+  if (_acq === "TRADE" && allOfPlayer.length && allOfPlayer[0].price > 1 &&
+      typeof capSheetSalary === "function" && capSheetSalary(playerName) === 1) {
     return 6;
   }
-  const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
   if (!allOfPlayer.length) {
     // No draft history — a current-season FAAB pickup. (A player kept in any
     // prior offseason appears in that year's draft as a keeper pick, so no

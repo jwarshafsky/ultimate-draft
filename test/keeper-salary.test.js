@@ -45,8 +45,17 @@ const acqMap = {
   "faab pickup": "ADD",
   "traded faab guy": "TRADE",
   "callup guy": "ADD",
+  "chain guy": "TRADE",
+  "dollar draftee": "TRADE",
 };
 global.espnAcquisitionType = (name) => acqMap[global.normalizePlayerName(name)] || null;
+
+// Cap-tracker salary stub (drafted basis travels with a trade; FAAB chain = $1).
+const capMap = { "traded guy": 107, "chain guy": 1, "dollar draftee": 1 };
+global.capSheetSalary = (name) => {
+  const v = capMap[global.normalizePlayerName(name)];
+  return typeof v === "number" ? v : null;
+};
 
 // Seed through the real storage path (loadHistoryFromStorage runs at load).
 // Latest data year 2026 → upcoming draft year 2027.
@@ -56,6 +65,8 @@ localStorage.setItem("ud_draft_history_v1", JSON.stringify({
     { year: 2025, owner: "Jeff", player: "Lapsed Guy", pos: "1B", price: 10 },
     { year: 2026, owner: "AJ", player: "ReAdded Guy", pos: "OF", price: 5 },
     { year: 2026, owner: "Corey", player: "Traded Guy", pos: "DH", price: 107 },
+    { year: 2026, owner: "AJ", player: "Chain Guy", pos: "OF", price: 5 },
+    { year: 2026, owner: "AJ", player: "Dollar Draftee", pos: "RP", price: 1 },
   ],
   meta: { years: [2025, 2026] },
 }));
@@ -91,6 +102,21 @@ test("drafted-then-traded (TRADE) keeps cost basis → escalator", () => {
 test("never-drafted traded FAAB player (TRADE, no history) → $6", () => {
   assertEq(getCurrentKeeperSalary("Traded Faab Guy"), 6);
 });
+test("drafted → dropped → FAABed → TRADED ($1 cap salary) → $6", () => {
+  // The blind spot: ESPN says TRADE, draft history says $5, but the cap
+  // tracker's $1 salary proves a FAAB link in the chain — contract is dead.
+  assertEq(getCurrentKeeperSalary("Chain Guy"), 6);
+});
+test("legit $1 auction buy traded onward keeps the escalator ($3, not $6)", () => {
+  // Cap salary $1 is ambiguous when the draft price was also $1 — don't
+  // misread a real $1 basis as a FAAB chain.
+  assertEq(getCurrentKeeperSalary("Dollar Draftee"), 3);
+});
+test("TRADE with no cap-sheet data → escalator (fail-safe)", () => {
+  delete capMap["chain guy"];
+  assertEq(getCurrentKeeperSalary("Chain Guy"), 7);
+  capMap["chain guy"] = 1;
+});
 test("auction buy NOT in the League App book keeps the escalator", () => {
   // Round-3 regression: the book lists keepers only — absence must NOT mean $6.
   assertEq(getCurrentKeeperSalary("Drafted Guy"), 22);
@@ -117,5 +143,32 @@ test("major League App price beats a conflicting history escalator", () => {
 });
 test("priced call-up → tier price wins over the $6 ADD rule", () => {
   assertEq(getCurrentKeeperSalary("Callup Guy"), 10);
+});
+
+// The cap-salaries loader itself (js/data/cap-salaries.js): parse the real
+// published-CSV shape — headerless player rows with team totals tacked on the
+// right, plus a partial header line that must be skipped.
+section("Cap-salary CSV parsing");
+eval(fs.readFileSync(__dirname + "/../js/data/cap-salaries.js", "utf8"));
+test("parses owner,player,salary rows and skips header/blank lines", () => {
+  const csv = [
+    " ,,,,,Team,Salary",
+    "MV3,Matt Chapman,8.00,8.00,,Jeff,382",
+    "Jeff,Shohei Ohtani,107.00,107.00,,,",
+    "Jeff,Heliot Ramos,1.00,1.00,,,",
+    ",,,,,,",
+  ].join("\n");
+  const map = _parseCapSalaries(csv);
+  assertEq(map[normalizePlayerName("Shohei Ohtani")], 107);
+  assertEq(map[normalizePlayerName("Heliot Ramos")], 1);
+  assertEq(map[normalizePlayerName("Matt Chapman")], 8);
+  assertEq(Object.keys(map).length, 3);
+});
+test("capSheetSalary reads the localStorage cache", () => {
+  localStorage.setItem("ud_cap_salaries_v1", JSON.stringify({
+    map: { [normalizePlayerName("Cached Guy")]: 14 }, at: "2026-07-09T00:00:00Z",
+  }));
+  assertEq(capSheetSalary("Cached Guy"), 14);
+  assertEq(capSheetSalary("Nobody"), null);
 });
 summary();
