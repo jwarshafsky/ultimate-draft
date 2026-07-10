@@ -4,6 +4,15 @@
 // record at all can only be a current-season FAAB add (any player kept in a
 // prior offseason appears in that year's draft as a keeper pick), so their
 // first keepable year IS the upcoming draft → $6, not $8.
+//
+// Round 2 (same day): Heliot Ramos ($5 draft) and Ivan Herrera ($3 draft) were
+// drafted, DROPPED, and re-added via FAAB — dead contracts, $6 FAs — but the
+// escalator priced them off draft history ($7/$5). Round 3: the first attempt
+// inferred "dropped" from absence in the League App book, which is wrong — the
+// book only lists KEEPERS, so auction buys like Ohtani/Joe Ryan/Seiya Suzuki
+// aren't in it either and got mispriced to $6. The real signal is ESPN's
+// per-entry acquisitionType: ADD = FAAB pickup ($6); DRAFT/TRADE = the drafted
+// cost basis survives (trades transfer salary) → history escalator.
 const { test, section, summary, assertEq, makeLocalStorageStub } = require("./helpers.js");
 const fs = require("fs");
 
@@ -13,11 +22,9 @@ global.normalizePlayerName = (s) => String(s || "").toLowerCase()
   .normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[.']/g, "").replace(/\s+/g, " ").trim();
 global.getKeeperPriceExceptions = () => ({ "Override Guy": 12 });
 
-// League App contract stubs (authoritative contract book). `leagueLoaded`
-// simulates whether the rosters fetch has happened; players in `contracted`
-// still hold their drafted contract, anyone else was dropped.
+// League App contract stubs (the book of KEPT contracts — auction buys and
+// FAAB adds are never in it). `leagueLoaded` simulates whether the fetch ran.
 let leagueLoaded = true;
-const contracted = new Set(["drafted guy", "lapsed guy", "override guy"]);
 global.getLeagueRosterData = () => (leagueLoaded ? { season: 2026 } : null);
 global.getLeagueContractByName = (name) => {
   const n = global.normalizePlayerName(name);
@@ -25,8 +32,21 @@ global.getLeagueContractByName = (name) => {
     return { kind: "major", contract: { nextYearPrice: 26 }, cost: 26, costMissing: false };
   if (n === "callup guy")
     return { kind: "callup", contract: {}, cost: 10, costMissing: false };
-  return contracted.has(n) ? { kind: "major" } : null;
+  return null;
 };
+
+// ESPN acquisitionType stub (how the current roster got each player).
+// Callup Guy is deliberately ADD: call-ups reach the ESPN roster via an add,
+// but their League App tier price must win over the $6 FA rule.
+const acqMap = {
+  "drafted guy": "DRAFT",
+  "readded guy": "ADD",
+  "traded guy": "TRADE",
+  "faab pickup": "ADD",
+  "traded faab guy": "TRADE",
+  "callup guy": "ADD",
+};
+global.espnAcquisitionType = (name) => acqMap[global.normalizePlayerName(name)] || null;
 
 // Seed through the real storage path (loadHistoryFromStorage runs at load).
 // Latest data year 2026 → upcoming draft year 2027.
@@ -34,6 +54,8 @@ localStorage.setItem("ud_draft_history_v1", JSON.stringify({
   picks: [
     { year: 2026, owner: "Jeff", player: "Drafted Guy", pos: "OF", price: 20 },
     { year: 2025, owner: "Jeff", player: "Lapsed Guy", pos: "1B", price: 10 },
+    { year: 2026, owner: "AJ", player: "ReAdded Guy", pos: "OF", price: 5 },
+    { year: 2026, owner: "Corey", player: "Traded Guy", pos: "DH", price: 107 },
   ],
   meta: { years: [2025, 2026] },
 }));
@@ -54,35 +76,26 @@ test("keeper_price_exceptions override wins over everything", () => {
   assertEq(getCurrentKeeperSalary("Override Guy"), 12);
 });
 
-// Jeff, Jul 9 2026 (round 2): Heliot Ramos ($5 draft → showed $7) and Ivan
-// Herrera ($3 draft → showed $5) were drafted, DROPPED, and re-added via FAAB.
-// A dropped contract is dead — the re-adding team owns a $6 FA keeper, but the
-// escalator only saw draft history. League App roster data (the authoritative
-// contract book) tells us who still holds a contract.
-section("Keeper salary — drafted-then-dropped players re-price as $6 FAs");
-test("drafted, dropped, re-added via FAAB → $6 (not draft price + $2)", () => {
-  localStorage.setItem("ud_draft_history_v1", JSON.stringify({
-    picks: [{ year: 2026, owner: "AJ", player: "ReAdded Guy", pos: "OF", price: 5 }],
-    meta: { years: [2026] },
-  }));
-  loadHistoryFromStorage();
+section("Keeper salary — ESPN acquisitionType decides dead vs live contracts");
+test("drafted, dropped, re-added via FAAB (ADD) → $6, not draft price + $2", () => {
   assertEq(getCurrentKeeperSalary("ReAdded Guy"), 6);
 });
-test("league data not loaded yet → falls back to history escalator", () => {
+test("ADD wins even when League App data isn't loaded", () => {
   leagueLoaded = false;
-  assertEq(getCurrentKeeperSalary("ReAdded Guy"), 7);
+  assertEq(getCurrentKeeperSalary("ReAdded Guy"), 6);
   leagueLoaded = true;
 });
-test("still-contracted drafted player keeps the escalator", () => {
-  localStorage.setItem("ud_draft_history_v1", JSON.stringify({
-    picks: [
-      { year: 2026, owner: "Jeff", player: "Drafted Guy", pos: "OF", price: 20 },
-      { year: 2025, owner: "Jeff", player: "Lapsed Guy", pos: "1B", price: 10 },
-    ],
-    meta: { years: [2025, 2026] },
-  }));
-  loadHistoryFromStorage();
+test("drafted-then-traded (TRADE) keeps cost basis → escalator", () => {
+  assertEq(getCurrentKeeperSalary("Traded Guy"), 109);   // Ohtani case: $107 + $2
+});
+test("never-drafted traded FAAB player (TRADE, no history) → $6", () => {
+  assertEq(getCurrentKeeperSalary("Traded Faab Guy"), 6);
+});
+test("auction buy NOT in the League App book keeps the escalator", () => {
+  // Round-3 regression: the book lists keepers only — absence must NOT mean $6.
   assertEq(getCurrentKeeperSalary("Drafted Guy"), 22);
+});
+test("no acquisition info at all → history escalator (fail-safe)", () => {
   assertEq(getCurrentKeeperSalary("Lapsed Guy"), 14);
 });
 
@@ -102,7 +115,7 @@ test("major League App price beats a conflicting history escalator", () => {
   loadHistoryFromStorage();
   assertEq(getCurrentKeeperSalary("Contract Guy"), 26);
 });
-test("callup with a set price → that price", () => {
+test("priced call-up → tier price wins over the $6 ADD rule", () => {
   assertEq(getCurrentKeeperSalary("Callup Guy"), 10);
 });
 summary();

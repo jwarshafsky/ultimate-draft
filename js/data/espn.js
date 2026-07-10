@@ -192,6 +192,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
     const ipOuts = _statById(m, ESPN_STAT_ID.IP_OUTS);
     return {
       name, espnId: player.id, type: "P", pctOwned, pos, eligibleSlots: slots, twoWay,
+      acquisitionType: entry.acquisitionType || null,
       injuryStatus: player.injuryStatus || null, lineupSlotId: entry.lineupSlotId,
       K: _statById(m, ESPN_STAT_ID.K) || 0,
       QS: _statById(m, ESPN_STAT_ID.QS) || 0,
@@ -208,6 +209,7 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   }
   return {
     name, espnId: player.id, type: "H", pctOwned, pos, eligiblePos, eligibleSlots: slots, twoWay,
+    acquisitionType: entry.acquisitionType || null,
     injuryStatus: player.injuryStatus || null, lineupSlotId: entry.lineupSlotId,
     R: _statById(m, ESPN_STAT_ID.R) || 0,
     HR: _statById(m, ESPN_STAT_ID.HR) || 0,
@@ -263,6 +265,37 @@ function _buildYtdTeamLines(valuesByStat) {
   return [hit, pit];
 }
 
+// How each rostered player was acquired (DRAFT / ADD / TRADE), keyed by
+// normalized name. Keeper pricing needs this to tell FAAB adds ($6 keepers,
+// dead draft contract) from held or traded contracts (cost basis survives).
+// Refreshed on every roster parse; cached in localStorage so the answer
+// survives reloads before this session has pulled rosters. Refetchable cache —
+// deliberately NOT in the device-sync whitelist.
+const ESPN_ACQ_KEY = "ud_espn_acq_v1";
+let _espnAcqByName = null;
+function _espnAcqNorm(s) {
+  return (typeof normalizePlayerName === "function")
+    ? normalizePlayerName(s) : String(s || "").toLowerCase();
+}
+function _updateEspnAcqMap(rosters) {
+  const map = {};
+  for (const players of Object.values(rosters || {})) {
+    for (const p of players) {
+      if (p && p.acquisitionType) map[_espnAcqNorm(p.name)] = p.acquisitionType;
+    }
+  }
+  if (!Object.keys(map).length) return;   // never clobber the cache with an empty parse
+  _espnAcqByName = map;
+  try { localStorage.setItem(ESPN_ACQ_KEY, JSON.stringify(map)); } catch (e) {}
+}
+function espnAcquisitionType(name) {
+  if (_espnAcqByName === null) {
+    try { _espnAcqByName = JSON.parse(localStorage.getItem(ESPN_ACQ_KEY) || "null") || {}; }
+    catch (e) { _espnAcqByName = {}; }
+  }
+  return _espnAcqByName[_espnAcqNorm(name)] || null;
+}
+
 // Parse a raw mTeam+mRoster response into normalized data keyed by OUR internal
 // team ids. Exported so the test harness / cached samples reuse it. Returns:
 //   rosters     — current roster players (names + per-player stats) per team
@@ -296,6 +329,7 @@ function parseEspnRosters(data, sourceId) {
       playerCount: rosters[ourId].length,
     };
   }
+  _updateEspnAcqMap(rosters);
   return { rosters, teamMeta, ytdTeam, espnPoints, gsUsed, season, sourceId,
     rawTeamCount: (data.teams || []).length, unmappedIds };
 }
