@@ -57,6 +57,11 @@ global.capSheetSalary = (name) => {
   return typeof v === "number" ? v : null;
 };
 
+// Transaction-log root stub. Default null (log unavailable) so every other
+// test exercises the heuristic fallbacks exactly as before.
+const txRootMap = {};
+global.txContractRoot = (name) => txRootMap[global.normalizePlayerName(name)] || null;
+
 // Seed through the real storage path (loadHistoryFromStorage runs at load).
 // Latest data year 2026 → upcoming draft year 2027.
 localStorage.setItem("ud_draft_history_v1", JSON.stringify({
@@ -116,6 +121,32 @@ test("TRADE with no cap-sheet data → escalator (fail-safe)", () => {
   delete capMap["chain guy"];
   assertEq(getCurrentKeeperSalary("Chain Guy"), 7);
   capMap["chain guy"] = 1;
+});
+
+// The season transaction log outranks the acquisition-tag/cap-sheet
+// heuristics in BOTH directions — it saw the actual draft/add/drop trail.
+section("Keeper salary — transaction-log root outranks heuristics");
+test("log says fa → $6 even when the tag says DRAFT and history has a price", () => {
+  txRootMap["drafted guy"] = "fa";
+  assertEq(getCurrentKeeperSalary("Drafted Guy"), 6);
+  delete txRootMap["drafted guy"];
+});
+test("log says live (e.g. manual trade) → escalator even when the tag says ADD", () => {
+  // Corey Seager case: acquisitionType ADD, but the log resolved the
+  // commissioner drop+instant-add hop back to his live drafted contract.
+  txRootMap["readded guy"] = "live";
+  assertEq(getCurrentKeeperSalary("ReAdded Guy"), 7);   // $5 draft + $2
+  delete txRootMap["readded guy"];
+});
+test("log says live → escalator even when the cap sheet shows $1 (TRADE)", () => {
+  txRootMap["chain guy"] = "live";
+  assertEq(getCurrentKeeperSalary("Chain Guy"), 7);
+  delete txRootMap["chain guy"];
+});
+test("exceptions still beat the log", () => {
+  txRootMap["override guy"] = "fa";
+  assertEq(getCurrentKeeperSalary("Override Guy"), 12);
+  delete txRootMap["override guy"];
 });
 test("auction buy NOT in the League App book keeps the escalator", () => {
   // Round-3 regression: the book lists keepers only — absence must NOT mean $6.

@@ -272,21 +272,28 @@ function _buildYtdTeamLines(valuesByStat) {
 // survives reloads before this session has pulled rosters. Refetchable cache —
 // deliberately NOT in the device-sync whitelist.
 const ESPN_ACQ_KEY = "ud_espn_acq_v1";
+const ESPN_IDS_KEY = "ud_espn_ids_v1";   // normalized name → ESPN playerId
 let _espnAcqByName = null;
+let _espnIdsByName = null;
 function _espnAcqNorm(s) {
   return (typeof normalizePlayerName === "function")
     ? normalizePlayerName(s) : String(s || "").toLowerCase();
 }
 function _updateEspnAcqMap(rosters) {
   const map = {};
+  const ids = {};
   for (const players of Object.values(rosters || {})) {
     for (const p of players) {
-      if (p && p.acquisitionType) map[_espnAcqNorm(p.name)] = p.acquisitionType;
+      if (!p) continue;
+      if (p.acquisitionType) map[_espnAcqNorm(p.name)] = p.acquisitionType;
+      if (p.espnId) ids[_espnAcqNorm(p.name)] = p.espnId;
     }
   }
   if (!Object.keys(map).length) return;   // never clobber the cache with an empty parse
   _espnAcqByName = map;
+  _espnIdsByName = ids;
   try { localStorage.setItem(ESPN_ACQ_KEY, JSON.stringify(map)); } catch (e) {}
+  try { localStorage.setItem(ESPN_IDS_KEY, JSON.stringify(ids)); } catch (e) {}
 }
 function espnAcquisitionType(name) {
   if (_espnAcqByName === null) {
@@ -294,6 +301,14 @@ function espnAcquisitionType(name) {
     catch (e) { _espnAcqByName = {}; }
   }
   return _espnAcqByName[_espnAcqNorm(name)] || null;
+}
+// ESPN playerId for a rostered player (transaction-log lookups key by id).
+function espnPlayerIdByName(name) {
+  if (_espnIdsByName === null) {
+    try { _espnIdsByName = JSON.parse(localStorage.getItem(ESPN_IDS_KEY) || "null") || {}; }
+    catch (e) { _espnIdsByName = {}; }
+  }
+  return _espnIdsByName[_espnAcqNorm(name)] || null;
 }
 
 // Parse a raw mTeam+mRoster response into normalized data keyed by OUR internal

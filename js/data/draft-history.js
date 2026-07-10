@@ -258,23 +258,33 @@ function getCurrentKeeperSalary(playerName) {
       }
     }
   }
-  // ESPN records HOW the current roster got each player. ADD = FAAB pickup:
-  // the constitution prices every FA keeper at $6, and it kills any earlier
-  // drafted contract (drafted-then-dropped players would otherwise re-price
-  // off dead draft history). DRAFT and TRADE keep their cost basis — trades
-  // transfer salary — so they fall through to the history escalator below.
-  const _acq = (typeof espnAcquisitionType === "function")
-    ? espnAcquisitionType(playerName) : null;
-  if (_acq === "ADD") return 6;
+  // The season transaction log is the most complete signal: it walks the
+  // player's actual draft/add/drop trail (trades are transparent — they never
+  // change the root; commissioner drop+instant-add "manual trades" resolve as
+  // hops). "fa" = rooted in a FAAB/FA add → $6. "live" = rooted in a draft
+  // pick → escalator below. null = log unavailable or trail unreadable →
+  // fall back to the acquisitionType/cap-sheet heuristics.
+  const _txRoot = (typeof txContractRoot === "function") ? txContractRoot(playerName) : null;
+  if (_txRoot === "fa") return 6;
   const allOfPlayer = _historyPicksFor(playerName).sort((a, b) => b.year - a.year);
-  // TRADE hides the chain: a FAAB pickup traded onward is still a $6 FA
-  // keeper, but ESPN tags him TRADE and his old draft history would re-price
-  // him off a dead contract. The cap tracker resolves the chain — FAAB-chain
-  // players carry exactly $1 cap salary. Require the draft price to rule out
-  // a legit $1 auction buy (a real $1 basis also shows $1 on the sheet).
-  if (_acq === "TRADE" && allOfPlayer.length && allOfPlayer[0].price > 1 &&
-      typeof capSheetSalary === "function" && capSheetSalary(playerName) === 1) {
-    return 6;
+  if (_txRoot !== "live") {
+    // ESPN records HOW the current roster got each player. ADD = FAAB pickup:
+    // the constitution prices every FA keeper at $6, and it kills any earlier
+    // drafted contract (drafted-then-dropped players would otherwise re-price
+    // off dead draft history). DRAFT and TRADE keep their cost basis — trades
+    // transfer salary — so they fall through to the history escalator below.
+    const _acq = (typeof espnAcquisitionType === "function")
+      ? espnAcquisitionType(playerName) : null;
+    if (_acq === "ADD") return 6;
+    // TRADE hides the chain: a FAAB pickup traded onward is still a $6 FA
+    // keeper, but ESPN tags him TRADE and his old draft history would re-price
+    // him off a dead contract. The cap tracker resolves the chain — FAAB-chain
+    // players carry exactly $1 cap salary. Require the draft price to rule out
+    // a legit $1 auction buy (a real $1 basis also shows $1 on the sheet).
+    if (_acq === "TRADE" && allOfPlayer.length && allOfPlayer[0].price > 1 &&
+        typeof capSheetSalary === "function" && capSheetSalary(playerName) === 1) {
+      return 6;
+    }
   }
   if (!allOfPlayer.length) {
     // No draft history — a current-season FAAB pickup. (A player kept in any

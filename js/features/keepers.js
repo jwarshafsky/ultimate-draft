@@ -527,6 +527,13 @@ async function _loadKeeperRosters(force) {
   if (typeof loadCapSalaries === "function") {
     tasks.push(loadCapSalaries(!!force));   // failure keeps the cached map; never blocks the page
   }
+  // Season transaction log (contract roots). First-ever load walks ~100
+  // scoring periods (a few seconds), so it deliberately does NOT join `tasks`
+  // — the page renders with heuristic prices and re-renders when the log
+  // lands. After that the cache makes this a 1-2 request incremental update.
+  if (typeof loadTransactionLog === "function") {
+    loadTransactionLog(false).then(changed => { if (changed) renderKeepers(); }).catch(() => {});
+  }
   // Membership from live ESPN (only if a proxy is configured).
   if (typeof fetchEspnRosters === "function" && typeof getProxyUrl === "function" && getProxyUrl()) {
     tasks.push(fetchEspnRosters(0)
