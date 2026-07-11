@@ -346,9 +346,11 @@ function simulateTitleOdds(rosters, opts) {
   return { byTeam, teamIds, sims };
 }
 
-// Expose for the browser test harness / console.
-if (typeof window !== "undefined") {
-  window.UDStandings = {
+// Expose for the browser test harness / console — and for the Cloudflare
+// Worker (proxy/), which side-effect-imports this file and reads the engine
+// off globalThis (window === globalThis in browsers, so nothing changes here).
+if (typeof globalThis !== "undefined") {
+  globalThis.UDStandings = {
     aggregateTeamCats, rankCategory, computeStandings,
     categoryGaps, whatIfStandings, simulateTitleOdds,
     STANDINGS_CATS, STANDINGS_INVERSE,

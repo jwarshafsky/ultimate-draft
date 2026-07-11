@@ -5,6 +5,7 @@
 //   GET  /espn/teams?leagueId=...&season=...     → mTeam + mRoster views
 //   GET  /espn/players?leagueId=...&season=...   → kona_player_info (top 2000)
 //   POST /claude                                  → forwards to Anthropic Messages API
+//   POST /telegram                                → Telegram bot webhook (telegram.js)
 //
 // Required Worker environment secrets:
 //   ESPN_S2          — your ESPN session cookie
@@ -24,8 +25,11 @@
 //   npx wrangler secret put ALLOWED_ORIGIN
 //   npx wrangler secret put UD_PROXY_KEY
 
+import { espnFetch, ESPN_BASE } from "./espn-fetch.js";
+import { handleTelegram } from "./telegram.js";
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const origin = request.headers.get("Origin") || "";
     const allowed = env.ALLOWED_ORIGIN || "*";
@@ -49,6 +53,12 @@ export default {
       } catch (e) {
         return json({ error: e.message || String(e) }, 500, corsHeaders(allowed, origin));
       }
+    }
+
+    // Telegram webhook — authenticated by its own secret-token header (Telegram
+    // can't send x-ud-key), so it sits before the shared-secret gate like /sync.
+    if (url.pathname === "/telegram" && request.method === "POST") {
+      return handleTelegram(request, env, ctx);
     }
 
     // Shared-secret gate. Enforced only once UD_PROXY_KEY is configured, so a
@@ -182,32 +192,13 @@ function json(obj, status, extraHeaders) {
 }
 
 // --- ESPN routes ---
-
-const ESPN_BASE = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb";
+// espnFetch + ESPN_BASE moved to espn-fetch.js (shared with the Telegram bot).
 
 // Sport-configurable base for the draft route (so a football league can be used
 // to dry-run live-draft polling). flb = baseball (default), ffl = football.
 function espnBaseForSport(sport) {
   const s = /^[a-z]{3}$/.test(sport || "") ? sport : "flb";
   return "https://lm-api-reads.fantasy.espn.com/apis/v3/games/" + s;
-}
-
-async function espnFetch(url, env, headers) {
-  const cookieHeader = "espn_s2=" + env.ESPN_S2 + "; SWID=" + env.ESPN_SWID;
-  const r = await fetch(url, {
-    headers: {
-      "cookie": cookieHeader,
-      "accept": "application/json",
-      "origin": "https://fantasy.espn.com",
-      "referer": "https://fantasy.espn.com/",
-      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-      "x-fantasy-platform": "espn-fantasy-web",
-      "x-fantasy-source": "kona",
-      ...(headers || {}),
-    },
-  });
-  if (!r.ok) throw new Error("ESPN " + r.status + ": " + (await r.text()).slice(0, 200));
-  return r.json();
 }
 
 async function proxyEspnDraft(url, env) {

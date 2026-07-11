@@ -43,8 +43,12 @@ tags sharing ONE global scope. Hosted on GitHub Pages; deploying = pushing to ma
   rAF-coalesced). Biggest: `standings.js` (in-season analyzer), `mock.js`.
 - `js/app.js` — shell: auth gate, tab routing (tab persisted in `location.hash`),
   startup loaders.
-- `proxy/` — Cloudflare Worker (ESPN fetch + Claude API relay). Deploy:
-  `cd proxy && wrangler deploy`.
+- `proxy/` — Cloudflare Worker (ESPN fetch + Claude API relay + the Telegram
+  league bot: `telegram.js` webhook → Claude tool loop; `league-data.js` runs
+  server-side projected standings / trade what-ifs by importing the REAL
+  `js/core/standings.js` engine off globalThis, with worker-side copies of the
+  lineup optimizer + ESPN normalization marked KEEP-IN-SYNC. Setup:
+  `docs/telegram-bot-setup.md`). Deploy: `cd proxy && wrangler deploy`.
 - `scripts/fetch_ros_projections.py` — scheduled job that refreshes
   `projections/*.csv` + `manifest.json` from FanGraphs. ROS slugs only
   (`steamerr`, `rthebatx`, `ratcdc`) — plain full-season slugs must never be
