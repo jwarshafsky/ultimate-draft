@@ -11,7 +11,9 @@
 const _standings = {
   ytd: null,         // { rosters, teamMeta, season } — ESPN YTD actuals (mode-independent)
   computed: null,    // computeStandings() on the built rosters
-  odds: null,        // simulateTitleOdds() result
+  odds: null,        // simulateTitleOdds() result (frozen rosters — the baseline)
+  oddsDeadline: null, // deadline-adjusted odds (expected future trades layered in)
+  deadlineOn: false, // "factor in deadline trades" toggle (persisted)
   coverage: null,    // { matched, total } ROS match rate (ros/full modes)
   built: null,       // the engine rosters currently displayed
   mode: "current",   // "current" | "ros" | "full"
@@ -56,6 +58,16 @@ function setLineupOverride(name, mode) {
   renderStandings();
 }
 loadLineupOverride();
+
+// "Factor in deadline trades" toggle for the Title Odds card (synced key).
+const DEADLINE_TOGGLE_KEY = "ud_deadline_adjust_v1";
+_standings.deadlineOn = localStorage.getItem(DEADLINE_TOGGLE_KEY) === "1";
+function setDeadlineToggle(on) {
+  _standings.deadlineOn = !!on;
+  localStorage.setItem(DEADLINE_TOGGLE_KEY, on ? "1" : "0");
+  if (_standings.ytd) recomputeStandings();
+  renderStandings();
+}
 
 // Modes that require a ROS projection source.
 function _modeNeedsRos(m) { return m === "ros" || m === "full"; }
@@ -114,6 +126,18 @@ function recomputeStandings() {
   _standings.coverage = built.coverage;
   _standings.computed = computeStandings(built.rosters);
   _standings.odds = simulateTitleOdds(built.rosters, { sims: 3000, fracRemaining: seasonFractionRemaining() });
+  // Deadline-adjusted odds: a second sim run with expected future seller→buyer
+  // trades layered in. The frozen-roster run above stays the baseline (and is
+  // what the what-ifs, brief, and trade finder compare against).
+  _standings.oddsDeadline = null;
+  if (_standings.deadlineOn && _standings.mode !== "current") {
+    const wf = tradeWindowFraction();
+    const model = wf > 0 ? buildTradeModel(built.rosters, _standings.odds, { windowFrac: wf }) : null;
+    if (model) {
+      _standings.oddsDeadline = simulateTitleOdds(built.rosters,
+        { sims: 3000, fracRemaining: seasonFractionRemaining(), tradeModel: model });
+    }
+  }
   _standings.pickups = null;   // base changed — best-pickups must be recomputed
   _standings.tradeFinder.results = null;   // and trade-finder results
   _standings.whatIfSim.key = null;         // and the memoized what-if sims
@@ -413,6 +437,22 @@ function seasonFractionRemaining() {
   return Math.max(0, Math.min(1, (end - now) / (end - start)));
 }
 
+// Fraction of the TRADE window still open (season start → league deadline).
+// The constitution sets the deadline on ESPN each season — Aug 1 is the
+// working default. Scales the expected-future-trades rate, so the deadline
+// adjustment fades to zero as the deadline nears and disappears after it
+// (deals already made are in the live rosters — never double-counted).
+const TRADE_DEADLINE_MONTH = 7, TRADE_DEADLINE_DAY = 1;   // Aug 1 (0-based month)
+function tradeWindowFraction() {
+  const season = _standings.ytd?.season || (ESPN && ESPN.season) || new Date().getFullYear();
+  const now = new Date();
+  const start = new Date(season, 2, 27);
+  const dl = new Date(season, TRADE_DEADLINE_MONTH, TRADE_DEADLINE_DAY);
+  if (now <= start) return 1;
+  if (now >= dl) return 0;
+  return (dl - now) / (dl - start);
+}
+
 function renderStandings() {
   const root = document.getElementById("view-root");
   if (!root) return;
@@ -510,20 +550,37 @@ function renderStandings() {
 
 function renderTitleOddsCard(computed, odds, myId) {
   if (!odds) return "";
+  // Deadline-adjusted view: swap in the trade-model run, keep the frozen-roster
+  // run for the per-team deltas so the toggle's effect is visible at a glance.
+  const dl = _standings.deadlineOn ? _standings.oddsDeadline : null;
+  const show = dl || odds;
   // Order teams by P(1st) desc.
   const rows = computed.teams.map(t => ({
-    teamId: t.teamId, roto: t.rotoPoints, place: t.place, ...(odds.byTeam[t.teamId] || {}),
+    teamId: t.teamId, roto: t.rotoPoints, place: t.place,
+    basePFirst: (odds.byTeam[t.teamId] || {}).pFirst || 0,
+    ...(show.byTeam[t.teamId] || {}),
   })).sort((a, b) => (b.pFirst || 0) - (a.pFirst || 0));
   const maxP = Math.max(0.0001, ...rows.map(r => r.pFirst || 0));
 
   const fracTxt = Math.round(seasonFractionRemaining() * 100);
-  let html = '<div class="card" style="border-color: rgba(79,142,247,.4);"><h3>Title Odds</h3>';
-  html += '<p class="muted small">Probability of finishing 1st, from ' + odds.sims.toLocaleString() +
+  let html = '<div class="card" style="border-color: rgba(79,142,247,.4);">';
+  html += '<div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;"><h3 style="margin:0;">Title Odds</h3>' +
+    '<label class="small muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;">' +
+    '<input type="checkbox" id="std-deadline"' + (_standings.deadlineOn ? ' checked' : '') + '> factor in deadline trades</label></div>';
+  html += '<p class="muted small">Probability of finishing 1st, from ' + show.sims.toLocaleString() +
     ' simulated seasons. Uncertainty scales with the rest-of-season still to play (≈' + fracTxt +
     '% left' + (_standings.mode === 'full' ? ', measured from each team’s ROS share' : ', calendar estimate') +
     ') and categories move together (offense and pitching swing as a unit), so odds tighten as the year progresses.</p>';
+  if (dl) {
+    html += '<p class="muted small">Deadline mode: each simulated season adds ≈' + (Math.round(dl.deadline.lambda * 10) / 10) +
+      ' more star trades before the Aug 1 deadline — likely sellers (bottom teams) move their best rest-of-season players to likely buyers (contenders), ' +
+      'net of the replacement who takes the open lineup spot. Deals already made are in the live rosters and are never double-counted. ' +
+      'The Δ column shows the shift vs frozen rosters.</p>';
+  } else if (_standings.deadlineOn) {
+    html += '<p class="muted small">Deadline trades: the trade deadline has passed — rosters are locked, so there’s no adjustment to make.</p>';
+  }
   html += '<div style="overflow-x:auto;"><table><thead><tr>' +
-    '<th>Team</th><th class="num">Proj roto</th><th class="num">P(1st)</th><th>&nbsp;</th>' +
+    '<th>Team</th><th class="num">Proj roto</th><th class="num">P(1st)</th>' + (dl ? '<th class="num">Δ</th>' : '') + '<th>&nbsp;</th>' +
     '<th class="num">Top 3</th><th class="num">Avg finish</th></tr></thead><tbody>';
   for (const r of rows) {
     const mine = r.teamId === myId;
@@ -531,6 +588,11 @@ function renderTitleOddsCard(computed, odds, myId) {
     html += '<td>' + esc(_teamLabel(r.teamId)) + (mine ? ' ◄' : '') + '</td>';
     html += '<td class="num">' + (Math.round(r.roto * 10) / 10) + '</td>';
     html += '<td class="num">' + _pct(r.pFirst || 0) + '</td>';
+    if (dl) {
+      const dpp = Math.round(((r.pFirst || 0) - r.basePFirst) * 100);
+      html += '<td class="num small ' + (dpp > 0 ? 'good' : dpp < 0 ? 'bad' : 'muted') + '">' +
+        (dpp === 0 ? '—' : (dpp > 0 ? '+' : '') + dpp + 'pp') + '</td>';
+    }
     // mini bar
     const w = Math.round((r.pFirst || 0) / maxP * 100);
     html += '<td style="width:120px;"><div style="background:var(--border);border-radius:3px;height:8px;width:110px;">' +
@@ -539,7 +601,36 @@ function renderTitleOddsCard(computed, odds, myId) {
     html += '<td class="num">' + (r.avgFinish ? r.avgFinish.toFixed(1) : "—") + '</td>';
     html += '</tr>';
   }
-  html += '</tbody></table></div></div>';
+  html += '</tbody></table></div>';
+  if (dl) html += renderDeadlineFlow(dl.deadline);
+  html += '</div>';
+  return html;
+}
+
+// Sanity-check panel: which players the deadline model actually moved, from
+// whom, how often, and to whom — so the story ("bottom teams sell their stars
+// to contenders") can be eyeballed against league reality.
+function renderDeadlineFlow(deadline) {
+  const chips = (deadline.chips || []).filter(c => c.pTraded >= 0.02).slice(0, 15);
+  let html = '<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">';
+  html += '<p class="small" style="margin:0 0 4px;"><b>Projected deadline trades</b> <span class="muted">(sanity check — who the model moves, and where)</span></p>';
+  if (!chips.length) {
+    html += '<p class="muted small">No likely trades — either the window is nearly closed or no clear sellers have movable stars.</p></div>';
+    return html;
+  }
+  html += '<table style="font-size:12px;"><thead><tr><th>Player</th><th>Now on</th>' +
+    '<th class="num">Chance traded</th><th>Most likely buyers</th></tr></thead><tbody>';
+  for (const c of chips) {
+    const dests = (c.dest || []).slice(0, 3)
+      .map(d => esc(_teamLabel(d.teamId)) + ' <span class="muted">' + _pct(d.p) + '</span>').join(', ');
+    html += '<tr><td>' + esc(c.name) + '</td><td>' + esc(_teamLabel(c.from)) + '</td>' +
+      '<td class="num">' + _pct(c.pTraded) + '</td><td class="small">' + (dests || '—') + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<p class="muted small" style="margin-top:6px;">Candidates are each team’s top rest-of-season players; ' +
+    'a team’s chance of <i>selling</i> tracks its odds of a bottom-5 finish, and of <i>buying</i> its odds of a top-4 finish. ' +
+    'If a name here looks wrong (e.g. a player his owner would never move), tell me and I’ll refine the model.</p>';
+  html += '</div>';
   return html;
 }
 
@@ -1441,6 +1532,8 @@ function wireStandings() {
   });
   const refresh = document.getElementById("std-refresh");
   if (refresh) refresh.addEventListener("click", loadStandingsData);
+  const dlToggle = document.getElementById("std-deadline");
+  if (dlToggle) dlToggle.addEventListener("change", () => setDeadlineToggle(dlToggle.checked));
 
   // Lineup overrides (Start / Bench / restore-to-auto) in the breakdown.
   document.querySelectorAll("[data-lo]").forEach(el => {

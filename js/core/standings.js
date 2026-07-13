@@ -270,12 +270,21 @@ function _teamFractionRemaining(players, fallback) {
 }
 
 // Returns { byTeam: { [teamId]: { pFirst, pTop3, avgFinish, finishDist } },
-// teamIds, sims }. opts: { sims=3000, uncertainty=1, fracRemaining=1 }.
+// teamIds, sims }. opts: { sims=3000, uncertainty=1, fracRemaining=1,
+// tradeModel=null }.
+//
+// tradeModel (from buildTradeModel in deadline.js) layers expected FUTURE
+// deadline trades on top of the frozen rosters: each simulated season draws a
+// few seller→buyer star moves and shifts those players' remaining stats
+// between the two teams before the jitter is applied. The result then carries
+// a `deadline` report — how often each chip moved and where — for the UI's
+// sanity-check table.
 function simulateTitleOdds(rosters, opts) {
   opts = opts || {};
   const sims = opts.sims || 3000;
   const uncertainty = opts.uncertainty != null ? opts.uncertainty : 1;
   const fallbackFrac = opts.fracRemaining != null ? opts.fracRemaining : 1;
+  const model = opts.tradeModel || null;
   const teamIds = Object.keys(rosters);
   const n = teamIds.length;
   if (!n) return { byTeam: {}, teamIds: [], sims: 0 };
@@ -296,7 +305,35 @@ function simulateTitleOdds(rosters, opts) {
     for (const id of teamIds) base[cat][id] = catValue(totals[id], cat);
   }
 
+  // Trade-model precomputation: per-team component vectors (so a traded
+  // player's numerators/denominators move with him) + per-chip flow counters.
+  let comp = null, chipStats = null;
+  if (model && model.chips && model.chips.length) {
+    comp = {};
+    for (const id of teamIds) comp[id] = _dlComponentsFromTotals(totals[id]);
+    chipStats = model.chips.map(() => ({ traded: 0, dest: {} }));
+  }
+
   for (let s = 0; s < sims; s++) {
+    // Sample this season's deadline trades and re-derive the affected teams'
+    // category baselines from their adjusted components.
+    let adjVal = null; // id -> {cat: value} for teams touched by a trade
+    if (comp) {
+      const trades = _dlSampleTrades(model);
+      if (trades) {
+        const adjComp = {};
+        const touch = id => adjComp[id] || (adjComp[id] = { ...comp[id] });
+        for (const tr of trades) {
+          _dlApplyTrade(touch(tr.from), touch(tr.to), model.chips[tr.chip].comp, model.net);
+          const cs = chipStats[tr.chip];
+          cs.traded++;
+          cs.dest[tr.to] = (cs.dest[tr.to] || 0) + 1;
+        }
+        adjVal = {};
+        for (const id of Object.keys(adjComp)) adjVal[id] = _dlCatValues(adjComp[id]);
+      }
+    }
+
     // Draw each team's two latent factors for this simulated season.
     const F = {}; // id -> { off, pit }
     for (const id of teamIds) F[id] = { off: _gauss(), pit: _gauss() };
@@ -315,7 +352,9 @@ function simulateTitleOdds(rosters, opts) {
         if (inverse && (totals[id]._ip || 0) <= 0) { sampled.push({ id, v: Infinity }); continue; }
         const f = group === "off" ? frac[id].hit : frac[id].pit;
         const shock = load * F[id][group] + idio * _gauss();
-        let v = base[cat][id] * (1 + sigma * f * shock);
+        const bv = (adjVal && adjVal[id]) ? adjVal[id][cat] : base[cat][id];
+        if (!isFinite(bv)) { sampled.push({ id, v: inverse ? Infinity : 0 }); continue; }
+        let v = bv * (1 + sigma * f * shock);
         if (v < 0) v = 0;
         sampled.push({ id, v });
       }
@@ -343,7 +382,28 @@ function simulateTitleOdds(rosters, opts) {
       finishDist: st.dist.map(c => c / sims),
     };
   }
-  return { byTeam, teamIds, sims };
+  const out = { byTeam, teamIds, sims };
+
+  // Aggregate the simulated trade flow: how often each chip moved, and to
+  // whom. This is the sanity-check data — the UI shows it so the model's
+  // "who sells, who buys" story can be eyeballed against league reality.
+  if (chipStats) {
+    out.deadline = {
+      lambda: model.lambda,
+      windowFrac: model.windowFrac,
+      net: model.net,
+      chips: model.chips.map((c, i) => ({
+        name: c.name,
+        from: c.teamId,
+        value: c.value,
+        pTraded: chipStats[i].traded / sims,
+        dest: Object.entries(chipStats[i].dest)
+          .map(([teamId, cnt]) => ({ teamId, p: cnt / sims }))
+          .sort((a, b) => b.p - a.p),
+      })).filter(c => c.pTraded > 0).sort((a, b) => b.pTraded - a.pTraded),
+    };
+  }
+  return out;
 }
 
 // Expose for the browser test harness / console.

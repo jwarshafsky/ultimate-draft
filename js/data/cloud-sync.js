@@ -45,6 +45,7 @@ const SYNC_EXACT_KEYS = new Set([
   // the draft_sessions client_key upsert makes cross-device use safe anyway).
   "ud_lineup_override_v1",
   "ud_standings_brief_v1",
+  "ud_deadline_adjust_v1",   // Title Odds "factor in deadline trades" toggle
   "ud_nfbc_v1",
   "ud_savant_hit_v1", "ud_savant_pit_v1",
   "ud_owner_aliases_v1",
