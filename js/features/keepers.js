@@ -544,5 +544,31 @@ async function _loadKeeperRosters(force) {
       .catch(e => { _keepersState.espnError = e.message || String(e); }));
   }
   try { await Promise.all(tasks); }
-  finally { _keepersState.loadingRosters = false; renderKeepers(); }
+  finally {
+    _keepersState.loadingRosters = false;
+    _cleanupTradedKeeperPicks();
+    renderKeepers();
+  }
+}
+
+// Once live rosters are in, drop my-keeper picks stranded on a player's old
+// team by a trade (cleanupTradedMyKeepers in js/data/my-keepers.js has the
+// full rules — present elsewhere clears, absence alone never does).
+function _cleanupTradedKeeperPicks() {
+  if (typeof cleanupTradedMyKeepers !== "function") return;
+  const espn = _keepersState.rosters;
+  if (!espn) return;   // no live membership truth → don't touch picks
+  const index = {};
+  for (const tid of Object.keys(espn)) index[tid] = (espn[tid] || []).map(p => p.name);
+  // Merge League App minors so a traded minor-league stash relocates too.
+  if (typeof getLeagueTeamRoster === "function") {
+    for (const t of LEAGUE.teams) {
+      const ld = getLeagueTeamRoster(t.id);
+      if (ld && (ld.minors || []).length) {
+        (index[t.id] = index[t.id] || []).push(...ld.minors.map(p => p.name));
+      }
+    }
+  }
+  const cleared = cleanupTradedMyKeepers(index);
+  if (cleared.length) console.log("[keepers] cleared traded-away picks:", cleared);
 }

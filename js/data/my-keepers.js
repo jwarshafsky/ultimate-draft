@@ -115,6 +115,47 @@ function getEffectiveKeeperSelections() {
   return out;
 }
 
+// Clear keeper picks stranded on a player's OLD team after a trade. The
+// Keepers page's "never lost" rule resurrects any picked player missing from
+// his team's roster — right for an ESPN blip or name mismatch, wrong once the
+// player verifiably lives on ANOTHER team's live roster (Willson Contreras
+// stayed listed on Dave's team after his trade to Klinger until manually
+// unchecked). A pick is cleared ONLY when the player appears on a different
+// team's roster and not this one; absence alone never clears. The pick is not
+// auto-moved to the new team — keeping him there is that owner's decision.
+// Cost overrides and ineligible flags stay (still valid if he's traded back,
+// since contracts travel with trades).
+// rosterIndex = { [teamId]: [playerName] } from live ESPN (+ League App minors).
+// Returns [{ teamId, name }] cleared.
+function cleanupTradedMyKeepers(rosterIndex) {
+  if (!rosterIndex) return [];
+  const norm = (typeof normalizePlayerName === "function")
+    ? normalizePlayerName : (s) => String(s || "").toLowerCase().trim();
+  const where = new Map();   // normalized name → Set of teamIds rostering him
+  for (const tid of Object.keys(rosterIndex)) {
+    for (const name of (rosterIndex[tid] || [])) {
+      const k = norm(name);
+      if (!where.has(k)) where.set(k, new Set());
+      where.get(k).add(String(tid));
+    }
+  }
+  const cleared = [];
+  for (const tid of Object.keys(_myKeepers.teams)) {
+    const t = _myKeepers.teams[tid];
+    for (const name of Object.keys(t)) {
+      if (!t[name].picked) continue;
+      const on = where.get(norm(name));
+      if (on && on.size && !on.has(String(tid))) {
+        t[name].picked = false;
+        if (!t[name].ineligible && t[name].cost == null) delete t[name];
+        cleared.push({ teamId: tid, name });
+      }
+    }
+  }
+  if (cleared.length) saveMyKeepers();
+  return cleared;
+}
+
 // --- Projection-source preference (keepers page) ---
 
 function getKeeperProjSource() { return _myKeepersSource; }
