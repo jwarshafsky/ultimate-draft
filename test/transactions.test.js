@@ -95,11 +95,29 @@ test("instant add with NO matching drop → fa", () => {
   seedLog({ 1: [{ p: 105, d: T0, k: "A", w: false, to: 4 }] });
   assertEq(txContractRoot("Instant Guy"), "fa");
 });
-test("trail ending in a drop → null (mid-transaction timing skew — fall back)", () => {
+test("trailing drop prices the stint that's ending — draft root stays live", () => {
+  // ESPN's waiver run writes the executed DROP before the roster feed removes
+  // the player; while the feeds disagree, price the stint that's ending.
   seedLog({ 1: [
     { p: 104, d: T0, k: "R", to: 8 },
     { p: 104, d: T0 + MIN, k: "D", from: 8 },
   ] });
+  assertEq(txContractRoot("Mystery Guy"), "live");
+});
+test("waiver-run skew: FAAB'd, traded, then dropped tonight → fa (real Cowser, Jul 12 2026)", () => {
+  // Drafted by 9, dropped, FAAB'd by 2, traded to 9 (invisible), dropped by 9
+  // in the 11 PM waiver run while still showing on the roster. Was wrongly
+  // re-priced at his draft bid; must resolve to the fa root of the ending stint.
+  seedLog({ 1: [
+    { p: 104, d: T0, k: "R", to: 9 },
+    { p: 104, d: T0 + 100*MIN, k: "D", from: 9 },
+    { p: 104, d: T0 + 200*MIN, k: "A", w: true, to: 2 },
+    { p: 104, d: T0 + 300*MIN, k: "D", from: 9 },
+  ] });
+  assertEq(txContractRoot("Mystery Guy"), "fa");
+});
+test("trail that is ONLY drops → null (nothing left to price)", () => {
+  seedLog({ 1: [{ p: 104, d: T0, k: "D", from: 8 }] });
   assertEq(txContractRoot("Mystery Guy"), null);
 });
 test("unknown player or empty log → null", () => {

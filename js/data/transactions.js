@@ -136,9 +136,16 @@ function txContractRoot(playerName) {
   const evs = _txEvents(pid);
   if (!evs || !evs.length) return null;
   let i = evs.length - 1;
+  // Trailing DROP for a player still shown on a roster: ESPN's waiver run
+  // (11:00 PM EDT) writes the executed DROP to the transaction feed before
+  // the roster feed removes the player (Jul 12 2026: Cowser). Price the stint
+  // that's ending — the player leaves the roster views on their own once the
+  // feeds agree.
+  while (i >= 0 && evs[i].k === "D") i--;
+  if (i < 0) return null;
   while (i >= 0) {
     const e = evs[i];
-    if (e.k === "D") return null;        // rostered but trail ends in a drop
+    if (e.k === "D") return null;        // mid-trail drop → unreadable
     if (e.k === "R") return "live";
     if (e.k === "A") {
       if (e.w) return "fa";              // FAAB add — root resets
