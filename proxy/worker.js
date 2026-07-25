@@ -633,7 +633,7 @@ function _redact(u) { return u.replace(/(&5=)[^&]+/, "$1<token>").replace(/(&4=)
 function decodeDraftFrame(bytes, idx) {
   let text = "";
   try { text = new TextDecoder("utf-8", { fatal: false }).decode(bytes); } catch (_) {}
-  text = text.replace(/[ -]+$/g, "").trim();   // strip trailing delimiter/control bytes
+  text = text.replace(/[\x00-\x1f]+$/g, "").trim();   // strip trailing delimiter/control bytes
   const parts = text.split(/\s+/);
   const cmd = (parts[0] || "").toUpperCase();
   const fields = parts.slice(1);
