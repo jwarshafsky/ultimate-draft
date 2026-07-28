@@ -10,7 +10,8 @@
 //   ESPN_S2          — your ESPN session cookie
 //   ESPN_SWID        — your ESPN SWID cookie (with curly braces)
 //   ANTHROPIC_API_KEY — Anthropic API key for Claude
-//   ALLOWED_ORIGIN   — your GitHub Pages origin, e.g. "https://jwarshafsky.github.io"
+//   ALLOWED_ORIGIN   — the app's origin, e.g. "https://draft.jwarshafsky.com".
+//                      Accepts a comma-separated list to allow several at once.
 //   UD_PROXY_KEY     — shared secret; every request must send it as x-ud-key.
 //                      Without it the worker is an open relay for the Anthropic
 //                      key and ESPN cookies. The app stores it in Settings.
@@ -90,14 +91,20 @@ export default {
 function corsHeaders(allowed, origin) {
   // Exact-origin match only (plus localhost for dev). The old
   // endsWith(".github.io") check let ANY GitHub Pages site call the proxy.
+  // ALLOWED_ORIGIN may be a comma-separated list so a domain move can keep the
+  // old and new origins working at once; a single value behaves as before.
+  const list = String(allowed).split(",").map((s) => s.trim()).filter(Boolean);
   const isLocal = /^https?:\/\/localhost(:\d+)?$/.test(origin);
   const allowOrigin = (allowed === "*") ? "*" :
-    (origin && (origin === allowed || isLocal)) ? origin : allowed;
+    (origin && (list.includes(origin) || isLocal)) ? origin : (list[0] || "");
   return {
     "access-control-allow-origin": allowOrigin,
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,x-ud-key,authorization",
     "access-control-max-age": "86400",
+    // The ACAO header now varies by request Origin — without this an edge or
+    // browser cache could serve one origin's response to the other.
+    "vary": "Origin",
   };
 }
 

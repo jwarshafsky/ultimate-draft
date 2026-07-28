@@ -6,7 +6,7 @@ compatibility_date = "2025-01-01"
 #   ESPN_S2           — your ESPN session cookie
 #   ESPN_SWID         — your ESPN SWID cookie (with curly braces)
 #   ANTHROPIC_API_KEY — Anthropic API key
-#   ALLOWED_ORIGIN    — https://jwarshafsky.github.io
+#   ALLOWED_ORIGIN    — https://draft.jwarshafsky.com (comma-separated list ok)
 #   UD_PROXY_KEY      — shared secret the app must send as x-ud-key (Settings tab)
 
 # Device-sync storage: mirrors the app's localStorage state per user so a
