@@ -11,6 +11,7 @@
 //   ESPN_SWID        — your ESPN SWID cookie (with curly braces)
 //   ANTHROPIC_API_KEY — Anthropic API key for Claude (paid; interactive assistant)
 //   GEMINI_API_KEY    — Google AI Studio key (free tier; cheap high-volume LLM work)
+//   OPENROUTER_API_KEY — OpenRouter key (free tier; small open models, fallback only)
 //   ALLOWED_ORIGIN   — the app's origin, e.g. "https://draft.jwarshafsky.com".
 //                      Accepts a comma-separated list to allow several at once.
 //   UD_PROXY_KEY     — shared secret; every request must send it as x-ud-key.
@@ -24,6 +25,7 @@
 //   npx wrangler secret put ESPN_SWID
 //   npx wrangler secret put ANTHROPIC_API_KEY
 //   npx wrangler secret put GEMINI_API_KEY
+//   npx wrangler secret put OPENROUTER_API_KEY
 //   npx wrangler secret put ALLOWED_ORIGIN
 //   npx wrangler secret put UD_PROXY_KEY
 
@@ -82,6 +84,8 @@ export default {
         body = await proxyClaude(request, env);
       } else if (url.pathname === "/gemini" && request.method === "POST") {
         body = await proxyGemini(request, env);
+      } else if (url.pathname === "/openrouter" && request.method === "POST") {
+        body = await proxyOpenRouter(request, env);
       } else {
         return json({ error: "Not found" }, 404, corsHeaders(allowed, origin));
       }
@@ -533,6 +537,38 @@ async function proxyGemini(request, env) {
   if (!r.ok) {
     const txt = await r.text();
     throw new Error("Gemini " + r.status + ": " + txt.slice(0, 400));
+  }
+  return r.json();
+}
+
+// POST /openrouter — relay to OpenRouter's free tier (OpenAI-compatible chat
+// completions). Third-string FALLBACK behind /gemini: only small open models are
+// free (Gemma 4, Nemotron, gpt-oss-20b), ~50 req/day, and the shared free pools
+// 429/504 under load — callers must expect failure and fall back to /gemini or
+// /claude. Body is the standard {model, messages, ...} shape; model must keep
+// its ":free" suffix or the request would bill a card we haven't added.
+//
+// Requires secret:  npx wrangler secret put OPENROUTER_API_KEY
+async function proxyOpenRouter(request, env) {
+  if (!env.OPENROUTER_API_KEY) {
+    throw new Error("OpenRouter not configured: set the OPENROUTER_API_KEY secret");
+  }
+  const body = await request.json();
+  const model = body.model || "nvidia/nemotron-3-super-120b-a12b:free";
+  if (!model.endsWith(":free")) {
+    throw new Error("OpenRouter relay only allows :free models, got " + model);
+  }
+  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer " + env.OPENROUTER_API_KEY,
+    },
+    body: JSON.stringify({ ...body, model }),
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error("OpenRouter " + r.status + ": " + txt.slice(0, 400));
   }
   return r.json();
 }
