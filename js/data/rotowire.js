@@ -77,18 +77,13 @@ function estimatePlayerReturn(name, onDone) {
   if (cached && cached !== "pending") return cached.failed ? "estimate unavailable" : cached.text;
   if (cached === "pending" || !ESPN.proxyUrl) return null;
   _returnEstCache[key] = "pending";
-  const body = {
-    model: (typeof AI !== "undefined" && AI.model) || "claude-sonnet-5",
-    system: "You are a fantasy baseball injury analyst. Given a player's latest injury news, reply with ONLY a short expected-return estimate (e.g. 'Likely back ~July 8', 'Out 4-6 weeks', 'Season-ending (TJ surgery)', 'Day-to-day'). No preamble, max 12 words. If the news implies he's already active, say 'Appears active'.",
-    messages: [{ role: "user", content: (news.inj ? "Injury: " + news.inj + ". " : "") + (news.headline ? news.headline + ". " : "") + (news.news || "") }],
-    max_tokens: 40,
-  };
-  fetch(ESPN.proxyUrl.replace(/\/$/, "") + "/claude", {
-    method: "POST", headers: proxyHeaders({ "content-type": "application/json" }), body: JSON.stringify(body),
-  })
-    .then(r => r.ok ? r.json() : Promise.reject(new Error("claude " + r.status)))
-    .then(data => {
-      const text = (data.content || []).map(c => c.text || "").join(" ").trim();
+  const sys = "You are a fantasy baseball injury analyst. Given a player's latest injury news, reply with ONLY a short expected-return estimate (e.g. 'Likely back ~July 8', 'Out 4-6 weeks', 'Season-ending (TJ surgery)', 'Day-to-day'). No preamble, max 12 words. If the news implies he's already active, say 'Appears active'.";
+  const userText = (news.inj ? "Injury: " + news.inj + ". " : "") + (news.headline ? news.headline + ". " : "") + (news.news || "");
+  // Free Gemini first (this is cheap grunt work); paid Claude only as fallback
+  // so the estimate still lands if the free tier is down or rate-limited.
+  _rwGeminiEstimate(sys, userText)
+    .catch(e => { console.warn("[rotowire] gemini estimate failed, trying claude:", e.message); return _rwClaudeEstimate(sys, userText); })
+    .then(text => {
       _returnEstCache[key] = { text };
       if (text && typeof onDone === "function") onDone(text);
     })
@@ -98,6 +93,39 @@ function estimatePlayerReturn(name, onDone) {
       if (typeof onDone === "function") onDone(null);
     });
   return null;
+}
+
+function _rwGeminiEstimate(sys, userText) {
+  const body = {
+    contents: [{ parts: [{ text: sys + "\n\n" + userText }] }],
+    // Gemini 3: thinking tokens count against maxOutputTokens — leave headroom
+    // or the reply comes back empty. thinkingLevel low keeps it fast.
+    generationConfig: { temperature: 0, maxOutputTokens: 600, thinkingConfig: { thinkingLevel: "low" } },
+  };
+  return fetch(ESPN.proxyUrl.replace(/\/$/, "") + "/gemini", {
+    method: "POST", headers: proxyHeaders({ "content-type": "application/json" }), body: JSON.stringify(body),
+  })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error("gemini " + r.status)))
+    .then(data => {
+      const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+      const text = parts.map(p => p.text || "").join(" ").trim();
+      if (!text) throw new Error("gemini empty reply");
+      return text;
+    });
+}
+
+function _rwClaudeEstimate(sys, userText) {
+  const body = {
+    model: (typeof AI !== "undefined" && AI.model) || "claude-sonnet-5",
+    system: sys,
+    messages: [{ role: "user", content: userText }],
+    max_tokens: 40,
+  };
+  return fetch(ESPN.proxyUrl.replace(/\/$/, "") + "/claude", {
+    method: "POST", headers: proxyHeaders({ "content-type": "application/json" }), body: JSON.stringify(body),
+  })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error("claude " + r.status)))
+    .then(data => (data.content || []).map(c => c.text || "").join(" ").trim());
 }
 
 // A compact news block for a player card: latest Rotowire headline + factual
