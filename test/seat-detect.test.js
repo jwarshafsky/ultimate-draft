@@ -2,7 +2,7 @@
 // this browser drafts as). Removes the manual-seat ambiguity Jeff flagged
 // (league team id vs draft-order position).
 const { test, section, summary, assert, assertEq, makeChromeStub, makeWindowStub, loadScript } = require("./helpers.js");
-const EXT = "/Users/jwars/Desktop/Claude/keeper-edge-extension/";
+const EXT = process.env.KEEPER_EDGE_DIR || require("path").join(require("os").homedir(), "dev", "keeper-edge-extension") + "/";
 
 const win = makeWindowStub();
 const chromeStub = makeChromeStub({});

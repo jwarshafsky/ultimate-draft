@@ -9,7 +9,8 @@
 // Required Worker environment secrets:
 //   ESPN_S2          — your ESPN session cookie
 //   ESPN_SWID        — your ESPN SWID cookie (with curly braces)
-//   ANTHROPIC_API_KEY — Anthropic API key for Claude
+//   ANTHROPIC_API_KEY — Anthropic API key for Claude (paid; interactive assistant)
+//   GEMINI_API_KEY    — Google AI Studio key (free tier; cheap high-volume LLM work)
 //   ALLOWED_ORIGIN   — the app's origin, e.g. "https://draft.jwarshafsky.com".
 //                      Accepts a comma-separated list to allow several at once.
 //   UD_PROXY_KEY     — shared secret; every request must send it as x-ud-key.
@@ -22,6 +23,7 @@
 //   npx wrangler secret put ESPN_S2
 //   npx wrangler secret put ESPN_SWID
 //   npx wrangler secret put ANTHROPIC_API_KEY
+//   npx wrangler secret put GEMINI_API_KEY
 //   npx wrangler secret put ALLOWED_ORIGIN
 //   npx wrangler secret put UD_PROXY_KEY
 
@@ -78,6 +80,8 @@ export default {
         body = await proxyRotowireNews(url);
       } else if (url.pathname === "/claude" && request.method === "POST") {
         body = await proxyClaude(request, env);
+      } else if (url.pathname === "/gemini" && request.method === "POST") {
+        body = await proxyGemini(request, env);
       } else {
         return json({ error: "Not found" }, 404, corsHeaders(allowed, origin));
       }
@@ -493,6 +497,42 @@ async function proxyClaude(request, env) {
   if (!r.ok) {
     const txt = await r.text();
     throw new Error("Claude " + r.status + ": " + txt.slice(0, 400));
+  }
+  return r.json();
+}
+
+// POST /gemini  — relay to Google's free-tier Gemini API (AI Studio key).
+// Mirrors proxyClaude: the app POSTs a Gemini generateContent body and we forward
+// it, keeping GEMINI_API_KEY server-side. Use this for the CHEAP, high-volume LLM
+// work (player-news blurbs, projection parsing) so the paid Claude budget is spent
+// only on the interactive draft assistant.
+//
+// Request body: { "model"?: "gemini-flash-latest", ...generateContentBody }
+//   generateContentBody = { contents: [...], generationConfig?: {...}, ... }
+// Response: Gemini's raw JSON (candidates[].content.parts[].text).
+//
+// Requires secret:  npx wrangler secret put GEMINI_API_KEY
+async function proxyGemini(request, env) {
+  if (!env.GEMINI_API_KEY) {
+    throw new Error("Gemini not configured: set the GEMINI_API_KEY secret");
+  }
+  const { model, ...payload } = await request.json();
+  const m = model || "gemini-flash-latest";
+  const r = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+      encodeURIComponent(m) + ":generateContent",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error("Gemini " + r.status + ": " + txt.slice(0, 400));
   }
   return r.json();
 }

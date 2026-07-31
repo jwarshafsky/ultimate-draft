@@ -11,7 +11,7 @@
 const fs = require("fs");
 const { test, section, summary, assert, assertEq } = require("./helpers.js");
 
-const APP = "/Users/jwars/Desktop/Claude/ultimate-draft/js/";
+const APP = require("path").resolve(__dirname, "..", "js") + "/";
 
 // Concat-eval the real files so top-level consts are shared, then export.
 let bundle = ["core/standings.js", "core/deadline.js"]

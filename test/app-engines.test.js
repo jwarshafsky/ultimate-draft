@@ -15,7 +15,7 @@ const {
   makeLocalStorageStub,
 } = require("./helpers.js");
 
-const APP = "/Users/jwars/Desktop/Claude/ultimate-draft/js/";
+const APP = require("path").resolve(__dirname, "..", "js") + "/";
 
 // ---------------------------------------------------------------------------
 // Shared test data: a small deterministic value pool + keeper fixtures.

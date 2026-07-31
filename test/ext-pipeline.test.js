@@ -16,7 +16,7 @@ const {
   makeChromeStub, makeWindowStub, loadScript,
 } = require("./helpers.js");
 
-const EXT = "/Users/jwars/Desktop/Claude/keeper-edge-extension/";
+const EXT = process.env.KEEPER_EDGE_DIR || require("path").join(require("os").homedir(), "dev", "keeper-edge-extension") + "/";
 
 // Let all pending setImmediate/Promise callbacks run.
 function drain(ticks = 6) {
