@@ -149,10 +149,18 @@ function _pickStatEntry(player, season, sourceId) {
 
 // Normalize one ESPN roster entry into the shape standings.js consumes.
 // `sourceId`: 0 = season-to-date actuals, 1 = full-season projection.
-// Hitter position label from ESPN defaultPositionId (+ eligibleSlots for OF/UTIL).
+// Position label from ESPN defaultPositionId (1 = SP, 11 = RP) plus
+// eligibleSlots for pitchers: slot 13 is the generic P slot every pitcher has,
+// 14 = SP, 15 = RP. A pitcher eligible at both 14 and 15 is a true swingman.
 const _ESPN_POS_BY_ID = { 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "OF", 8: "OF", 9: "OF", 10: "DH" };
 function _espnPosLabel(dpid, slots) {
-  if (dpid === 1) return (slots || []).includes(14) ? "RP" : "SP";
+  if (dpid === 1 || dpid === 11) {
+    const sp = (slots || []).includes(14), rp = (slots || []).includes(15);
+    if (sp && rp) return "SP/RP";
+    if (sp) return "SP";
+    if (rp) return "RP";
+    return dpid === 11 ? "RP" : "SP";
+  }
   return _ESPN_POS_BY_ID[dpid] || "UT";
 }
 
@@ -174,13 +182,13 @@ function _normalizeEspnPlayer(entry, season, sourceId) {
   if (!player) return null;
   const slots = player.eligibleSlots || [];
   // Two-way player (Ohtani): eligible for BOTH a hitter slot (0-12) and a
-  // pitcher slot (13 SP / 14 RP). Counted as a hitter AND a pitcher downstream.
+  // pitcher slot (13 P / 14 SP / 15 RP). Counted as a hitter AND a pitcher downstream.
   const hasHitSlot = slots.some(s => s >= 0 && s <= 12);
   const hasPitSlot = slots.includes(13) || slots.includes(14) || slots.includes(15);
   const twoWay = hasHitSlot && hasPitSlot;
-  // Pitcher if eligible only for pitching slots (13 SP / 14 RP) and not a hitter slot.
-  const isPitcher = !twoWay && ((player.defaultPositionId === 1) ||
-    (slots.includes(13) || slots.includes(14)) && !slots.some(s => s >= 0 && s <= 12 && s !== 1));
+  // Pitcher if SP/RP by default position, or eligible only for pitching slots.
+  const isPitcher = !twoWay && ((player.defaultPositionId === 1) || (player.defaultPositionId === 11) ||
+    hasPitSlot && !hasHitSlot);
   const se = _pickStatEntry(player, season, sourceId);
   const m = se?.stats || {};
   const name = player.fullName || ("Player " + player.id);

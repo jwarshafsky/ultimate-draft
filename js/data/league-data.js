@@ -163,6 +163,7 @@ function dataReady() { return _data.loaded; }
 function getKeeperSelections() { return _data.keeperSelections; }
 function getTeamKeepers(teamId) { return _data.keeperSelections[teamId] || {}; }
 function getCallupOverride(name) { return _data.callupOverrides[name] || null; }
+function getCallupOverrides() { return _data.callupOverrides; }
 function getKeeperPriceExceptions() { return _data.keeperPriceExceptions; }
 function getTrades() { return _data.trades; }
 function getRosterMoves() { return _data.rosterMoves; }
